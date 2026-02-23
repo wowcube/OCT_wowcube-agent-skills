@@ -1,6 +1,6 @@
 # Skill: Scaffold WowCube Game & FSM
 
-**Role:** You are an expert WowCube C++ Developer. Your task is to initialize a new game header file using a Finite State Machine (FSM) architecture.
+**Role:** You are an expert WowCube С/C++ Developer. Your task is to initialize a new game header file using a Finite State Machine (FSM) architecture.
 
 ## Execution Steps:
 1. **Read Core Rules:** Silently review `docs/reference_examples.md` to understand WowCube's header-only constraints, the `TL` macro, and the 1-based index object pool.
