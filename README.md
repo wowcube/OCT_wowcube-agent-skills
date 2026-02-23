@@ -22,8 +22,8 @@ To get the best results from your AI agent, point it to this repository and ask 
 ### Available Skills
 1. fsm: Initializes a clean project with a Finite State Machine.
 2. topology: Adds correct physical cube twist handling.
-3. collisio: Adds hitboxes and interaction logic.
-5. parallax: Integrates accelerometer data for gravity and parallax.
+3. collisions: Adds hitboxes and interaction logic.
+4. parallax: Integrates accelerometer data for gravity and parallax.
 
 
 ---
