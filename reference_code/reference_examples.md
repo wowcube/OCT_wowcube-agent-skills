@@ -96,3 +96,4 @@ int spawnedI = OCT_add(30, true, plane, x, y, 0, false, BMP_start, BMP_end, 0);
 // Update text label
 int labelI = OCT_add_label(35, false, plane, 120.0f, 120.0f, 0, FONT_1, ALIGN_CENTER);
 OCT_label_set(&Objects[labelI], "SCORE: 100");
+
