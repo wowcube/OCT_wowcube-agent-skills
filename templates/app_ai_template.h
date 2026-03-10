@@ -35,12 +35,18 @@
 ////////////////////////////////
 
 // Game-specific data
-typedef struct _appObject_t: octSprite_t{
-
+typedef struct _appObject_t: octSprite_t {
+    octTm_t animStart; // do not copy this
+    octTm_t animEnd; // do not copy this
 } appObject_t;
 
 // Game-specific variables
 typedef struct {
+    appObject_t* demoObj;
+
+    uint32_t demo2LerpStartTick;
+    float demo2LerpDuration;
+
     uint32_t tick;
 } appvars_t;
 
@@ -51,12 +57,26 @@ typedef struct {
 
 // utils
 appObject_t* getQuadContent(size_t quad);
+void showLabel(appObject_t* label, bool show);
 
 // demo
 void initDemo0(void);
 void twistDemo0(void);
 void tapDemo0(size_t plane);
+void processDemo0(void);
 void processQuadsDemo0(size_t srcQuad, size_t destQuad);
+
+void initDemo1(void);
+
+void initDemo2(void);
+void processDemo2(void);
+void processDemo2Lerp(void);
+
+void initDemo3(void);
+void processDemo3(void);
+
+void initDemo4(void);
+void processDemo4(void);
 
 
 ////////////////////////////////
@@ -87,7 +107,7 @@ appObject_t* getQuadContent(size_t quad) {
         appObject_t* obj = &gObjects[i];
 
         // Check for a valid object (Idx always equals the object ID).
-        if (gObjects[i].Idx != i) continue; // Invalid object
+        if (obj->Idx != i) continue; // Invalid object
 
         // Short: OCT_TM_quad returns the quad ID where the given transform (octTm_t) is located.
         // Declaration: int OCT_TM_quad(const octTm_t* tm);
@@ -112,6 +132,25 @@ appObject_t* getQuadContent(size_t quad) {
         
     }
     return NULL;
+}
+
+// Util: copy this code if need to modify label properties
+void showLabel(appObject_t* label, bool show) {
+    // API + util
+    // Short: Toggles visibility of a label and all its child glyphs (letters).
+    // Comment: A label created by OCT_add_label has child sprites (one per glyph) linked via Parent.
+    // Comment: Setting Hidden on the label alone is not enough — each child glyph must also be toggled.
+    label->Hidden = !show;
+
+    for (size_t i = 1; i < SPRITES_CAP; i++) {
+        appObject_t* obj = &gObjects[i];
+        if (obj->Idx != i) continue;
+
+        // check if object is child of label
+        if (obj->Parent == label->Idx) {
+            obj->Hidden = !show;
+        }
+    }
 }
 
 // demo
@@ -188,8 +227,152 @@ void tapDemo0(size_t plane) {
 }
 
 // Demo: do not copy-paste this code
-void processQuadsDemo0(size_t srcQuad, size_t destQuad) {
+void processDemo0(void) {
+    if (vars.tick == OCT_1SEC_TICKS)
+        processQuadsDemo0(4, 5);
+}
+
+// Demo: do not copy-paste this code
+void initDemo1(void) {
+    // API info + demo
+    // Demo 1: how to make virtual twist
+
+    for (size_t plane = OCT_PLANE_TOP; plane < OCT_PLANES_MAX; plane++) {
+        for (int16_t y = -120; y <= 120; y += 240) {
+            for (int16_t x = -120; x <= 120; x+= 240) {
+                OCT_add(0, false, plane, x, y, 0, false, BMP_000, BMP_000, 0);
+
+                if (plane == OCT_PLANE_TOP)
+                    OCT_add(1, true, plane, x, y, 0, false, BMP_001, BMP_001, 0);
+            }
+        }
+    }
+
+    // Directions: TOP_CCW, TOP_CW, FRONT_CCW, FRONT_CW, RIGHT_CCW, RIGHT_CW, BACK_CCW, BACK_CW, LEFT_CCW, LEFT_CW, BOTTOM_CCW, BOTTOM_CW
+
+    // Short: OCT_twist_sprites performs a virtual twist of all twistable sprites on the cube.
+    // Declaration: void OCT_twist_sprites(octTwistId_t twid);
+    OCT_twist_sprites(FRONT_CW);
+    OCT_twist_sprites(RIGHT_CCW);
+}
+
+// Demo: do not copy-paste this code
+void initDemo2(void) {
     // demo
+    int32_t id = OCT_add(0, true, OCT_PLANE_TOP, 120.f, 120.f, 0, false, BMP_001, BMP_001, 0);
+    vars.demoObj = &gObjects[id];
+}
+
+// Demo: do not copy-paste this code
+void processDemo2(void) {
+    // API info + demo
+    // Demo 2: how to walk sprite in the direction with correction between sides
+
+    if (vars.tick % OCT_1SEC_TICKS != 0) return;
+
+    // Short: OCT_TM_walk moves a transform forward (and optionally sideways) along a given direction angle; returns old plane.
+    // Declaration: int OCT_TM_walk(octTm_t* tm, int forward_direction_angle, float forward_distance, float left_distance, bool wrap);
+    // Comment: forward_direction_angle is the movement direction in degrees; forward_distance is the distance in pixels along that direction; left_distance is the perpendicular (left) offset.
+    // Comment: wrap is needed to correct coords after reaching side limits (240x240) to automatically change plane; in most cases wrap should be true.
+    OCT_TM_walk(&vars.demoObj->Tm, vars.demoObj->Tm.A, 240.f + 2.f * GAP, 0.0, true); // 240.f (size of quad) + 2 * GAP ensures the sprite moves to the next display
+}
+
+// Demo: do not copy-paste this code
+void processDemo2Lerp(void) {
+    // API info + demo
+    // Demo 2: sprite movement animation and copy tranformation
+
+    // start
+    if (vars.demo2LerpStartTick == 0) {
+        vars.demo2LerpStartTick = vars.tick;
+        vars.demo2LerpDuration = (float)OCT_1SEC_TICKS; // 1 second
+
+        // Short: OCT_TM_copy copies the full transform (octTm_t) from src to dst.
+        // Declaration: void OCT_TM_copy(octTm_t* dst, const octTm_t* src);
+        OCT_TM_copy(&vars.demoObj->animStart, &vars.demoObj->Tm);
+
+        // set animation end
+        OCT_TM_copy(&vars.demoObj->animEnd, &vars.demoObj->Tm);
+        OCT_TM_walk(&vars.demoObj->animEnd, vars.demoObj->Tm.A, 240.f + 2.f * GAP, 0.0, true);
+    }
+
+    float progress = (vars.tick - vars.demo2LerpStartTick) / vars.demo2LerpDuration;
+
+    // Short: OCT_TM_lerp linearly interpolates between two transforms a and b by factor t [0; 1], handling cross-plane transitions.
+    // Declaration: void OCT_TM_lerp(octTm_t* tm, octTm_t* a, octTm_t* b, float t);
+    // Comment: t is clamped to [0; 1]; the result is written to tm; transform a is converted to b's plane space before interpolation.
+    OCT_TM_lerp(&vars.demoObj->Tm, &vars.demoObj->animStart, &vars.demoObj->animEnd, progress);
+}
+
+// Demo: do not copy-paste this code
+void initDemo3(void) {
+    // demo
+    int32_t id = OCT_add(0, true, OCT_PLANE_TOP, 120.f, 120.f, 0, true, BMP_001, BMP_003, 1);
+    vars.demoObj = &gObjects[id];
+    vars.demoObj->Paused = true; // pause animation to start it explicitly in process; otherwise will start on next tick; default Paused=false.
+}
+
+// Demo: do not copy-paste this code
+void processDemo3(void) {
+    // API + demo
+    // Demo3: how to change sprite animation
+
+    if (vars.tick == 0) vars.demoObj->Paused = false;
+
+    if (vars.tick == OCT_1SEC_TICKS) {
+        // Short: OCT_sequence sets up a frame animation sequence for a sprite; zeroes keep current values.
+        // Declaration: void OCT_sequence(octSprite_t* spr, int from, int to, int framelen, octSeqRestart_t restart);
+        // Comment: restart mode: OCT_SEQ_RESTART (play from start), OCT_SEQ_REVERSE (play from end), OCT_SEQ_REFRESH (keep current position).
+        OCT_sequence(vars.demoObj, BMP_004, BMP_009, 1, OCT_SEQ_RESTART);
+        vars.demoObj->Loop = true; // loop animation
+    }
+}
+
+// Demo: do not copy-paste this code
+void initDemo4(void) {
+    // API + demo
+    // Demo4: how to create labels
+
+    // Short: OCT_add_label adds a text label to the scene; returns idx in gObjects.
+    // Declaration: int OCT_add_label(int layer, bool twistable, int side, float x, float y, int a, int font_idx, int align);
+    // Comment: font_idx selects the font [1..3] (FONT_1, FONT_2, FONT_3); align sets text alignment (ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT).
+    // Comment: Each glyph is a separate child sprite with Parent set to the label's Idx.
+    // Comment: Use OCT_label_set to assign text after creation; use showLabel to toggle visibility of the label and its glyphs.
+    int32_t id = OCT_add_label(1, false, OCT_PLANE_FRONT, 120.f, 120.f, 0, FONT_1, ALIGN_CENTER);
+    vars.demoObj = &gObjects[id];
+}
+
+// Demo: do not copy-paste this code
+void processDemo4(void) {
+    // API + demo
+    // Demo4: how to modify and delete labels
+
+    if (vars.tick % OCT_1SEC_TICKS == 0) {
+        showLabel(vars.demoObj, true);
+
+        char buf[12];
+        snprintf(buf, 12, "%lu", vars.tick / OCT_1SEC_TICKS);
+
+        // Short: OCT_label_set updates the text of a label; recreates child glyph sprites; returns text length.
+        // Declaration: int OCT_label_set(octSprite_t* label, const char* text);
+        // Comment: Deletes old glyph sprites and creates new ones based on the text string; supports '\n' for multi-line labels.
+        // Comment: Skips update if the text has not changed since the last call.
+        OCT_label_set(vars.demoObj, buf);
+    }
+
+    if (vars.tick % (2 * OCT_1SEC_TICKS) == 0)
+        showLabel(vars.demoObj, false);
+    
+    if (vars.tick == 10 * OCT_1SEC_TICKS) {
+        // no need to delete childs explicity
+        OCT_del(vars.demoObj);
+    }
+}
+
+
+// Demo: do not copy-paste this code
+void processQuadsDemo0(size_t srcQuad, size_t destQuad) {
+    // API + demo
     // Demo 0: how to move objects with check if quad is occupied.
 
     appObject_t* src = getQuadContent(srcQuad);
@@ -198,7 +381,10 @@ void processQuadsDemo0(size_t srcQuad, size_t destQuad) {
     appObject_t* dest = getQuadContent(destQuad);
     if (dest) return; // quad is occupied
 
-    src->Tm.Plane = destQuad / OCT_QUADS_AT_PLANE;
+    // Short: OCT_TM_change_plane moves a transform to a different plane, adjusting coordinates and angle accordingly.
+    // Declaration: void OCT_TM_change_plane(octTm_t* tm, int to);
+    OCT_TM_change_plane(&src->Tm, destQuad / OCT_QUADS_AT_PLANE);
+
     src->Tm.X = (120.f + GAP) * XSIGN[destQuad % OCT_QUADS_AT_PLANE];
     src->Tm.Y = (120.f + GAP) * YSIGN[destQuad % OCT_QUADS_AT_PLANE];
 }
@@ -221,6 +407,10 @@ WASM_EXPORT void on_init() {
 
     // Game
     initDemo0();
+    // initDemo1();
+    // initDemo2();
+    // initDemo3();
+    // initDemo4();
 }
 
 WASM_EXPORT void on_pretwisted(int32_t twid) {
@@ -234,7 +424,7 @@ WASM_EXPORT void on_twisted(int32_t twid, uint32_t disconnected_ms) {
     // API info
     // on_twisted is called when a twist action is completed.
     // Use it to update the game state after the twist, e.g., check for matches or update positions.
-     twistDemo0();
+    twistDemo0();
 
     // API info
     {
@@ -315,8 +505,11 @@ WASM_EXPORT void on_tick() {
     }
     
     // demo
-    if (vars.tick == OCT_1SEC_TICKS)
-        processQuadsDemo0(4, 5);
+    processDemo0();
+    // processDemo2();
+    // processDemo2Lerp();
+    // processDemo3();
+    // processDemo4();
 
     vars.tick++;
 }
