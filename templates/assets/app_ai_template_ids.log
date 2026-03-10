@@ -1,0 +1,515 @@
+
+LEN DECODE TABLE1: 
+1,15,1,3,1,2,1,5,1,15,1,4,1,2,1,7,1,15,1,3,1,2,1,6,1,15,1,4,1,2,1,11,1,15,1,3,1,2,1,5,1,15,1,4,1,2,1,9,1,15,1,3,1,2,1,6,1,15,1,4,1,2,1,13,1,15,1,3,1,2,1,5,1,15,1,4,1,2,1,8,1,15,1,3,1,2,1,6,1,15,1,4,1,2,1,12,1,15,1,3,1,2,1,5,1,15,1,4,1,2,1,10,1,15,1,3,1,2,1,6,1,15,1,4,1,2,1,14,
+LEN CONSUME TABLE1: 
+1,3,1,4,1,3,1,5,1,3,1,4,1,3,1,7,1,3,1,4,1,3,1,5,1,3,1,4,1,3,1,7,1,3,1,4,1,3,1,5,1,3,1,4,1,3,1,7,1,3,1,4,1,3,1,5,1,3,1,4,1,3,1,7,1,3,1,4,1,3,1,5,1,3,1,4,1,3,1,7,1,3,1,4,1,3,1,5,1,3,1,4,1,3,1,7,1,3,1,4,1,3,1,5,1,3,1,4,1,3,1,7,1,3,1,4,1,3,1,5,1,3,1,4,1,3,1,7,
+
+PAL 0 * <8>: 417271 bytes, was 453610. 416250|1021   TTL: 453610|417271  RLE 83702 sum=83702
+   0     3082 04  1541 | 01 
+   1     1798 05   674 | 02 
+   2     1000 05   375 | 83 
+   3      866 06   216 | 39 
+   4      852 06   213 | FD 
+   5      834 06   208 | 56 
+   6      770 06   192 | 4D 
+   7      762 06   190 | B5 
+   8      666 06   166 | 40 
+   9      653 06   163 | 20 
+  10      649 06   162 | A2 
+  11      633 06   158 | CE 
+  12      633 06   158 | 15 
+  13      623 06   155 | 00 
+  14      613 06   153 | 70 
+  15      611 06   152 | 7F 
+  16      611 06   152 | 03 
+  17      609 06   152 | BC 
+  18      603 06   150 | C4 
+  19      603 06   150 | 24 
+  20      603 06   150 | 3A 
+  21      601 06   150 | 46 
+  22      581 06   145 | 60 
+  23      579 06   144 | DB 
+  24      571 06   142 | E8 
+  25      564 06   141 | 8C 
+  26      549 06   137 | A8 
+  27      535 06   133 | 34 
+  28      524 06   131 | A1 
+  29      506 06   126 | D9 
+  30      492 06   123 | EA 
+  31      476 06   119 | B7 
+  32      470 06   117 | AA 
+  33      458 07    57 | 5E 
+  34      458 07    57 | 3E 
+  35      457 07    57 | D3 
+  36      433 07    54 | 58 
+  37      424 07    53 | 22 
+  38      423 07    52 | B0 
+  39      388 07    48 | 64 
+  40      388 07    48 | 1B 
+  41      373 07    46 | 5D 
+  42      363 07    45 | A3 
+  43      349 07    43 | DD 
+  44      347 07    43 | E1 
+  45      344 07    43 | 87 
+  46      344 07    43 | B3 
+  47      316 07    39 | 53 
+  48      304 07    38 | 7A 
+  49      302 07    37 | 09 
+  50      298 07    37 | 97 
+  51      296 07    37 | 08 
+  52      295 07    36 | 8E 
+  53      295 07    36 | 2B 
+  54      291 07    36 | 8F 
+  55      290 07    36 | EC 
+  56      285 07    35 | EF 
+  57      270 07    33 | 5A 
+  58      268 07    33 | EE 
+  59      264 07    33 | 67 
+  60      262 07    32 | 9D 
+  61      262 07    32 | 79 
+  62      253 07    31 | 33 
+  63      248 07    31 | 29 
+  64      245 07    30 | 93 
+  65      245 07    30 | 0A 
+  66      232 08     0 | 94 
+  67      227 08     0 | D0 
+  68      225 08     0 | 90 
+  69      220 08     0 | BA 
+  70      209 08     0 | 18 
+  71      206 08     0 | E5 
+  72      198 08     0 | ED 
+  73      194 08     0 | 57 
+  74      192 08     0 | C9 
+  75      189 08     0 | 4E 
+  76      188 08     0 | 7D 
+  77      187 08     0 | 41 
+  78      187 08     0 | 6F 
+  79      187 08     0 | 2C 
+  80      183 08     0 | F9 
+  81      181 08     0 | F3 
+  82      177 08     0 | 32 
+  83      172 08     0 | BB 
+  84      159 08     0 | E6 
+  85      158 08     0 | FF 
+  86      137 08     0 | 88 
+  87      127 08     0 | DA 
+  88      127 08     0 | F5 
+  89      126 08     0 | 80 
+  90      125 08     0 | 2D 
+  91      120 08     0 | 98 
+  92      120 08     0 | 9B 
+  93      120 08     0 | 0C 
+  94      116 08     0 | AC 
+  95      115 09   -14 | E4 
+  96      108 09   -13 | 0F 
+  97      105 09   -13 | B9 
+  98      101 09   -12 | DF 
+  99       91 09   -11 | 37 
+ 100       89 09   -11 | 4C 
+ 101       81 09   -10 | 3C 
+ 102       74 09    -9 | 96 
+ 103       71 09    -8 | 84 
+ 104       71 09    -8 | 0D 
+ 105       63 09    -7 | 6A 
+ 106       63 09    -7 | 06 
+ 107       55 09    -6 | 4F 
+ 108       54 10   -13 | F4 
+ 109       53 10   -13 | D1 
+ 110       49 10   -12 | 7E 
+ 111       38 10    -9 | FC 
+ 112       26 11    -9 | 42 
+ 113       24 11    -9 | C3 
+ 114        9 12    -4 | 8B 
+ 115        7 12    -3 | B6 
+ 116        6 13    -3 | D5 
+ 117        6 13    -3 | 1D 
+ 118        5 13    -3 | C8 
+ 119        5 13    -3 | BE 
+ 120        5 13    -3 | 1C 
+ 121        5 13    -3 | 28 
+ 122        5 13    -3 | 31 
+ 123        4 13    -2 | C6 
+ 124        4 13    -2 | F6 
+ 125        4 13    -2 | 95 
+ 126        4 13    -2 | AB 
+ 127        4 13    -2 | 65 
+ 128        4 13    -2 | 36 
+ 129        3 13    -1 | C0 
+ 130        3 13    -1 | E3 
+ 131        3 14    -2 | 81 
+ 132        3 14    -2 | 99 
+ 133        3 14    -2 | B2 
+ 134        3 14    -2 | 52 
+ 135        3 14    -2 | 78 
+ 136        3 14    -2 | 17 
+ 137        3 14    -2 | 12 
+ 138        3 14    -2 | 1A 
+ 139        2 14    -1 | C7 
+ 140        2 14    -1 | CC 
+ 141        2 14    -1 | D7 
+ 142        2 14    -1 | E9 
+ 143        2 14    -1 | F2 
+ 144        2 14    -1 | FA 
+ 145        2 14    -1 | 8D 
+ 146        2 14    -1 | 8A 
+ 147        2 14    -1 | A4 
+ 148        2 14    -1 | A0 
+ 149        2 14    -1 | A9 
+ 150        2 14    -1 | B8 
+ 151        2 14    -1 | 43 
+ 152        2 14    -1 | 54 
+ 153        2 14    -1 | 5C 
+ 154        2 14    -1 | 62 
+ 155        2 14    -1 | 6D 
+ 156        2 14    -1 | 6E 
+ 157        2 14    -1 | 68 
+ 158        2 14    -1 | 75 
+ 159        2 14    -1 | 77 
+ 160        2 14    -1 | 76 
+ 161        2 14    -1 | 72 
+ 162        2 14    -1 | 7C 
+ 163        2 14    -1 | 30 
+ 164        1 15     0 | C2 
+ 165        1 15     0 | DC 
+ 166        1 15     0 | EB 
+ 167        1 15     0 | FE 
+ 168        1 15     0 | F8 
+ 169        1 15     0 | 86 
+ 170        1 15     0 | 91 
+ 171        1 15     0 | A5 
+ 172        1 15     0 | AF 
+ 173        1 15     0 | 44 
+ 174        1 15     0 | 4A 
+ 175        1 15     0 | 5F 
+ 176        1 15     0 | 6C 
+ 177        1 15     0 | 04 
+ 178        1 15     0 | 1F 
+ 179        1 15     0 | 26 
+ 180        1 15     0 | 2F 
+ 181        1 15     0 | 2E 
+
+PAL 1 font* <6>: 35939 bytes, was 59394. 29560|6378   TTL: 513004|453210  RLE 30129 sum=113831
+   0     6279 01  3924 | 01 
+   1     4171 02  2085 | 00 
+   2      159 04    39 | 17 
+   3      155 04    38 | 13 
+   4       99 05    12 | 06 
+   5       94 05    11 | 20 
+   6       69 06     0 | 1E 
+   7       64 06     0 | 05 
+   8       62 06     0 | 23 
+   9        4 09    -1 | 10 
+  10        3 09    -1 | 12 
+  11        3 09    -1 | 19 
+  12        2 10    -1 | 0E 
+  13        2 10    -1 | 31 
+  14        2 10    -1 | 3A 
+  15        1 10     0 | 02 
+  16        1 10     0 | 08 
+  17        1 10     0 | 1B 
+  18        1 10     0 | 21 
+  19        1 11     0 | 2D 
+  20        1 11     0 | 2E 
+  21        1 11     0 | 28 
+  22        1 11     0 | 2B 
+  23        1 11     0 | 32 
+  24        1 11     0 | 3D 
+PNG 0               palette:00 bits:8 <0.80> flags:01  seq:  0  rate: 1 col[    0.0 : 0.0     |     0.0 x 0.0    ]  &0   %0   =0  
+PNG 000             palette:00 bits:8 <0.16> flags:01  seq:  0  rate: 1 col[    0.0 : 0.0     |     0.0 x 0.0    ]  &0   %0   =0  
+PNG 001             palette:00 bits:8 <0.16> flags:01  seq:  0  rate: 1 col[    0.0 : 0.0     |     0.0 x 0.0    ]  &0   %0   =0  
+PNG 002             palette:00 bits:8 <0.17> flags:01  seq:  0  rate: 1 col[    0.0 : 0.0     |     0.0 x 0.0    ]  &0   %0   =0  
+PNG 003             palette:00 bits:8 <0.18> flags:01  seq:  0  rate: 1 col[    0.0 : 0.0     |     0.0 x 0.0    ]  &0   %0   =0  
+PNG 004             palette:00 bits:8 <0.18> flags:01  seq:  0  rate: 1 col[    0.0 : 0.0     |     0.0 x 0.0    ]  &0   %0   =0  
+PNG 005             palette:00 bits:8 <0.19> flags:01  seq:  0  rate: 1 col[    0.0 : 0.0     |     0.0 x 0.0    ]  &0   %0   =0  
+PNG 006             palette:00 bits:8 <0.20> flags:01  seq:  0  rate: 1 col[    0.0 : 0.0     |     0.0 x 0.0    ]  &0   %0   =0  
+PNG 007             palette:00 bits:8 <0.21> flags:01  seq:  0  rate: 1 col[    0.0 : 0.0     |     0.0 x 0.0    ]  &0   %0   =0  
+PNG 008             palette:00 bits:8 <0.21> flags:01  seq:  0  rate: 1 col[    0.0 : 0.0     |     0.0 x 0.0    ]  &0   %0   =0  
+PNG 009             palette:00 bits:8 <0.20> flags:01  seq:  0  rate: 1 col[    0.0 : 0.0     |     0.0 x 0.0    ]  &0   %0   =0  
+PNG 010             palette:00 bits:8 <0.25> flags:01  seq:  0  rate: 1 col[    0.0 : 0.0     |     0.0 x 0.0    ]  &0   %0   =0  
+PNG 011             palette:00 bits:8 <0.26> flags:01  seq:  0  rate: 1 col[    0.0 : 0.0     |     0.0 x 0.0    ]  &0   %0   =0  
+PNG 012             palette:00 bits:8 <0.19> flags:01  seq:  0  rate: 1 col[    0.0 : 0.0     |     0.0 x 0.0    ]  &0   %0   =0  
+PNG back            palette:00 bits:8 <0.14> flags:01  seq:  0  rate: 1 col[    0.0 : 0.0     |     0.0 x 0.0    ]  &0   %0   =0  
+PNG font_1_00033    palette:01 bits:6 <0.55> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00034    palette:01 bits:6 <0.61> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    18.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00035    palette:01 bits:6 <0.36> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    27.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00036    palette:01 bits:6 <0.34> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    26.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00037    palette:01 bits:6 <0.46> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    32.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00038    palette:01 bits:6 <0.37> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    29.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00039    palette:01 bits:6 <0.68> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00040    palette:01 bits:6 <0.43> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00041    palette:01 bits:6 <0.43> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00042    palette:01 bits:6 <0.55> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    17.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00043    palette:01 bits:6 <0.31> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    24.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00044    palette:01 bits:6 <0.58> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00045    palette:01 bits:6 <0.30> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    19.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00046    palette:01 bits:6 <0.41> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00047    palette:01 bits:6 <0.33> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    21.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00048    palette:01 bits:6 <0.38> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    27.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00049    palette:01 bits:6 <0.34> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    19.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00050    palette:01 bits:6 <0.34> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    25.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00051    palette:01 bits:6 <0.33> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    26.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00052    palette:01 bits:6 <0.30> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    27.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00053    palette:01 bits:6 <0.34> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    25.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00054    palette:01 bits:6 <0.36> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    25.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00055    palette:01 bits:6 <0.31> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    22.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00056    palette:01 bits:6 <0.40> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    27.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00057    palette:01 bits:6 <0.36> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    25.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00058    palette:01 bits:6 <0.48> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00059    palette:01 bits:6 <0.50> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    12.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00060    palette:01 bits:6 <0.38> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    20.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00061    palette:01 bits:6 <0.22> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    22.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00062    palette:01 bits:6 <0.38> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    20.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00063    palette:01 bits:6 <0.34> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    23.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00064    palette:01 bits:6 <0.45> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    33.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00065    palette:01 bits:6 <0.33> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    28.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00066    palette:01 bits:6 <0.32> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    28.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00067    palette:01 bits:6 <0.34> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    27.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00068    palette:01 bits:6 <0.34> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    28.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00069    palette:01 bits:6 <0.26> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    25.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00070    palette:01 bits:6 <0.27> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    24.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00071    palette:01 bits:6 <0.36> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    28.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00072    palette:01 bits:6 <0.30> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    29.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00073    palette:01 bits:6 <0.41> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    13.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00074    palette:01 bits:6 <0.30> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    26.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00075    palette:01 bits:6 <0.38> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    26.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00076    palette:01 bits:6 <0.24> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    23.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00077    palette:01 bits:6 <0.36> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    32.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00078    palette:01 bits:6 <0.37> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    28.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00079    palette:01 bits:6 <0.37> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    28.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00080    palette:01 bits:6 <0.30> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    26.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00081    palette:01 bits:6 <0.36> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    28.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00082    palette:01 bits:6 <0.35> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    27.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00083    palette:01 bits:6 <0.36> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    26.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00084    palette:01 bits:6 <0.28> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    25.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00085    palette:01 bits:6 <0.35> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    28.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00086    palette:01 bits:6 <0.35> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    27.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00087    palette:01 bits:6 <0.38> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    33.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00088    palette:01 bits:6 <0.37> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    27.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00089    palette:01 bits:6 <0.34> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    27.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00090    palette:01 bits:6 <0.29> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    25.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00091    palette:01 bits:6 <0.40> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00092    palette:01 bits:6 <0.33> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    21.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00093    palette:01 bits:6 <0.39> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00094    palette:01 bits:6 <0.50> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    18.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00095    palette:01 bits:6 <0.23> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    29.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00096    palette:01 bits:6 <0.52> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    16.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00097    palette:01 bits:6 <0.40> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    23.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00098    palette:01 bits:6 <0.33> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    25.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00099    palette:01 bits:6 <0.38> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    23.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00100    palette:01 bits:6 <0.35> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    25.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00101    palette:01 bits:6 <0.39> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    23.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00102    palette:01 bits:6 <0.34> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    17.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00103    palette:01 bits:6 <0.41> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    25.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00104    palette:01 bits:6 <0.35> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    25.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00105    palette:01 bits:6 <0.57> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00106    palette:01 bits:6 <0.40> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    12.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00107    palette:01 bits:6 <0.37> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    23.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00108    palette:01 bits:6 <0.59> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00109    palette:01 bits:6 <0.39> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    36.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00110    palette:01 bits:6 <0.37> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    25.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00111    palette:01 bits:6 <0.40> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    24.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00112    palette:01 bits:6 <0.33> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    25.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00113    palette:01 bits:6 <0.36> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    25.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00114    palette:01 bits:6 <0.37> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    18.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00115    palette:01 bits:6 <0.42> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    22.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00116    palette:01 bits:6 <0.33> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    18.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00117    palette:01 bits:6 <0.36> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    25.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00118    palette:01 bits:6 <0.41> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    23.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00119    palette:01 bits:6 <0.42> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    33.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00120    palette:01 bits:6 <0.41> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    23.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00121    palette:01 bits:6 <0.37> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    23.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00122    palette:01 bits:6 <0.32> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    22.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00123    palette:01 bits:6 <0.38> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    17.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00124    palette:01 bits:6 <0.68> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00125    palette:01 bits:6 <0.38> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    17.0 x 60.0   ]  &0   %0   =0  
+PNG font_1_00126    palette:01 bits:6 <0.44> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    22.0 x 60.0   ]  &0   %0   =0  
+PNG font_2_00033    palette:01 bits:6 <0.80> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     7.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00034    palette:01 bits:6 <0.80> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00035    palette:01 bits:6 <0.60> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    16.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00036    palette:01 bits:6 <0.48> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00037    palette:01 bits:6 <0.64> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    18.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00038    palette:01 bits:6 <0.56> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    17.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00039    palette:01 bits:6 <0.91> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     6.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00040    palette:01 bits:6 <0.65> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     9.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00041    palette:01 bits:6 <0.66> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     9.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00042    palette:01 bits:6 <0.76> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00043    palette:01 bits:6 <0.46> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    14.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00044    palette:01 bits:6 <0.86> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     6.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00045    palette:01 bits:6 <0.56> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00046    palette:01 bits:6 <0.96> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     6.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00047    palette:01 bits:6 <0.49> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    12.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00048    palette:01 bits:6 <0.54> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    16.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00049    palette:01 bits:6 <0.49> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00050    palette:01 bits:6 <0.49> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00051    palette:01 bits:6 <0.49> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00052    palette:01 bits:6 <0.45> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    16.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00053    palette:01 bits:6 <0.51> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00054    palette:01 bits:6 <0.50> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00055    palette:01 bits:6 <0.45> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    13.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00056    palette:01 bits:6 <0.58> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00057    palette:01 bits:6 <0.54> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00058    palette:01 bits:6 <0.73> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     7.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00059    palette:01 bits:6 <0.71> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     7.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00060    palette:01 bits:6 <0.58> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    12.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00061    palette:01 bits:6 <0.36> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    13.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00062    palette:01 bits:6 <0.58> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    12.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00063    palette:01 bits:6 <0.51> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    14.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00064    palette:01 bits:6 <0.68> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    19.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00065    palette:01 bits:6 <0.47> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    16.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00066    palette:01 bits:6 <0.49> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    16.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00067    palette:01 bits:6 <0.47> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    16.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00068    palette:01 bits:6 <0.50> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    16.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00069    palette:01 bits:6 <0.38> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00070    palette:01 bits:6 <0.40> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    14.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00071    palette:01 bits:6 <0.52> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    16.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00072    palette:01 bits:6 <0.50> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    17.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00073    palette:01 bits:6 <0.85> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     7.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00074    palette:01 bits:6 <0.41> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00075    palette:01 bits:6 <0.57> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00076    palette:01 bits:6 <0.38> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    14.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00077    palette:01 bits:6 <0.54> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    19.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00078    palette:01 bits:6 <0.61> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    16.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00079    palette:01 bits:6 <0.52> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    16.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00080    palette:01 bits:6 <0.47> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00081    palette:01 bits:6 <0.51> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    16.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00082    palette:01 bits:6 <0.52> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    16.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00083    palette:01 bits:6 <0.53> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00084    palette:01 bits:6 <0.35> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    14.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00085    palette:01 bits:6 <0.50> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    17.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00086    palette:01 bits:6 <0.53> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    16.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00087    palette:01 bits:6 <0.53> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    19.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00088    palette:01 bits:6 <0.54> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    16.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00089    palette:01 bits:6 <0.50> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    16.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00090    palette:01 bits:6 <0.42> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00091    palette:01 bits:6 <0.55> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     9.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00092    palette:01 bits:6 <0.51> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    12.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00093    palette:01 bits:6 <0.61> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     9.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00094    palette:01 bits:6 <0.80> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00095    palette:01 bits:6 <0.31> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    17.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00096    palette:01 bits:6 <0.80> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     9.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00097    palette:01 bits:6 <0.62> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    13.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00098    palette:01 bits:6 <0.55> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    14.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00099    palette:01 bits:6 <0.55> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    13.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00100    palette:01 bits:6 <0.51> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    14.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00101    palette:01 bits:6 <0.57> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    14.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00102    palette:01 bits:6 <0.56> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00103    palette:01 bits:6 <0.54> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    14.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00104    palette:01 bits:6 <0.56> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00105    palette:01 bits:6 <0.80> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     7.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00106    palette:01 bits:6 <0.64> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     7.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00107    palette:01 bits:6 <0.56> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    13.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00108    palette:01 bits:6 <0.85> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     7.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00109    palette:01 bits:6 <0.62> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    21.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00110    palette:01 bits:6 <0.62> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00111    palette:01 bits:6 <0.55> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    14.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00112    palette:01 bits:6 <0.55> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    14.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00113    palette:01 bits:6 <0.52> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    14.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00114    palette:01 bits:6 <0.57> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00115    palette:01 bits:6 <0.62> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    13.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00116    palette:01 bits:6 <0.56> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00117    palette:01 bits:6 <0.62> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00118    palette:01 bits:6 <0.62> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    14.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00119    palette:01 bits:6 <0.65> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    19.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00120    palette:01 bits:6 <0.62> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    13.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00121    palette:01 bits:6 <0.55> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    14.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00122    palette:01 bits:6 <0.47> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    13.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00123    palette:01 bits:6 <0.60> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00124    palette:01 bits:6 <0.77> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     6.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00125    palette:01 bits:6 <0.62> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 35.0   ]  &0   %0   =0  
+PNG font_2_00126    palette:01 bits:6 <0.65> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    13.0 x 35.0   ]  &0   %0   =0  
+PNG font_3_00033    palette:01 bits:6 <0.83> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     5.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00034    palette:01 bits:6 <0.91> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     7.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00035    palette:01 bits:6 <0.76> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00036    palette:01 bits:6 <0.65> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00037    palette:01 bits:6 <0.76> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    13.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00038    palette:01 bits:6 <0.69> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    12.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00039    palette:01 bits:6 <1.00> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     4.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00040    palette:01 bits:6 <0.83> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     6.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00041    palette:01 bits:6 <0.88> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     6.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00042    palette:01 bits:6 <0.95> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     7.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00043    palette:01 bits:6 <0.64> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00044    palette:01 bits:6 <1.00> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     5.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00045    palette:01 bits:6 <0.76> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     8.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00046    palette:01 bits:6 <1.00> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     5.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00047    palette:01 bits:6 <0.62> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     9.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00048    palette:01 bits:6 <0.68> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00049    palette:01 bits:6 <0.76> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     8.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00050    palette:01 bits:6 <0.63> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00051    palette:01 bits:6 <0.62> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00052    palette:01 bits:6 <0.64> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00053    palette:01 bits:6 <0.68> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00054    palette:01 bits:6 <0.68> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00055    palette:01 bits:6 <0.63> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     9.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00056    palette:01 bits:6 <0.76> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00057    palette:01 bits:6 <0.70> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00058    palette:01 bits:6 <0.78> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     5.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00059    palette:01 bits:6 <0.91> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     5.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00060    palette:01 bits:6 <0.75> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     8.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00061    palette:01 bits:6 <0.51> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     9.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00062    palette:01 bits:6 <0.75> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     8.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00063    palette:01 bits:6 <0.67> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00064    palette:01 bits:6 <0.81> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    14.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00065    palette:01 bits:6 <0.64> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    12.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00066    palette:01 bits:6 <0.60> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00067    palette:01 bits:6 <0.64> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00068    palette:01 bits:6 <0.57> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    12.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00069    palette:01 bits:6 <0.48> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00070    palette:01 bits:6 <0.44> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00071    palette:01 bits:6 <0.67> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    12.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00072    palette:01 bits:6 <0.57> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    12.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00073    palette:01 bits:6 <0.83> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     5.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00074    palette:01 bits:6 <0.55> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00075    palette:01 bits:6 <0.67> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00076    palette:01 bits:6 <0.37> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00077    palette:01 bits:6 <0.69> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    14.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00078    palette:01 bits:6 <0.70> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    12.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00079    palette:01 bits:6 <0.70> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    12.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00080    palette:01 bits:6 <0.53> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00081    palette:01 bits:6 <0.70> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    12.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00082    palette:01 bits:6 <0.60> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00083    palette:01 bits:6 <0.67> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00084    palette:01 bits:6 <0.57> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00085    palette:01 bits:6 <0.70> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    12.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00086    palette:01 bits:6 <0.73> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00087    palette:01 bits:6 <0.72> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    14.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00088    palette:01 bits:6 <0.76> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00089    palette:01 bits:6 <0.67> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00090    palette:01 bits:6 <0.57> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00091    palette:01 bits:6 <0.83> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     6.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00092    palette:01 bits:6 <0.62> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     9.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00093    palette:01 bits:6 <0.83> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     6.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00094    palette:01 bits:6 <1.14> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     8.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00095    palette:01 bits:6 <0.36> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    12.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00096    palette:01 bits:6 <1.11> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     6.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00097    palette:01 bits:6 <0.76> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00098    palette:01 bits:6 <0.68> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00099    palette:01 bits:6 <0.76> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00100    palette:01 bits:6 <0.68> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00101    palette:01 bits:6 <0.76> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00102    palette:01 bits:6 <0.76> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     7.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00103    palette:01 bits:6 <0.77> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00104    palette:01 bits:6 <0.70> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    11.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00105    palette:01 bits:6 <0.83> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     5.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00106    palette:01 bits:6 <0.85> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     5.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00107    palette:01 bits:6 <0.70> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00108    palette:01 bits:6 <0.83> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     5.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00109    palette:01 bits:6 <0.76> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    15.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00110    palette:01 bits:6 <0.76> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00111    palette:01 bits:6 <0.76> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00112    palette:01 bits:6 <0.70> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00113    palette:01 bits:6 <0.70> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00114    palette:01 bits:6 <0.72> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     7.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00115    palette:01 bits:6 <0.80> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     9.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00116    palette:01 bits:6 <0.79> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     8.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00117    palette:01 bits:6 <0.72> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00118    palette:01 bits:6 <0.80> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00119    palette:01 bits:6 <0.82> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    14.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00120    palette:01 bits:6 <0.80> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00121    palette:01 bits:6 <0.73> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |    10.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00122    palette:01 bits:6 <0.64> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     9.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00123    palette:01 bits:6 <0.71> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     7.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00124    palette:01 bits:6 <0.79> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     4.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00125    palette:01 bits:6 <0.71> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     7.0 x 25.0   ]  &0   %0   =0  
+PNG font_3_00126    palette:01 bits:6 <0.88> flags:03  seq:  0  rate: 1 col[    0.0 : 0.0     |     9.0 x 25.0   ]  &0   %0   =0  
+
+TTL:       0 |00|       0 |00|       0 |00|       0 |00|       0 |00|       0 |00|       0 |00|       0 |00|       0 |00|       0 |00|       0 |00|       0 |00|       0 |00|       0 |00|       0 |00|       0 |00| 
