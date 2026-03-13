@@ -4,7 +4,7 @@
 
 #include "app_ai_template_ids.h"
 
-#define LINUX
+// #define LINUX
 
 #ifdef LINUX
     #define APP_PNG "assets/packed"
