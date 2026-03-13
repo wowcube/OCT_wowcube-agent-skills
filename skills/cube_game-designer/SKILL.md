@@ -10,6 +10,8 @@ description: >-
 
 Create a non-technical Game Design Document (GDD) from a user's game idea, accounting for WowCube hardware and interaction specifics.
 
+**Core principle:** To produce a high-quality GDD, the agent MUST first ask as many clarifying questions as needed to fully understand the user's vision. Never guess — always ask. The discovery conversation is not optional; it is the most important part of the process.
+
 ## When to Use
 
 - User describes a game idea or concept for the WowCube
@@ -39,131 +41,146 @@ The GDD must account for these device characteristics (expressed in player-frien
 
 ## Workflow
 
-### Step 1: Understand the Idea
+### Step 1: Discovery Interview (MANDATORY)
 
-Extract from the user's prompt:
+**Do NOT write the GDD until you have asked the user enough questions to fully understand their game idea.**
 
-1. **Core mechanic** — What does the player actually DO?
-2. **Win/lose conditions** — How does the player succeed or fail?
-3. **Cube interaction mapping** — Which inputs drive the game (twist, tap, tilt)?
-4. **Visual style** — Art direction, color palette, theme
-5. **Audio needs** — Sound effects, music, feedback sounds
-6. **Progression** — Does it get harder? Levels? Scoring?
+#### How to Generate Questions
 
-If the prompt is vague, make reasonable design decisions and document assumptions. Prefer designing a complete game over asking many clarifying questions.
+There is no fixed list of questions. Instead, the agent must:
+
+1. **Read the user's initial prompt** carefully and identify what is clear vs. what is ambiguous or missing.
+2. **Read `templates/app_ai_template.h`** to understand the platform's game engine patterns, capabilities, and constraints (game states, object behaviors, screen layout, input handling, animation patterns). Use this technical knowledge to identify design questions the user hasn't addressed — but phrase all questions in plain, non-technical language.
+3. **Cross-reference the user's idea against the WowCube Device Essentials** listed above. For each cube mechanic (twists, half-twists, taps, tilt, multi-face display), determine whether the user's idea has a clear mapping. If not, ask about it.
+4. **Think about the game holistically** — consider gameplay flow, win/lose conditions, progression, visual style, audio, and player motivation. Ask about anything that is unclear or unspecified.
+
+#### Interview Rules
+
+- **Ask every question you have.** Group related questions together for efficiency (2-4 rounds of questions is typical), but do not hold back questions to be polite. More questions upfront = better GDD.
+- **Acknowledge the idea first** — briefly restate what you understood from the user's prompt to confirm alignment before asking questions.
+- **After receiving answers, check for gaps** — if answers raise new questions or leave things ambiguous, ask follow-up questions. Continue until you are confident you understand the full game design.
+- **Confirm understanding** — before proceeding to write the GDD, summarize the complete game concept back to the user and get their approval.
+- If the user says "you decide" for a specific aspect, make a design decision and note it as an assumption in the GDD.
+- If the user wants to skip the interview entirely, explain briefly why the questions matter for quality, then ask at minimum about: the core mechanic, how twists should work in the game, and win/lose conditions.
 
 ### Step 2: Study the Platform
 
-Read the API reference for technical understanding:
+Read the API reference for internal understanding only:
 - `references/wowcube_api_reference.md` — clean API reference
-- For advanced engine patterns, consult `templates/app_ai_template.h` (do NOT copy demo code)
+- `templates/app_ai_template.h` — engine patterns (do NOT copy demo code)
 
-Use this knowledge to inform design decisions (e.g., what's feasible with the sprite limit, how twists actually move things) but do NOT expose technical details in the GDD.
+Use this knowledge solely to validate that the user's design is feasible on the hardware. If any aspect of the design conflicts with platform limitations, go back to the user and explain the constraint in plain language, then ask how they'd like to adjust.
+
+**None of this technical knowledge should appear in the GDD.**
 
 ### Step 3: Write the GDD
 
-Create a markdown file at `plans/<game_name>_gdd.md` with the following structure:
+Create a markdown file at `plans/<game_name>_gdd.md`. The GDD is a **non-technical creative document** — it describes the game from the player's perspective. No code, no API names, no implementation details.
 
 ```markdown
 # <Game Name> — Game Design Document
 
-## 1. Intro
+## 1. Concept
 
-### Concept
+### Overview
 2-3 sentences: what the game is, what makes it fun, why it works on the cube.
 
 ### Style & References
 - Art style (e.g., pixel-art, minimal, cartoon)
 - Genre
 - Inspiration games/references
+- Color palette and mood
 
-### MVP Scope
-Checklist of features for the minimum viable version:
+### Scope
+**MVP (minimum viable version):**
 - [ ] Feature 1
 - [ ] Feature 2
 - ...
 
-### Final Scope
-Bullet list of features planned beyond MVP.
+**Future features (beyond MVP):**
+- Feature A
+- Feature B
+- ...
 
-## 2. Core Gameplay
+### Design Assumptions
+List any decisions made by the agent that were not explicitly stated by the user:
+- Assumption — rationale
+- ...
+(If none, state "All design decisions were confirmed with the user.")
 
-Per-mechanic sections, each containing:
-- What the player sees and does (plain language)
+## 2. How It Plays
+
+Describe the core gameplay experience in plain language. What does the player do moment-to-moment? What makes it engaging?
+
+For each distinct mechanic, describe:
+- What the player sees and does
 - How it maps to cube interactions (twist/tap/tilt)
 - Rules and edge cases
-- Visual and audio feedback
-
-Example subsections (adapt to the game):
-- Match Logic
-- Movement System
-- Combat System
-- Scoring
-- etc.
+- What feedback the player gets (visual and audio)
 
 ## 3. Game Objects
 
-Types of objects in the game with:
-- Visual description (what it looks like)
-- Behavior (what it does)
-- Parameters table where relevant:
+Describe every type of object in the game:
 
-| Object | Description | Behavior |
-|--------|-------------|----------|
-| Red Figure | Red gem shape | Matches with other red figures |
-| Rocket Booster | Firecracker icon, has direction | Clears a row when activated |
+| Object | Appearance | Behavior |
+|--------|------------|----------|
+| ... | What it looks like | What it does |
 
-## 4. Level Design / Progression
+## 4. Progression & Difficulty
 
-- How levels are structured
-- Difficulty scaling (what changes between levels)
-- Win condition per level
-- Lose condition per level
-- Generation logic (if procedural)
-- Balance parameters (described in game terms, not code)
+- How the game progresses (levels, waves, endless, etc.)
+- What changes as difficulty increases
+- Win condition
+- Lose condition
+- Scoring system (if any)
 
-## 5. Controls Summary
+## 5. Controls
 
-| Input | Action |
-|-------|--------|
-| Twist left/right | What happens |
-| Half-twist left/right | What happens |
-| Twist up/down | What happens |
-| Half-twist up/down | What happens |
-| Tap | What happens |
-| Tilt/gravity | What happens |
+| Input | What It Does |
+|-------|-------------|
+| Twist left/right | ... |
+| Half-twist left/right | ... |
+| Twist up/down | ... |
+| Half-twist up/down | ... |
+| Tap | ... |
+| Tilt/gravity | ... |
 
-## 6. UI & Feedback
+## 6. Screens & Feedback
 
 - What the player sees on each face during gameplay
-- Score/status display (which screens, what info)
-- Menu screens (start, game over, win)
+- Where score/status info is displayed
+- Menu screens (start, pause, game over, win)
 - Visual feedback (animations, color changes, effects)
-- Audio feedback (when sounds play, what they convey)
+- Audio feedback (when sounds play, what mood they convey)
 
-## 7. Assets List
+## 7. Assets
 
 ### Sprites
-List every visual asset needed with a clear descriptive name:
-- `<snake_case_name>` — description (e.g., "red_figure — red gem match object, 48x48px")
-- `<snake_case_name>` — description
+- `<snake_case_name>` — description and approximate size
 - ...
 
 ### Sounds
-- `<snake_case_name>.mp3` — description (e.g., "match_success — cheerful chime when 3+ figures match")
 - `<snake_case_name>.mp3` — description
 - ...
 
 ### Fonts
-- `<font_name>` — usage description (e.g., "score_font — displays score counter and twist count")
+- `<font_name>` — usage description
 - ...
 
 ## 8. Game Flow
 
-State diagram in plain language:
-- MENU → PLAYING → WIN / LOSE → MENU
-- What triggers each transition
-- What the player sees in each state
+Describe the full flow of the game as a state diagram in plain language:
+
+```
+STATE_A → STATE_B → STATE_C
+            ↓
+         STATE_D
+```
+
+For each state:
+- What the player sees
+- What triggers the transition to the next state
+- What inputs are active
 ```
 
 ### Step 4: Validate the Design
@@ -175,8 +192,11 @@ Before finalizing, verify:
 3. The asset list covers every visual and audio element mentioned in the design
 4. Asset names are unique, descriptive, and use `snake_case`
 5. The game is feasible given the device constraints (sprite count, screen count, input types)
-6. The controls summary matches the mechanics described in Core Gameplay
-7. The design is understandable by someone who has never seen WowCube code
+6. The controls summary matches the mechanics described in the gameplay section
+7. The document is understandable by someone who has never seen WowCube code
+8. All user answers from the discovery interview are reflected in the document
+9. All assumptions are explicitly listed in the Design Assumptions section
+10. The GDD contains zero technical implementation details — no code, no API names, no engine internals
 
 ## Output
 
@@ -186,13 +206,15 @@ After writing, provide a brief summary:
 - The core game mechanic
 - How many assets are estimated (sprites + sounds)
 - Which cube inputs are used
-- Any design decisions or assumptions made
+- Any design assumptions made
+- Invite the user to review and request changes
 
 ## Writing Guidelines
 
-- **No code, no API names, no struct names** — the GDD is for designers, not programmers
+- **No code, no API names, no struct names, no implementation details** — the GDD is purely a creative design document
 - Use player-facing language: "face" not "plane", "screen" not "quad", "twist" not "twid"
 - Describe behaviors, not implementations: "figures fall down when there's empty space below" not "gravity applies OCT_TM_walk"
 - Be specific about visuals: describe what things look like, how they animate, what colors they use
 - Be specific about audio: describe when sounds play and what mood they convey
 - Asset names must be clear enough that an artist could create them from the name + description alone
+- Use flow diagrams and state descriptions to make the game flow crystal clear
