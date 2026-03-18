@@ -1,180 +1,220 @@
 ---
 name: cube_game-designer
 description: >-
-  WowCube game design skill. This skill should be used when users want to design
-  a new game for the WowCube platform, or when a user provides a game concept/idea
-  that needs to be translated into a structured technical plan for implementation
-  by other agents. It analyzes the user's game prompt, studies the OctaviOS API
-  template, and produces detailed technical specifications that architect and code
-  agents use to build WowCube games.
-modes:
-  - orchestrator
-  - architect
+  Use when designing a new game for the WowCube platform, when a user provides
+  a game concept or idea that needs a structured game design document, or when
+  someone says "make a game", "design a game", or "create a game" for the WowCube.
 ---
 
 # WowCube Game Designer
 
-This skill transforms user game concepts into structured technical plans for the WowCube platform. It bridges the gap between a creative game idea and the technical implementation by producing detailed specifications that other agents consume.
+Create a non-technical Game Design Document (GDD) from a user's game idea, accounting for WowCube hardware and interaction specifics.
+
+**Core principle:** To produce a high-quality GDD, the agent MUST first ask as many clarifying questions as needed to fully understand the user's vision. Never guess — always ask. The discovery conversation is not optional; it is the most important part of the process.
 
 ## When to Use
 
-- A user describes a game idea or concept intended for the WowCube
-- A user asks to "make a game," "create a game," or "design a game" for the cube
-- A user provides a game name or genre and expects a full design breakdown
-- An orchestrator needs a technical plan before delegating implementation tasks
+- User describes a game idea or concept for the WowCube
+- User says "make a game," "design a game," or "create a game"
+- User provides a genre, theme, or mechanic and expects a full game design
+- An orchestrator needs a GDD before handing off to the technical prompter
 
-## Platform Constraints
+## When NOT to Use
 
-Before designing any game, internalize these WowCube hardware constraints:
+- A GDD already exists and needs implementation prompts — use `technical_prompter` instead
+- User wants to modify existing code — this skill produces design documents, not code
 
-- **6 planes** (faces): TOP, FRONT, RIGHT, BACK, LEFT, BOTTOM (indices 0–5)
-- **4 quads per plane** (physical 240×240 pixel displays), total 24 screens
-- **GAP = 18px** between displays (physical border)
-- **Quad coordinate system**: quads [0–3] start from top-right center (120+GAP, 120+GAP) and rotate CCW
-- **XSIGN**: {+1, -1, -1, +1} / **YSIGN**: {+1, +1, -1, -1} for quad local coordinates
-- **Input**: twists (full 0–11, half 12–23) and taps (per plane)
-- **Gravity/accelerometer**: per-plane gravity vectors, top/bottom plane detection
-- **Sprite limit**: SPRITES_CAP = 400 objects max
-- **Tick rate**: OCT_1SEC_TICKS = 20 ticks/sec (50ms per tick)
-- **All code in a single .h file** (header-only architecture)
-- **Global variables** must use the `TL` macro
-- **Sprites** inherit from `octSprite_t` via `appObject_t`
+## WowCube Device Essentials
+
+The GDD must account for these device characteristics (expressed in player-friendly terms, never as code):
+
+- **The cube has 6 faces**, each with **4 small screens** (24 screens total)
+- **Screens are 240x240 pixels** with a **physical gap** (border) between them
+- **Player interactions**: twist a face row (full or half twist), tap a face, tilt the cube
+- **Twists** rotate a row of 4 screens — this is the primary input for most games
+- **Half-twists** shift screens partially — useful for fine movement
+- **Taps** are detected per face (not per screen)
+- **Tilt/gravity** detects which face is on top or bottom
+- The cube can display on all 24 screens simultaneously — not all are visible to the player at once
+- **~20 frames per second** tick rate — animations should be simple and clear
+- **Maximum ~400 sprites** on screen at once across all faces
 
 ## Workflow
 
-### Step 1: Analyze the User Prompt
+### Step 1: Discovery Interview (MANDATORY)
 
-To begin, carefully extract the following from the user's game description:
+**Do NOT write the GDD until you have asked the user enough questions to fully understand their game idea.**
 
-1. **Core mechanic** — What is the primary gameplay loop?
-2. **Win/lose conditions** — How does the player succeed or fail?
-3. **Input mapping** — Which WowCube inputs (twist, tap, gravity) drive the game?
-4. **Visual elements** — What sprites, backgrounds, text, or animations are needed?
-5. **Audio elements** — What sound effects or music are needed?
-6. **Difficulty/progression** — Does the game get harder? Are there levels or scores?
+#### How to Generate Questions
 
-If the user prompt is vague, make reasonable design decisions and document assumptions. Do not ask excessive clarifying questions — prefer to design a complete game and let the user iterate.
+There is no fixed list of questions. Instead, the agent must:
 
-### Step 2: Read the API Template
+1. **Read the user's initial prompt** carefully and identify what is clear vs. what is ambiguous or missing.
+2. **Read `templates/app_ai_template.h`** to understand the platform's game engine patterns, capabilities, and constraints (game states, object behaviors, screen layout, input handling, animation patterns). Use this technical knowledge to identify design questions the user hasn't addressed — but phrase all questions in plain, non-technical language.
+3. **Cross-reference the user's idea against the WowCube Device Essentials** listed above. For each cube mechanic (twists, half-twists, taps, tilt, multi-face display), determine whether the user's idea has a clear mapping. If not, ask about it.
+4. **Think about the game holistically** — consider gameplay flow, win/lose conditions, progression, visual style, audio, and player motivation. Ask about anything that is unclear or unspecified.
 
-To understand the available API, read the file `src/app_ai_template.h` from the project workspace. This file contains:
+#### Interview Rules
 
-- OctaviOS API function declarations and usage patterns
-- Sprite management (`OCT_add`, `OCT_del`, `OCT_restart`)
-- Event handlers (`on_init`, `on_tick`, `on_tap`, `on_twisted`, `on_pretwisted`)
-- Transform and coordinate system (`octTm_t`, `OCT_TM_quad`, planes, quads)
-- Sound playback (`SND_getAssetId`, `SND_play`)
-- Gravity/accelerometer (`OCT_TM_gravity_x/y/n`, `OCT_TM_top_plane/bottom_plane`)
-- Random number generation (`OCT_random`)
-- Utility function `getQuadContent()` for quad-based object lookup
+- **Ask every question you have.** Group related questions together for efficiency (2-4 rounds of questions is typical), but do not hold back questions to be polite. More questions upfront = better GDD.
+- **Acknowledge the idea first** — briefly restate what you understood from the user's prompt to confirm alignment before asking questions.
+- **After receiving answers, check for gaps** — if answers raise new questions or leave things ambiguous, ask follow-up questions. Continue until you are confident you understand the full game design.
+- **Confirm understanding** — before proceeding to write the GDD, summarize the complete game concept back to the user and get their approval.
+- If the user says "you decide" for a specific aspect, make a design decision and note it as an assumption in the GDD.
+- If the user wants to skip the interview entirely, explain briefly why the questions matter for quality, then ask at minimum about: the core mechanic, how twists should work in the game, and win/lose conditions.
 
-Reference the `references/wowcube_platform.md` file bundled with this skill for a condensed API reference when `app_ai_template.h` is not available.
+### Step 2: Study the Platform
 
-### Step 3: Map Game Mechanics to Platform
+Read the API reference for internal understanding only:
+- `references/wowcube_api_reference.md` — clean API reference
+- `templates/app_ai_template.h` — engine patterns (do NOT copy demo code)
 
-To translate the game concept to WowCube mechanics, determine:
+Use this knowledge solely to validate that the user's design is feasible on the hardware. If any aspect of the design conflicts with platform limitations, go back to the user and explain the constraint in plain language, then ask how they'd like to adjust.
 
-1. **Spatial layout** — Which planes/quads are used for gameplay vs. UI (score, lives, etc.)?
-2. **Object model** — What fields does `appObject_t` need beyond `octSprite_t`? (e.g., type, health, speed, direction)
-3. **Game state** — What fields does `appvars_t` need? (e.g., score, level, game_over flag, timers)
-4. **Twist handling** — What happens on each twist type? Does the game use twist for movement, rotation, or special actions?
-5. **Tap handling** — What happens on tap? Selection, shooting, toggling?
-6. **Tick logic** — What updates every frame? Movement, collision detection, spawning, animation?
-7. **Collision system** — How are collisions detected? Quad-based? Coordinate-based?
-8. **Cross-plane mechanics** — Do objects move between planes? How do twists affect game objects?
+**None of this technical knowledge should appear in the GDD.**
 
-### Step 4: Generate the Technical Plan
+### Step 3: Write the GDD
 
-To produce the output, create a markdown file at `plans/<game_name>_plan.md` with the following structure:
+Create a markdown file at `plans/<game_name>_gdd.md`. The GDD is a **non-technical creative document** — it describes the game from the player's perspective. No code, no API names, no implementation details.
 
-```
-# <Game Name> — Technical Plan for WowCube
+```markdown
+# <Game Name> — Game Design Document
 
-## 1. Game Overview
-Brief description of the game, core mechanic, and how it maps to the cube.
+## 1. Concept
 
-## 2. Data Structures
+### Overview
+2-3 sentences: what the game is, what makes it fun, why it works on the cube.
 
-### appObject_t
-Fields to add to the game object struct (extending octSprite_t).
+### Style & References
+- Art style (e.g., pixel-art, minimal, cartoon)
+- Genre
+- Inspiration games/references
+- Color palette and mood
 
-### appvars_t
-Fields for global game state.
+### Scope
+**MVP (minimum viable version):**
+- [ ] Feature 1
+- [ ] Feature 2
+- ...
 
-### Enums / Constants
-Game-specific enums (object types, game states, directions, etc.).
+**Future features (beyond MVP):**
+- Feature A
+- Feature B
+- ...
 
-## 3. Asset Requirements
+### Design Assumptions
+List any decisions made by the agent that were not explicitly stated by the user:
+- Assumption — rationale
+- ...
+(If none, state "All design decisions were confirmed with the user.")
+
+## 2. How It Plays
+
+Describe the core gameplay experience in plain language. What does the player do moment-to-moment? What makes it engaging?
+
+For each distinct mechanic, describe:
+- What the player sees and does
+- How it maps to cube interactions (twist/tap/tilt)
+- Rules and edge cases
+- What feedback the player gets (visual and audio)
+
+## 3. Game Objects
+
+Describe every type of object in the game:
+
+| Object | Appearance | Behavior |
+|--------|------------|----------|
+| ... | What it looks like | What it does |
+
+## 4. Progression & Difficulty
+
+- How the game progresses (levels, waves, endless, etc.)
+- What changes as difficulty increases
+- Win condition
+- Lose condition
+- Scoring system (if any)
+
+## 5. Controls
+
+| Input | What It Does |
+|-------|-------------|
+| Twist left/right | ... |
+| Half-twist left/right | ... |
+| Twist up/down | ... |
+| Half-twist up/down | ... |
+| Tap | ... |
+| Tilt/gravity | ... |
+
+## 6. Screens & Feedback
+
+- What the player sees on each face during gameplay
+- Where score/status info is displayed
+- Menu screens (start, pause, game over, win)
+- Visual feedback (animations, color changes, effects)
+- Audio feedback (when sounds play, what mood they convey)
+
+## 7. Assets
 
 ### Sprites
-List of all BMP assets needed with descriptions and suggested sizes.
-Format: BMP_XXX — description (WxH pixels)
+- `<snake_case_name>` — description and approximate size
+- ...
 
 ### Sounds
-List of all sound files needed with descriptions.
-Format: filename.mp3 — description
+- `<snake_case_name>.mp3` — description
+- ...
 
-## 4. Initialization (on_init)
-Step-by-step description of what happens at startup:
-- Engine setup (OCT_restart, OCT_viewports_layout, OCT_background)
-- Initial game state
-- Initial object placement (which planes, which quads, which sprites)
-
-## 5. Game Loop (on_tick)
-Detailed per-tick logic:
-- Timer/counter updates
-- Object movement and physics
-- Collision detection
-- Spawning logic
-- Win/lose condition checks
-- Animation updates
-
-## 6. Input Handling
-
-### Twists (on_twisted)
-For each relevant twist type, describe the game response.
-
-### Taps (on_tap)
-For each plane tap, describe the game response.
-
-### Pre-twist (on_pretwisted)
-Any preparation needed before twist animation.
-
-## 7. Helper Functions
-List of utility functions needed with signatures and descriptions:
-- Function name, parameters, return type
-- What it does
-- When it's called
+### Fonts
+- `<font_name>` — usage description
+- ...
 
 ## 8. Game Flow
-State machine or flow description:
-- INIT → PLAYING → GAME_OVER
-- Transitions between states
-- What triggers each transition
 
-## 9. Technical Notes
-- Performance considerations (sprite count limits, tick budget)
-- Edge cases (what happens at cube boundaries, during rapid twists)
-- Assumptions made during design
+Describe the full flow of the game as a state diagram in plain language:
+
+```
+STATE_A → STATE_B → STATE_C
+            ↓
+         STATE_D
 ```
 
-### Step 5: Review and Validate
+For each state:
+- What the player sees
+- What triggers the transition to the next state
+- What inputs are active
+```
 
-Before finalizing the plan, verify:
+### Step 4: Validate the Design
 
-1. Total sprite count stays within SPRITES_CAP (400)
-2. All referenced BMP/SND assets are listed in Section 3
-3. Every event handler (init, tick, tap, twisted) has defined behavior
-4. The coordinate system usage is correct (XSIGN/YSIGN, quad numbering)
-5. Cross-plane object movement accounts for the GAP between displays
-6. Game state transitions are complete (no dead-end states)
-7. The plan is self-contained — a code agent can implement it without additional context
+Before finalizing, verify:
 
-## Output Format
+1. Every player action (twist, tap, tilt) has a defined response in every game state
+2. Win and lose conditions are complete — no dead-end states
+3. The asset list covers every visual and audio element mentioned in the design
+4. Asset names are unique, descriptive, and use `snake_case`
+5. The game is feasible given the device constraints (sprite count, screen count, input types)
+6. The controls summary matches the mechanics described in the gameplay section
+7. The document is understandable by someone who has never seen WowCube code
+8. All user answers from the discovery interview are reflected in the document
+9. All assumptions are explicitly listed in the Design Assumptions section
+10. The GDD contains zero technical implementation details — no code, no API names, no engine internals
 
-The final output is always a markdown plan file written to `plans/<game_name>_plan.md`. After writing the plan, provide a brief summary to the user explaining:
+## Output
 
-- The core game mechanic as designed
-- How many sprites/assets are estimated
+The final GDD is written to `plans/<game_name>_gdd.md`.
+
+After writing, provide a brief summary:
+- The core game mechanic
+- How many assets are estimated (sprites + sounds)
 - Which cube inputs are used
-- Any design decisions or assumptions made
+- Any design assumptions made
+- Invite the user to review and request changes
+
+## Writing Guidelines
+
+- **No code, no API names, no struct names, no implementation details** — the GDD is purely a creative design document
+- Use player-facing language: "face" not "plane", "screen" not "quad", "twist" not "twid"
+- Describe behaviors, not implementations: "figures fall down when there's empty space below" not "gravity applies OCT_TM_walk"
+- Be specific about visuals: describe what things look like, how they animate, what colors they use
+- Be specific about audio: describe when sounds play and what mood they convey
+- Asset names must be clear enough that an artist could create them from the name + description alone
+- Use flow diagrams and state descriptions to make the game flow crystal clear
