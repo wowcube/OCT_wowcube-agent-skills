@@ -1,0 +1,40 @@
+{
+  "game": "egg_catcher",
+  "last_completed_prompt": 3,
+  "total_prompts": 10,
+  "prompts": [
+    {
+      "prompt": 1,
+      "title": "Project Scaffold and Background",
+      "structs_added": ["gameState_t enum (STATE_MENU, STATE_PLAYING, STATE_WIN, STATE_GAMEOVER)", "appObject_t fields: type, column", "appvars_t fields: state, score, lives, eggColumn, basketColumn, tick, eggY, eggActive, spawnDelay, eggObj*, basketObj*, brokenEggObj*, scoreLabel*, bannerObj*, brokenEggTimer"],
+      "fields_added": {},
+      "functions_added": ["initGame", "spawnEgg", "updateEgg", "catchEgg", "missEgg", "checkWinLose", "showBanner", "hideBanner", "updateLives", "updateScore", "moveBasket"],
+      "globals_changed": ["gObjects[SPRITES_CAP]", "vars"],
+      "sprites_used": 0,
+      "verification_score": 95,
+      "notes": "All stubs empty. Background 0x867D. State starts as STATE_MENU. on_tick increments tick."
+    },
+    {
+      "prompt": 2,
+      "title": "Basket Sprite on Screen",
+      "structs_added": [],
+      "fields_added": {},
+      "functions_added": [],
+      "globals_changed": [],
+      "sprites_used": 1,
+      "verification_score": 95,
+      "notes": "Basket sprite BMP_001 placed at bottom-left quad of FRONT face. basketObj pointer stored, type=1, column=0, basketColumn=0."
+    },
+    {
+      "prompt": 3,
+      "title": "Egg Spawning and Falling",
+      "structs_added": [],
+      "fields_added": {},
+      "functions_added": ["spawnEgg (implemented)", "updateEgg (implemented)", "catchEgg (stub)", "missEgg (stub)", "initGame (implemented)"],
+      "globals_changed": [],
+      "sprites_used": 2,
+      "verification_score": 100,
+      "notes": "Constants EGG_FALL_SPEED=6.0f, SPAWN_DELAY_TICKS=20, EGG_START_Y. Egg spawns random column, falls at constant speed, deleted at bottom. catchEgg/missEgg stubs just delete egg and reset delay. initGame() called at end of on_init() temporarily."
+    }
+  ]
+}
