@@ -6,19 +6,18 @@ A knowledge base and skill set for LLM-powered coding agents (Kilo Code, Claude 
 
 ```
 ├── skills/
-│   ├── cube_game-designer/       # Skill: game concept → technical plan
-│   │   ├── SKILL.md
-│   │   └── references/
-│   │       └── wowcube_platform.md
-│   └── technical_prompter/       # Skill: game plan → implementation prompts
-│       ├── SKILL.md
-│       └── references/
-│           └── wowcube_platform.md
+│   ├── cube_game-designer/       # Skill: game concept → GDD
+│   │   └── SKILL.md
+│   ├── cube_orchestrator/        # Skill: orchestrate implementation from prompts
+│   │   └── SKILL.md
+│   └── technical_prompter/       # Skill: GDD → implementation prompts
+│       └── SKILL.md
 ├── templates/
 │   ├── app_ai_template.h         # OctaviOS API reference template
 │   └── app_test_ids.h            # Example sprite/asset ID definitions
-├── plans/                        # Output directory for generated game plans
-└── docs/                         # Documentation (reserved)
+├── src/                          # Example source files
+├── context/                      # JSON context files for orchestrator (per-game state)
+└── plans/                        # Output directory for generated game plans
 ```
 
 ### Key Files
@@ -28,22 +27,22 @@ A knowledge base and skill set for LLM-powered coding agents (Kilo Code, Claude 
 | `skills/cube_game-designer/SKILL.md` | Transforms a user's game idea into a structured technical plan (GDD) |
 | `skills/technical_prompter/SKILL.md` | Converts an existing game plan into step-by-step implementation prompts for code agents |
 | `templates/app_ai_template.h` | Annotated OctaviOS API reference — the authoritative guide for all WowCube C/C++ code |
-| `templates/app_test_ids.h` | Example asset ID header showing BMP enum pattern |
-| `skills/*/references/wowcube_platform.md` | Condensed API quick-reference for when the full template is unavailable |
+| `templates/app_ai_template_ids.h` | Asset ID header (BMP enum pattern) |
+| `src/app_structure_example.h` | Clean project skeleton for new games |
 
 ## 🎮 Available Skills
 
 ### 1. Game Designer (`cube_game-designer`)
 
-**Modes:** orchestrator, architect
-
-Takes a game concept or idea and produces a detailed technical plan at `plans/<game_name>_plan.md`. The plan covers data structures, asset requirements, initialization, game loop, input handling, helper functions, game flow, and technical notes — all mapped to WowCube hardware constraints.
+Takes a game concept or idea and produces a non-technical Game Design Document at `plans/<game_name>_gdd.md` through a discovery interview with the user.
 
 ### 2. Technical Prompter (`technical_prompter`)
 
-**Modes:** orchestrator, architect
+Reads an existing GDD from `plans/` and decomposes it into the smallest possible vertical-slice implementation prompts at `plans/<game_name>_prompts.md`. Each prompt produces a testable increment.
 
-Reads an existing game design document from `plans/` and generates a sequence of precise, actionable technical prompts at `plans/<game_name>_prompts.md`. Each prompt targets a specific agent role (architect or code) and covers one implementation phase: project setup → assets → initialization → game loop → input handling → helper functions.
+### 3. Cube Orchestrator (`cube_orchestrator`)
+
+Deploys coder, verifier, and fixer subagents for each prompt. All inter-agent communication uses JSON. Pipeline parallelism where safe (prepare next task while verifying current). Orchestrator decides when to wait vs. pipeline based on prompt dependencies. Scores below 90 trigger automatic rework (up to 5 attempts). Context accumulates in `context/<game>_context.json`.
 
 ## 🤖 How to Use
 
@@ -77,7 +76,7 @@ The agent will use the **Technical Prompter** skill to break the plan into order
 | Architecture | Single `.h` file, header-only, globals via `TL` macro |
 | Object model | `appObject_t` extends `octSprite_t`; pool in `gObjects[]` |
 
-For the full API reference, see `templates/app_ai_template.h` or `skills/*/references/wowcube_platform.md`.
+For the full API reference, see `templates/app_ai_template.h`.
 
 ---
 
