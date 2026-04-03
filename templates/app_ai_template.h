@@ -103,6 +103,9 @@ void tapDemo5(size_t plane);
 void initDemo6(void);
 void processDemo6(void);
 
+void initDemo7(void);
+void processDemo7(void);
+
 
 ////////////////////////////////
 //            MAPS            //
@@ -221,7 +224,7 @@ void initDemo0(void) {
             }
         }
     }
-
+    
     OCT_add(1, true, OCT_PLANE_FRONT, 120.f, 120.f, 0, false, BMP_001, BMP_001, 0);
 }
 
@@ -531,6 +534,32 @@ void processDemo6(void) {
     }
 }
 
+// Demo: do not copy-paste this code
+void initDemo7(void) {
+    // Demo 7: transparency fade-in-out.
+    int32_t id = OCT_add(0, false, OCT_PLANE_TOP, 120.f, 120.f, 0, false, BMP_001, BMP_001, 0);
+    vars.demoObj = &gObjects[id];
+    vars.demoObj->Transp = 0;
+}
+
+// Demo: do not copy-paste this code
+void processDemo7(void) {
+    // Demo 7: full fade cycle in 2 seconds: 0 -> OCT_TRANSP_MAX -> 0.
+    // Comment: transparency mapping is 0 = fully opaque, OCT_TRANSP_MAX = fully transparent.
+    uint32_t period = (uint32_t)(2U * OCT_1SEC_TICKS);
+    uint32_t phase = vars.tick % period;
+    uint32_t half = period / 2U;
+    uint32_t transp;
+
+    if (phase < half) {
+        transp = (phase * (uint32_t)OCT_TRANSP_MAX) / half;
+    } else {
+        transp = ((period - phase) * (uint32_t)OCT_TRANSP_MAX) / half;
+    }
+
+    vars.demoObj->Transp = (uint8_t)transp;
+}
+
 
 // Handlers
 WASM_EXPORT void on_init() {
@@ -559,7 +588,8 @@ WASM_EXPORT void on_init() {
     // initDemo3();
     // initDemo4();
     // initDemo5();
-    initDemo6();
+    // initDemo6();
+    initDemo7();
 }
 
 WASM_EXPORT void on_pretwisted(int32_t twid) {
@@ -653,7 +683,7 @@ WASM_EXPORT void on_tick() {
         // Logging
         OCT_trace(0, "gX: %f; gY: %f; gN: %f; top: %s; bottom: %s\n", gX, gY, gN, planes[topPlane], planes[bottomPlane]);
     }
-    
+
     // demo
     // processDemo0();
     // processDemo2();
@@ -661,7 +691,8 @@ WASM_EXPORT void on_tick() {
     // processDemo3();
     // processDemo4();
     // processDemo5();
-    processDemo6();
+    // processDemo6();
+    processDemo7();
 
     vars.tick++;
 }
