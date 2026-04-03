@@ -218,7 +218,7 @@ void initDemo0(void) {
                     // Declaration: int OCT_add(int layer, bool twistable, int plane, float x, float y, int a, bool loop, int bmpfrom, int bmpto, int framelen);
                     // Comment: twistable=false means the engine automatically resets the position after a twist.
                     // Comment: (loop, bmpfrom, bmpto, framelen) are used for animation; framelen is the number of global ticks per frame.
-                    // Comment: No need to account for GAP in the x/y coordinates - the engine handles GAP offsets automatically.
+                    // Critical Comment: NO NEED to account for GAP in the x/y coordinates - the engine handles GAP offsets automatically!
                     OCT_add(1, true, (int32_t)plane, (float)x, (float)y, 0, false, BMP_001, BMP_001, 0);
                 }
             }
