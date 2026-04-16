@@ -4,14 +4,12 @@
 
 #include "app_test_ids.h"
 
-// #define LINUX
-
-#ifdef LINUX
-    #define APP_PNG "assets/packed"
-    #define APP_SND "assets/mp3"
-#else
+#ifdef _WIN32
     #define APP_PNG "..\\..\\app_ai_template\\art\\packed"
     #define APP_SND "..\\..\\app_ai_template\\art\\mp3"
+#else
+    #define APP_PNG "assets/packed"
+    #define APP_SND "assets/mp3"
 #endif
 
 #define OCT_PLANES_MAX 6 // max planes on cube
@@ -67,12 +65,12 @@ WASM_EXPORT void on_pretwisted(int32_t twid) {
 }
 
 WASM_EXPORT void on_twisted(int32_t twid, uint32_t disconnected_ms) {
-   
+    twid; disconnected_ms;
 }
 
 
 WASM_EXPORT void on_tap(int32_t tapid) {
-
+    tapid;
 }
 
 
