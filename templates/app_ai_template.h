@@ -41,6 +41,9 @@
 //     WASM_EXPORT void on_tap(int32_t tapid) { tapid; }
 //     WASM_EXPORT void on_pretwisted(int32_t twid) { twid; }
 //     WASM_EXPORT void on_twisted(int32_t twid, uint32_t disconnected_ms) { twid; disconnected_ms; }
+// * Write modular, readable code: extract game state into
+//   structs, split logic into small focused functions,
+//   use named constants instead of magic numbers.
 // -----------------------------------------------------
 
 
@@ -48,23 +51,47 @@
 //          OBJECTS           //
 ////////////////////////////////
 
+// State machine
+typedef enum {
+    DEMO_0 = 0,
+    DEMO_1,
+    DEMO_2,
+    DEMO_2_LERP,
+    DEMO_3,
+    DEMO_4,
+    DEMO_5,
+    DEMO_6,
+    DEMO_7,
+    DEMO_8,
+    DEMO_COUNT
+} demoId_t;
+
 // Game-specific data
 typedef struct _appObject_t: octSprite_t {
     octTm_t animStart; // do not copy this
     octTm_t animEnd; // do not copy this
 } appObject_t;
 
-// Game-specific variables
+// Demo 2: lerp animation state
 typedef struct {
-    appObject_t* demoObj;
+    appObject_t* obj;
+    uint32_t lerpStartTick;
+    float lerpDuration;
+} demo2State_t;
 
-    uint32_t demo2LerpStartTick;
-    float demo2LerpDuration;
+// Demo 6: ring walk state
+typedef struct {
+    appObject_t* obj;
+    int32_t ring; // current ring [0..OCT_PLANES_MAX)
+    int32_t step; // current step [0..(OCT_PLANES_MAX-2)*OCT_QUADS_AT_PLANE/2)
+} demo6State_t;
 
-    // Demo6: Ring Demo
-    int32_t demo6Ring; // current ring [0..OCT_PLANES_MAX)
-    int32_t demo6Step; // current step [0..(OCT_PLANES_MAX-2)*OCT_QUADS_AT_PLANE/2)
-
+// Game-specific variables (global)
+typedef struct {
+    demoId_t currentDemo;
+    appObject_t* demoObj; // shared primary object for active demo
+    demo2State_t demo2;
+    demo6State_t demo6;
     uint32_t tick;
 } appvars_t;
 
@@ -76,6 +103,9 @@ typedef struct {
 // utils
 appObject_t* getQuadContent(size_t quad);
 void showLabel(appObject_t* label, bool show);
+
+// state machine
+void switchDemo(demoId_t demo);
 
 // demo
 void initDemo0(void);
@@ -105,6 +135,9 @@ void processDemo6(void);
 
 void initDemo7(void);
 void processDemo7(void);
+
+void initDemo8(void);
+void twistDemo8(int32_t twid);
 
 
 ////////////////////////////////
@@ -177,7 +210,7 @@ appObject_t* getQuadContent(size_t quad) {
 
             if ((int16_t)obj->Tm.Plane == plane && obj->Tm.X * (float)XSIGN[lQuad] > 0 && obj->Tm.Y * (float)YSIGN[lQuad] > 0) return obj;
         }
-        
+
     }
     return NULL;
 }
@@ -217,6 +250,7 @@ void initDemo0(void) {
                     // Short: OCT_add adds a sprite to the scene; returns idx in gObjects.
                     // Declaration: int OCT_add(int layer, bool twistable, int plane, float x, float y, int a, bool loop, int bmpfrom, int bmpto, int framelen);
                     // Comment: twistable=false means the engine automatically resets the position after a twist.
+                    // Comment: parameter 'a' is the sprite angle in degrees; positive values rotate counter-clockwise (CCW), 0 degrees points right (+X).
                     // Comment: (loop, bmpfrom, bmpto, framelen) are used for animation; framelen is the number of global ticks per frame.
                     // Critical Comment: NO NEED to account for GAP in the x/y coordinates - the engine handles GAP offsets automatically!
                     OCT_add(1, true, (int32_t)plane, (float)x, (float)y, 0, false, BMP_001, BMP_001, 0);
@@ -224,7 +258,7 @@ void initDemo0(void) {
             }
         }
     }
-    
+
     OCT_add(1, true, OCT_PLANE_FRONT, 120.f, 120.f, 0, false, BMP_001, BMP_001, 0);
 }
 
@@ -238,6 +272,7 @@ void twistDemo0(void) {
         if ((size_t)gObjects[i].Idx != i) continue;
 
         gObjects[i].Tm.A = 0; // Reset angle (relative to Tm.Plane)
+        // Comment: Tm.A is the sprite angle in degrees; positive values rotate counter-clockwise (CCW), 0 degrees points right (+X).
     }
 }
 
@@ -258,6 +293,7 @@ void tapDemo0(size_t plane) {
 
         // Short: OCT_random returns a random integer in the range [dmin; dmax).
         // Declaration: int OCT_random(int dmin, int dmax);
+        // Comment: Upper bound dmax is exclusive.
         size_t id = (size_t)OCT_random(0, (int32_t)(sizeof(sounds) / sizeof(char*)));
 
         // Short: SND_getAssetId returns the asset ID for a given sound file name.
@@ -298,6 +334,7 @@ void initDemo1(void) {
     }
 
     // Directions: TOP_CCW, TOP_CW, FRONT_CCW, FRONT_CW, RIGHT_CCW, RIGHT_CW, BACK_CCW, BACK_CW, LEFT_CCW, LEFT_CW, BOTTOM_CCW, BOTTOM_CW
+    // Warning: CW and CCW are defined looking from outside of the cube at the given face (right-hand rule), NOT from the perspective of a neighboring face.
 
     // Short: OCT_twist_sprites performs a virtual twist of all twistable sprites on the cube.
     // Declaration: void OCT_twist_sprites(octTwistId_t twid);
@@ -309,7 +346,9 @@ void initDemo1(void) {
 void initDemo2(void) {
     // demo
     int32_t id = OCT_add(0, true, OCT_PLANE_TOP, 120.f, 120.f, 0, false, BMP_001, BMP_001, 0);
-    vars.demoObj = &gObjects[id];
+    vars.demo2.obj = &gObjects[id];
+    vars.demo2.lerpStartTick = 0;
+    vars.demo2.lerpDuration = 0;
 }
 
 // Demo: do not copy-paste this code
@@ -323,7 +362,7 @@ void processDemo2(void) {
     // Declaration: int OCT_TM_walk(octTm_t* tm, int forward_direction_angle, float forward_distance, float left_distance, bool wrap);
     // Comment: forward_direction_angle is the movement direction in degrees; forward_distance is the distance in pixels along that direction; left_distance is the perpendicular (left) offset.
     // Comment: wrap is needed to correct coords after reaching side limits (240x240) to automatically change plane; in most cases wrap should be true.
-    OCT_TM_walk(&vars.demoObj->Tm, (int32_t)vars.demoObj->Tm.A, 240.f + 2.f * GAP, 0.0f, true); // 240.f (size of quad) + 2 * GAP ensures the sprite moves to the next display
+    OCT_TM_walk(&vars.demo2.obj->Tm, (int32_t)vars.demo2.obj->Tm.A, 240.f + 2.f * GAP, 0.0f, true); // 240.f (size of quad) + 2 * GAP ensures the sprite moves to the next display
 }
 
 // Demo: do not copy-paste this code
@@ -332,25 +371,25 @@ void processDemo2Lerp(void) {
     // Demo 2: sprite movement animation - uses OCT_TM_walk to compute the target, then lerps to animate
 
     // start
-    if (vars.demo2LerpStartTick == 0) {
-        vars.demo2LerpStartTick = vars.tick;
-        vars.demo2LerpDuration = (float)OCT_1SEC_TICKS; // 1 second
+    if (vars.demo2.lerpStartTick == 0) {
+        vars.demo2.lerpStartTick = vars.tick;
+        vars.demo2.lerpDuration = (float)OCT_1SEC_TICKS; // 1 second
 
         // Short: OCT_TM_copy copies the full transform (octTm_t) from src to dst.
         // Declaration: void OCT_TM_copy(octTm_t* dst, const octTm_t* src);
-        OCT_TM_copy(&vars.demoObj->animStart, &vars.demoObj->Tm);
+        OCT_TM_copy(&vars.demo2.obj->animStart, &vars.demo2.obj->Tm);
 
         // set animation end
-        OCT_TM_copy(&vars.demoObj->animEnd, &vars.demoObj->Tm);
-        OCT_TM_walk(&vars.demoObj->animEnd, (int32_t)vars.demoObj->Tm.A, 240.f + 2.f * GAP, 0.0f, true);
+        OCT_TM_copy(&vars.demo2.obj->animEnd, &vars.demo2.obj->Tm);
+        OCT_TM_walk(&vars.demo2.obj->animEnd, (int32_t)vars.demo2.obj->Tm.A, 240.f + 2.f * GAP, 0.0f, true);
     }
 
-    float progress = (float)(vars.tick - vars.demo2LerpStartTick) / vars.demo2LerpDuration;
+    float progress = (float)(vars.tick - vars.demo2.lerpStartTick) / vars.demo2.lerpDuration;
 
     // Short: OCT_TM_lerp linearly interpolates between two transforms a and b by factor t [0; 1], handling cross-plane transitions.
     // Declaration: void OCT_TM_lerp(octTm_t* tm, octTm_t* a, octTm_t* b, float t);
     // Comment: t is clamped to [0; 1]; the result is written to tm; transform a is converted to b's plane space before interpolation.
-    OCT_TM_lerp(&vars.demoObj->Tm, &vars.demoObj->animStart, &vars.demoObj->animEnd, progress);
+    OCT_TM_lerp(&vars.demo2.obj->Tm, &vars.demo2.obj->animStart, &vars.demo2.obj->animEnd, progress);
 }
 
 // Demo: do not copy-paste this code
@@ -411,7 +450,7 @@ void processDemo4(void) {
 
     if (vars.tick % (2 * OCT_1SEC_TICKS) == 0)
         showLabel(vars.demoObj, false);
-    
+
     if (vars.tick == 10 * OCT_1SEC_TICKS) {
         // no need to delete childs explicity
         OCT_del(vars.demoObj);
@@ -432,7 +471,7 @@ void processQuadsDemo0(size_t srcQuad, size_t destQuad) {
 
     float destX = (120.f + GAP) * (float)XSIGN[destQuad % OCT_QUADS_AT_PLANE];
     float destY = (120.f + GAP) * (float)YSIGN[destQuad % OCT_QUADS_AT_PLANE];
-    
+
     // Short: OCT_TM_move offsets a transform by (dx, dy) within the current plane; does not handle cross-plane transitions.
     // Declaration: void OCT_TM_move(octTm_t* tm, float dx, float dy);
     // Comment: Use OCT_TM_move for simple in-plane displacement. For cross-plane movement, prefer OCT_TM_walk.
@@ -441,7 +480,7 @@ void processQuadsDemo0(size_t srcQuad, size_t destQuad) {
     // Short: [LOW-LEVEL] OCT_TM_change_plane moves a transform to a different plane, adjusting coordinates and angle accordingly.
     // Declaration: void OCT_TM_change_plane(octTm_t* tm, int to);
     OCT_TM_change_plane(&src->Tm, (int32_t)(destQuad / OCT_QUADS_AT_PLANE));
-    
+
     // [LOW-LEVEL] Alternative: direct coordinate assignment (shown for reference only).
     src->Tm.X = destX;
     src->Tm.Y = destY;
@@ -505,9 +544,9 @@ void initDemo6(void) {
     // Rings grouped by axis: 2 TOP, 2 FRONT, 2 LEFT. Each ring is a CW loop through 4 faces.
 
     int32_t id = OCT_add(0, false, OCT_PLANE_TOP, 120.f, 120.f, 0, false, BMP_001, BMP_001, 0);
-    vars.demoObj = &gObjects[id];
-    vars.demo6Ring = 0;
-    vars.demo6Step = 0;
+    vars.demo6.obj = &gObjects[id];
+    vars.demo6.ring = 0;
+    vars.demo6.step = 0;
 }
 
 // Demo: do not copy-paste this code
@@ -516,20 +555,23 @@ void processDemo6(void) {
     // Each ring is a closed CW loop - after 8 walks the sprite returns to its start.
     // Then OCT_TM_set teleports it to the first quad of the next ring.
 
-    if (vars.demo6Ring >= OCT_PLANES_MAX) return;
+    if (vars.demo6.ring >= OCT_PLANES_MAX) return;
     if (vars.tick % OCT_1SEC_TICKS != 0) return;
 
-    OCT_TM_walk(&vars.demoObj->Tm, RING_ANGLES[vars.demo6Ring][vars.demo6Step], 240.f + 2 * GAP, 0.0f, true);
+    OCT_TM_walk(&vars.demo6.obj->Tm, RING_ANGLES[vars.demo6.ring][vars.demo6.step], 240.f + 2 * GAP, 0.0f, true);
 
-    vars.demo6Step++;
-    if (vars.demo6Step >= (OCT_PLANES_MAX - 2) * OCT_QUADS_AT_PLANE / 2) {
-        vars.demo6Ring++;
-        vars.demo6Step = 0;
-        if (vars.demo6Ring < OCT_PLANES_MAX) {
-            int32_t q = RING_QUADS[vars.demo6Ring][0];
+    vars.demo6.step++;
+    if (vars.demo6.step >= (OCT_PLANES_MAX - 2) * OCT_QUADS_AT_PLANE / 2) {
+        vars.demo6.ring++;
+        vars.demo6.step = 0;
+        if (vars.demo6.ring < OCT_PLANES_MAX) {
+            int32_t q = RING_QUADS[vars.demo6.ring][0];
             float x = (120.f + GAP) * XSIGN[q % OCT_QUADS_AT_PLANE];
             float y = (120.f + GAP) * YSIGN[q % OCT_QUADS_AT_PLANE];
-            OCT_TM_set(&vars.demoObj->Tm, x, y, 0, q / OCT_QUADS_AT_PLANE);
+            // Short: OCT_TM_set sets a transform's position, angle, and plane directly (teleport).
+            // Declaration: void OCT_TM_set(octTm_t* tm, float x, float y, int a, int plane);
+            // Comment: Unlike OCT_TM_walk, this does not animate or handle transitions - it overwrites all fields at once.
+            OCT_TM_set(&vars.demo6.obj->Tm, x, y, 0, q / OCT_QUADS_AT_PLANE);
         }
     }
 }
@@ -560,36 +602,81 @@ void processDemo7(void) {
     vars.demoObj->Transp = (uint8_t)transp;
 }
 
+// Demo: do not copy-paste this code
+void initDemo8(void) {
+    // API info + demo
+    // Demo 8: how to query OCT_TWISTS to find affected quads after a twist.
+
+    OCT_add(0, false, OCT_PLANE_TOP, 120.f, 120.f, 0, false, BMP_001, BMP_001, 0);
+}
+
+// Demo: do not copy-paste this code
+void twistDemo8(int32_t twid) {
+    // API info + demo
+    // Demo 8: log quads affected by a twist using the OCT_TWISTS table.
+
+    if (twid >= OCT_TWIST_HALF) return; // half-twists share the same quad layout as standard twists
+
+    // Short: OCT_TWISTS is a constant table of 12 octTwist_t entries (one per standard twist).
+    // Declaration: const octTwist_t OCT_TWISTS[12];
+    // Comment: octTwist_t fields: QuadsDisk[4] (rotating face), QuadsRing1[4] and QuadsRing2[4] (two adjacent rings), RingsMask (bitmask of ring quads 0..23), Impulse[6] (direction per plane; 360 = unaffected).
+    // Comment: Index OCT_TWISTS with twid [0..11]. For half-twists (twid >= 12), subtract OCT_TWIST_HALF to get the base index.
+    const octTwist_t* tw = &OCT_TWISTS[twid];
+
+    OCT_trace(0, "Demo8 twist %d: disk=[%d,%d,%d,%d] ring1=[%d,%d,%d,%d] ring2=[%d,%d,%d,%d]\n",
+        twid,
+        tw->QuadsDisk[0], tw->QuadsDisk[1], tw->QuadsDisk[2], tw->QuadsDisk[3],
+        tw->QuadsRing1[0], tw->QuadsRing1[1], tw->QuadsRing1[2], tw->QuadsRing1[3],
+        tw->QuadsRing2[0], tw->QuadsRing2[1], tw->QuadsRing2[2], tw->QuadsRing2[3]);
+
+    OCT_trace(0, "Demo8 impulse=[%d,%d,%d,%d,%d,%d] ringsMask=0x%08lx\n",
+        tw->Impulse[0], tw->Impulse[1], tw->Impulse[2],
+        tw->Impulse[3], tw->Impulse[4], tw->Impulse[5],
+        (uint32_t)tw->RingsMask);
+}
+
+
+// State machine
+
+void switchDemo(demoId_t demo) {
+    // Short: OCT_restart reinitializes the sprite engine, clearing all objects.
+    // Declaration: void OCT_restart(int* objects, int capacity, int objectSize);
+    OCT_restart((int32_t*)gObjects, SPRITES_CAP, (int32_t)sizeof(appObject_t));
+
+    // Short: OCT_background sets the background color for the entire cube (all planes and quads).
+    // Declaration: void OCT_background(int color);
+    // Comment: color is in RGB565 format. Can be used to fill the entire cube with a solid background color.
+    OCT_background(0x0000);
+
+    vars.currentDemo = demo;
+    vars.tick = 0;
+
+    switch (demo) {
+        case DEMO_0:      initDemo0(); break;
+        case DEMO_1:      initDemo1(); break;
+        case DEMO_2:      initDemo2(); break;
+        case DEMO_2_LERP: initDemo2(); break;
+        case DEMO_3:      initDemo3(); break;
+        case DEMO_4:      initDemo4(); break;
+        case DEMO_5:      initDemo5(); break;
+        case DEMO_6:      initDemo6(); break;
+        case DEMO_7:      initDemo7(); break;
+        case DEMO_8:      initDemo8(); break;
+        default: break;
+    }
+}
+
 
 // Handlers
 WASM_EXPORT void on_init() {
     // API info
     // on_init is called once when the application starts.
     // Use it to initialize the engine, set up the scene, and load resources.
-    {
-        // Initialize engine
-        OCT_restart((int32_t*)gObjects, SPRITES_CAP, (int32_t)sizeof(appObject_t)); // Clear scene
-        OCT_viewports_layout(SCHEME_CUBE, GAP, GAP); // Set default viewport layout with gap between quads = GAP
-        OCT_dev_mode(OCT_DEV_TEXT);
 
-        // Short: OCT_background sets the background color for the entire cube (all planes and quads).
-        // Declaration: void OCT_background(int color);
-        // Comment: color is in RGB565 format. Can be used to fill the entire cube with a solid background color.
-        OCT_background(0x0000); // Set background to BLACK (RGB565)
-    }
+    OCT_viewports_layout(SCHEME_CUBE, GAP, GAP); // Set default viewport layout with gap between quads = GAP
+    OCT_dev_mode(OCT_DEV_TEXT);
 
-    // Settings
-    vars.tick = 0;
-
-    // Game
-    // initDemo0();
-    // initDemo1();
-    // initDemo2();
-    // initDemo3();
-    // initDemo4();
-    // initDemo5();
-    // initDemo6();
-    initDemo7();
+    switchDemo(DEMO_8);
 }
 
 WASM_EXPORT void on_pretwisted(int32_t twid) {
@@ -608,10 +695,11 @@ WASM_EXPORT void on_twisted(int32_t twid, uint32_t disconnected_ms) {
     // API info
     {
         // disconnected_ms - time elapsed since the last connection during a twist
-    
+
         // twid in [0; 11] - standard twists
         // twid in [12; 23] - half twists
-    
+        // Warning: CW and CCW are defined looking from outside of the cube at the given face (right-hand rule), NOT from the perspective of a neighboring face.
+
         const char* TWISTS[OCT_PLANES_MAX * 2] = {
             "TOP_CCW", "TOP_CW",
             "FRONT_CCW", "FRONT_CW",
@@ -620,7 +708,7 @@ WASM_EXPORT void on_twisted(int32_t twid, uint32_t disconnected_ms) {
             "LEFT_CCW", "LEFT_CW",
             "BOTTOM_CCW", "BOTTOM_CW"
         };
-    
+
         const char* HALF[OCT_PLANES_MAX * 2] = {
             "TOP_HALF_CCW", "TOP_HALF_CW",
             "FRONT_HALF_CCW", "FRONT_HALF_CW",
@@ -629,9 +717,15 @@ WASM_EXPORT void on_twisted(int32_t twid, uint32_t disconnected_ms) {
             "LEFT_HALF_CCW", "LEFT_HALF_CW",
             "BOTTOM_HALF_CCW", "BOTTOM_HALF_CW"
         };
-    
+
         // Logging
         OCT_trace(0, "twist: %s; %lu ms.\n", twid >= OCT_TWIST_HALF ? HALF[twid - OCT_TWIST_HALF] : TWISTS[twid], disconnected_ms);
+    }
+
+    switch (vars.currentDemo) {
+        case DEMO_0: twistDemo0(); break;
+        case DEMO_8: twistDemo8(twid); break;
+        default: break;
     }
 }
 
@@ -645,12 +739,21 @@ WASM_EXPORT void on_tap(int32_t tapid) {
     {
         // tapid = plane
         const char* TAPS[OCT_PLANES_MAX] = {"TOP", "FRONT", "RIGHT", "BACK", "LEFT", "BOTTOM"};
-    
+
         // Logging
         OCT_trace(0, "tap: %s\n", TAPS[tapid]);
     }
-    // tapDemo0((size_t)tapid);
-    // tapDemo5((size_t)tapid);
+    // State machine: tap switches to next demo
+    demoId_t next = (demoId_t)((int32_t)vars.currentDemo + 1);
+    if (next >= DEMO_COUNT) next = (demoId_t)0;
+    switchDemo(next);
+
+    // Per-demo tap handlers (uncomment to use instead of switching):
+    // switch (vars.currentDemo) {
+    //     case DEMO_0: tapDemo0((size_t)tapid); break;
+    //     case DEMO_5: tapDemo5((size_t)tapid); break;
+    //     default: break;
+    // }
 }
 
 
@@ -658,7 +761,7 @@ WASM_EXPORT void on_tick() {
     // API info
     // on_tick is called every frame (tick) of the game loop.
     // Use it to update game logic, animations, and physics.
-    
+
     // OCT_1SEC_TICKS is the number of ticks in one second (standard is 20 ticks, 50ms per tick).
 
     // API info
@@ -684,15 +787,17 @@ WASM_EXPORT void on_tick() {
         OCT_trace(0, "gX: %f; gY: %f; gN: %f; top: %s; bottom: %s\n", gX, gY, gN, planes[topPlane], planes[bottomPlane]);
     }
 
-    // demo
-    // processDemo0();
-    // processDemo2();
-    // processDemo2Lerp();
-    // processDemo3();
-    // processDemo4();
-    // processDemo5();
-    // processDemo6();
-    processDemo7();
+    switch (vars.currentDemo) {
+        case DEMO_0:      processDemo0(); break;
+        case DEMO_2:      processDemo2(); break;
+        case DEMO_2_LERP: processDemo2Lerp(); break;
+        case DEMO_3:      processDemo3(); break;
+        case DEMO_4:      processDemo4(); break;
+        case DEMO_5:      processDemo5(); break;
+        case DEMO_6:      processDemo6(); break;
+        case DEMO_7:      processDemo7(); break;
+        default: break;
+    }
 
     vars.tick++;
 }
