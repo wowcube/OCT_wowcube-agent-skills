@@ -211,11 +211,22 @@ For each prompt, repeat this cycle:
 | new global, TL, static | `"All globals must use TL macro: TL static type name;"` |
 | iterate, loop, gObjects, for | `"gObjects[0] is reserved — start from index 1, validate with obj->Idx == i"` |
 | label, text, OCT_label, glyph | `"Label visibility: must also toggle all child glyphs where obj->Parent == label->Idx"` |
-| OCT_add, sprite, layer | `"SPRITES_CAP = 400 max. Verify total count."` |
-| walk, move, cross, plane, wrap | `"Cross-display distance = 240.0f + 2.0f * GAP. Use OCT_TM_walk with wrap=true."` |
-| sound, SND, audio, mp3 | `"Pattern: int id = SND_getAssetId(name); SND_play(id, volume);"` |
+| OCT_add, sprite, layer | `"SPRITES_CAP = 400 max. Verify total count. NO NEED to account for GAP in x/y coordinates — the engine handles GAP offsets automatically."` |
+| walk, move, cross, plane, wrap | `"Cross-display distance = 240.0f + 2.0f * GAP. Use OCT_TM_walk with wrap=true. OCT_TM_move is in-plane only — no cross-plane handling."` |
+| sound, SND, audio, mp3 | `"Pattern: int32_t id = SND_getAssetId(name); SND_play(id, volume);"` |
 | animation, sequence, frame | `"OCT_sequence restart: OCT_SEQ_RESTART, OCT_SEQ_REVERSE, OCT_SEQ_REFRESH"` |
-| twist, twid, on_twisted | `"Full twists: twid 0-11. Half twists: twid 12-23 (offset by OCT_TWIST_HALF)."` |
+| twist, twid, on_twisted | `"Full twists: twid 0-11. Half twists: twid 12-23 (offset by OCT_TWIST_HALF). CW/CCW defined looking from outside the cube at the given face (right-hand rule)."` |
+| angle, rotation, direction | `"Angle 'a' / Tm.A: degrees, positive = CCW, 0 = right (+X)."` |
+| background, color, OCT_background | `"OCT_background color is in RGB565 format."` |
+| random, OCT_random | `"OCT_random(dmin, dmax): upper bound dmax is exclusive."` |
+| transparency, transp, fade | `"Transparency: 0 = fully opaque, OCT_TRANSP_MAX = fully transparent."` |
+| teleport, set, OCT_TM_set | `"OCT_TM_set overwrites position, angle, and plane directly (teleport) — no animation."` |
+| XSIGN, YSIGN, quad coords | `"XSIGN/YSIGN are already declared in oct_shared.h — do NOT redeclare."` |
+
+**Always include these reminders in EVERY coding task (mandatory for all prompts):**
+- `"Use explicit type casts — never rely on implicit conversions between numeric types, pointers, or enums."`
+- `"Use only fixed-width types from <stdint.h> (int8_t, int16_t, int32_t, uint8_t, uint16_t, uint32_t, size_t). Never use plain int, short, long."`
+- `"All 5 handler functions must be present (on_init, on_tick, on_tap, on_twisted, on_pretwisted). If a handler has no game logic, reference every parameter to suppress warnings (e.g., twid; disconnected_ms;)."`
 
 #### 3b. Dispatch Coder Agent
 
@@ -235,7 +246,11 @@ You are a WowCube game coder. Implement exactly what the task describes.
 3. Follow `instructions` exactly — do not add features, do not refactor unrelated code
 4. Respect all `platform_reminders`
 5. Use `prior_context` to understand what already exists — do not break it
-6. After implementing, respond with the Coder Response JSON
+6. ALWAYS use explicit type casts — never rely on implicit conversions between numeric types, pointers, or enums. Every narrowing, widening, or cross-type assignment must have a visible cast
+7. Use only fixed-width types from `<stdint.h>` (int8_t, int16_t, int32_t, uint8_t, uint16_t, uint32_t, size_t). Never use plain `int`, `short`, `long`
+8. All 5 handler functions (on_init, on_tick, on_tap, on_twisted, on_pretwisted) must be present. If a handler has no game logic, reference every parameter as a statement to suppress unused-variable warnings
+9. Write modular, readable code: extract game state into structs, split logic into small focused functions, use named constants instead of magic numbers
+10. After implementing, respond with the Coder Response JSON
 
 ## Response
 Return ONLY the Coder Response JSON. No markdown, no explanation outside the JSON.
@@ -263,7 +278,7 @@ Each category has a maximum score. Start at max, deduct per issue found.
 |---|----------|-----|---------------|
 | 1 | **Completeness** | 25 | Every instruction in the prompt is implemented |
 | 2 | **API correctness** | 20 | All API calls match `OCT_wowcube-agent-skills/templates/app_ai_template.h` |
-| 3 | **Platform constraints** | 15 | TL macro, gObjects[0] skipped, SPRITES_CAP respected |
+| 3 | **Platform constraints** | 15 | TL macro, gObjects[0] skipped, SPRITES_CAP respected, explicit type casts, fixed-width types only, all 5 handlers present with unused params suppressed, no GAP in OCT_add coords |
 | 4 | **GDD alignment** | 15 | Implementation matches game design document |
 | 5 | **No regressions** | 10 | Features from prior_context still intact |
 | 6 | **Code quality** | 10 | No copied demo code, no dead code, proper struct usage |

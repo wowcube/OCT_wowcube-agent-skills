@@ -122,6 +122,19 @@ None — fresh project. Skeleton copied from `OCT_wowcube-agent-skills/src/app_s
 - gObjects[0] is invalid — start iteration from index 1
 - All globals must use the `TL` macro
 - SPRITES_CAP = 400 max objects
+- No GAP offset needed in OCT_add x/y — the engine handles it automatically
+- OCT_TM_move is in-plane only — for cross-plane movement use OCT_TM_walk
+- Angle convention: positive = CCW, 0 = right (+X)
+- OCT_background color uses RGB565 format
+- OCT_random upper bound is exclusive
+- Transparency: 0 = opaque, OCT_TRANSP_MAX = transparent
+- XSIGN/YSIGN are declared in oct_shared.h — do not redeclare
+- CW/CCW defined looking from outside the cube (right-hand rule)
+
+<ALWAYS include these three reminders in every prompt:>
+- Use explicit type casts — never rely on implicit conversions
+- Use only fixed-width types (int32_t, uint8_t, etc.) — never plain int/short/long
+- All 5 handlers must be present; suppress unused params (e.g., `twid;`)
 
 ### Verification
 <Exactly what the agent should see/hear when this prompt is correctly implemented:>
@@ -199,14 +212,19 @@ Before finalizing, verify:
 ## Prompt Writing Rules
 
 1. **Be explicit** — specify exact API calls, parameter values, coordinates, colors. No ambiguity.
-2. **Include coordinates** — when placing sprites, provide exact plane, x, y using XSIGN/YSIGN.
+2. **Include coordinates** — when placing sprites, provide exact plane, x, y using XSIGN/YSIGN. Note: XSIGN/YSIGN are already declared in `oct_shared.h` — never redeclare them.
 3. **One behavior per prompt** — each prompt has a single clear goal.
 4. **Current State is for humans** — the orchestrator maintains its own JSON context. The "Current State" section is a convenience summary so a human reader can understand the progression.
 5. **Reference the API** — every prompt must include: "See `OCT_wowcube-agent-skills/templates/app_ai_template.h` for API details and engine patterns. Do NOT copy demo code."
-6. **Remind constraints** — include only the platform constraints relevant to the current prompt (don't repeat everything every time).
+6. **Remind constraints** — include only the platform constraints relevant to the current prompt (don't repeat everything every time). BUT always include the three mandatory reminders (type casts, fixed-width types, handler completeness).
 7. **Verification is mandatory** — every prompt must end with exactly what the agent should observe.
 8. **Category is mandatory** — every prompt must have a category from the table above.
 9. **Dependencies are mandatory** — every prompt must list its dependencies explicitly.
+10. **Explicit type casts** — all prompts must instruct agents to use explicit casts for every narrowing, widening, or cross-type assignment. Never rely on implicit conversions.
+11. **Fixed-width types only** — all prompts must instruct agents to use `int8_t`, `int16_t`, `int32_t`, `uint8_t`, `uint16_t`, `uint32_t`, `size_t` — never plain `int`, `short`, `long`.
+12. **All handlers present** — every prompt must assume all 5 handler functions exist (on_init, on_tick, on_tap, on_twisted, on_pretwisted). If a handler has no game logic, every parameter must be referenced as a statement to suppress unused-variable warnings.
+13. **No GAP in sprite placement** — when specifying OCT_add coordinates, do NOT add GAP offsets. The engine handles GAP automatically.
+14. **Angle convention** — when specifying angles (Tm.A, OCT_add 'a' param, OCT_TM_walk direction), note that positive = CCW, 0 = right (+X).
 
 ## Output
 
