@@ -50,7 +50,7 @@ The GDD must account for these device characteristics (expressed in player-frien
 There is no fixed list of questions. Instead, the agent must:
 
 1. **Read the user's initial prompt** carefully and identify what is clear vs. what is ambiguous or missing.
-2. **Read `${CLAUDE_PLUGIN_ROOT}/templates/app_ai_template.h`** to understand the platform's game engine patterns, capabilities, and constraints (game states, object behaviors, screen layout, input handling, animation patterns). Use this technical knowledge to identify design questions the user hasn't addressed — but phrase all questions in plain, non-technical language.
+2. **Read `OCT_wowcube-agent-skills/templates/app_ai_template.h`** to understand the platform's game engine patterns, capabilities, and constraints (game states, object behaviors, screen layout, input handling, animation patterns). Use this technical knowledge to identify design questions the user hasn't addressed — but phrase all questions in plain, non-technical language.
 3. **Cross-reference the user's idea against the WowCube Device Essentials** listed above. For each cube mechanic (twists, half-twists, taps, tilt, multi-face display), determine whether the user's idea has a clear mapping. If not, ask about it.
 4. **Think about the game holistically** — consider gameplay flow, win/lose conditions, progression, visual style, audio, and player motivation. Ask about anything that is unclear or unspecified.
 
@@ -66,7 +66,7 @@ There is no fixed list of questions. Instead, the agent must:
 ### Step 2: Study the Platform
 
 Read the API reference for internal understanding only:
-- `${CLAUDE_PLUGIN_ROOT}/templates/app_ai_template.h` — OctaviOS API reference and engine patterns (SOURCE OF TRUTH, do NOT copy demo code)
+- `OCT_wowcube-agent-skills/templates/app_ai_template.h` — OctaviOS API reference and engine patterns (SOURCE OF TRUTH, do NOT copy demo code)
 
 Use this knowledge solely to validate that the user's design is feasible on the hardware. If any aspect of the design conflicts with platform limitations, go back to the user and explain the constraint in plain language, then ask how they'd like to adjust.
 

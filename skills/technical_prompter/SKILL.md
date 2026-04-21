@@ -55,7 +55,7 @@ Extract:
 
 ### Step 2: Study the API
 
-Read `${CLAUDE_PLUGIN_ROOT}/templates/app_ai_template.h` — this is the SOURCE OF TRUTH for all OctaviOS API usage, patterns, and constraints. Do NOT copy demo code from it. Use it as a guide to understand what is technically possible and what API calls are available.
+Read `OCT_wowcube-agent-skills/templates/app_ai_template.h` — this is the SOURCE OF TRUTH for all OctaviOS API usage, patterns, and constraints. Do NOT copy demo code from it. Use it as a guide to understand what is technically possible and what API calls are available.
 
 ### Step 3: Plan the Decomposition
 
@@ -122,7 +122,7 @@ Create the output file at `plans/<game_name>_prompts.md` with this structure:
 - Source GDD: `plans/<game_name>_gdd.md`
 - Total prompts: N
 - Estimated total sprites: X
-- API reference: `${CLAUDE_PLUGIN_ROOT}/templates/app_ai_template.h`
+- API reference: `OCT_wowcube-agent-skills/templates/app_ai_template.h`
 
 ---
 
@@ -135,7 +135,7 @@ foundation
 none
 
 ### Current State
-None — fresh project. Skeleton copied from `${CLAUDE_PLUGIN_ROOT}/src/app_structure_example.h` to `src/app_<game>.h`.
+None — fresh project. Skeleton copied from `OCT_wowcube-agent-skills/src/app_structure_example.h` to `src/app_<game>.h`.
 
 ### Goal
 <One sentence: what this prompt adds. Must be testable.>
@@ -152,7 +152,7 @@ None — fresh project. Skeleton copied from `${CLAUDE_PLUGIN_ROOT}/src/app_stru
 4. ...
 
 <Include exact API function calls, parameter values, coordinates.>
-<Reference: "See `${CLAUDE_PLUGIN_ROOT}/templates/app_ai_template.h` for API details and engine patterns. Do NOT copy demo code.">
+<Reference: "See `OCT_wowcube-agent-skills/templates/app_ai_template.h` for API details and engine patterns. Do NOT copy demo code.">
 
 ### Platform Reminders
 <Only include constraints relevant to THIS prompt, e.g.:>
@@ -244,7 +244,7 @@ Before finalizing, verify:
 7. **Testable verification** — every prompt has a concrete "you should see/hear" verification
 8. **No gaps** — executing all prompts in order produces the complete game described in the GDD
 9. **Smallest slices** — no prompt could be reasonably split into two smaller testable prompts
-10. **Correct API usage** — all referenced functions match `${CLAUDE_PLUGIN_ROOT}/templates/app_ai_template.h`
+10. **Correct API usage** — all referenced functions match `OCT_wowcube-agent-skills/templates/app_ai_template.h`
 11. **Manifest ↔ prompts cross-check**:
     - Every `BMP_<name>` referenced in any prompt exists in `<game>_assets.json`.
     - Animation aliases: `BMP_<base>` requires at least a `<base>_00` entry; `BMP_<base>_end` implies a contiguous sequence exists.
@@ -263,7 +263,7 @@ Before finalizing, verify:
 2. **Include coordinates** — when placing sprites, provide exact plane, x, y using XSIGN/YSIGN. Note: XSIGN/YSIGN are already declared in `oct_shared.h` — never redeclare them.
 3. **One behavior per prompt** — each prompt has a single clear goal.
 4. **Current State is for humans** — the orchestrator maintains its own JSON context. The "Current State" section is a convenience summary so a human reader can understand the progression.
-5. **Reference the API** — every prompt must include: "See `${CLAUDE_PLUGIN_ROOT}/templates/app_ai_template.h` for API details and engine patterns. Do NOT copy demo code."
+5. **Reference the API** — every prompt must include: "See `OCT_wowcube-agent-skills/templates/app_ai_template.h` for API details and engine patterns. Do NOT copy demo code."
 6. **Remind constraints** — include only the platform constraints relevant to the current prompt (don't repeat everything every time). BUT always include the three mandatory reminders (type casts, fixed-width types, handler completeness).
 7. **Verification is mandatory** — every prompt must end with exactly what the agent should observe.
 8. **Category is mandatory** — every prompt must have a category from the table above.

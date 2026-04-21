@@ -42,7 +42,7 @@ This is NON-NEGOTIABLE. Never batch multiple prompts. Never skip the checkpoint.
 | `plans/<game>_assets.json` | `technical_prompter` skill | Yes |
 | `src/app_<game>_ids.h` | `cube_asset-builder` skill | Yes |
 | `assets/packed/pal.png` | `cube_asset-builder` skill | Yes |
-| `${CLAUDE_PLUGIN_ROOT}/templates/app_ai_template.h` | Project template | Yes |
+| `OCT_wowcube-agent-skills/templates/app_ai_template.h` | Project template | Yes |
 
 Missing prerequisite → delegate to the appropriate skill. Do not proceed until all are satisfied. Specifically:
 - Missing `_ids.h` or `assets/packed/` → delegate to `cube_asset-builder`.
@@ -103,7 +103,7 @@ All data between orchestrator and agents is JSON.
   "platform_reminders": ["..."],
   "verification_criteria": "<what the user should see/hear>",
   "files_to_read": [
-    "${CLAUDE_PLUGIN_ROOT}/templates/app_ai_template.h",
+    "OCT_wowcube-agent-skills/templates/app_ai_template.h",
     "src/app_<game>.h"
   ],
   "files_to_write": [
@@ -137,7 +137,7 @@ All data between orchestrator and agents is JSON.
   "files_to_read": [
     "src/app_<game>.h",
     "plans/<game>_gdd.md",
-    "${CLAUDE_PLUGIN_ROOT}/templates/app_ai_template.h"
+    "OCT_wowcube-agent-skills/templates/app_ai_template.h"
   ],
   "prior_context": [ ... ]
 }
@@ -193,7 +193,7 @@ All data between orchestrator and agents is JSON.
 2. Read `plans/<game>_prompts.md` — parse all prompts (delimited by `## Prompt N:`)
 3. Read `plans/<game>_gdd.md` for game understanding
 4. Check if `context/<game>_context.json` exists — if yes, offer to resume
-5. If new game, copy `${CLAUDE_PLUGIN_ROOT}/src/app_structure_example.h` → `src/app_<game>.h` (project root)
+5. If new game, copy `OCT_wowcube-agent-skills/src/app_structure_example.h` → `src/app_<game>.h` (project root)
 6. Count total prompts, present execution plan to user
 
 ### Step 2: Validate Prompts
@@ -252,7 +252,7 @@ You are a WowCube game coder. Implement exactly what the task describes.
 
 ## Rules
 1. Read ALL files listed in `files_to_read` BEFORE writing any code
-2. `${CLAUDE_PLUGIN_ROOT}/templates/app_ai_template.h` is the SOURCE OF TRUTH for API usage — do NOT copy demo code
+2. `OCT_wowcube-agent-skills/templates/app_ai_template.h` is the SOURCE OF TRUTH for API usage — do NOT copy demo code
 3. Follow `instructions` exactly — do not add features, do not refactor unrelated code
 4. Respect all `platform_reminders`
 5. Use `prior_context` to understand what already exists — do not break it
@@ -287,7 +287,7 @@ Each category has a maximum score. Start at max, deduct per issue found.
 | # | Category | Max | What to check |
 |---|----------|-----|---------------|
 | 1 | **Completeness** | 25 | Every instruction in the prompt is implemented |
-| 2 | **API correctness** | 20 | All API calls match `${CLAUDE_PLUGIN_ROOT}/templates/app_ai_template.h` |
+| 2 | **API correctness** | 20 | All API calls match `OCT_wowcube-agent-skills/templates/app_ai_template.h` |
 | 3 | **Platform constraints** | 15 | TL macro, gObjects[0] skipped, SPRITES_CAP respected, explicit type casts, fixed-width types only, all 5 handlers present with unused params suppressed, no GAP in OCT_add coords |
 | 4 | **GDD alignment** | 15 | Implementation matches game design document |
 | 5 | **No regressions** | 10 | Features from prior_context still intact |
@@ -337,7 +337,7 @@ You are a WowCube code fixer. Fix the issues found by the verifier.
   "prompt_number": N,
   "original_instructions": "<original prompt instructions>",
   "issues": <issues array from verifier>,
-  "files_to_read": ["src/app_<game>.h", "${CLAUDE_PLUGIN_ROOT}/templates/app_ai_template.h"],
+  "files_to_read": ["src/app_<game>.h", "OCT_wowcube-agent-skills/templates/app_ai_template.h"],
   "files_to_write": ["src/app_<game>.h"]
 }
 
