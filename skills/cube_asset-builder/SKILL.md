@@ -34,18 +34,40 @@ manifest and gets generated, or the user is asked to fix the manifest.
 - No GDD exists → delegate to `cube_game-designer`.
 - The user wants to modify game code → this skill does not touch `src/app_<game>.h`.
 
+## Execution environment
+
+**The pipeline runs entirely inside the agent's own shell sandbox, not on
+the user's machine.** In Cowork mode this is the `mcp__workspace__bash`
+Linux environment; Claude Code users likewise have a local shell. The user
+never needs to install Python, pip packages, or `ffmpeg` on their own
+machine — every dependency listed below is checked and installed in the
+agent's sandbox, and only the final artefacts (`assets/**`, `src/app_<game>_ids.h`)
+land in the user's workspace folder.
+
+If the agent has no shell access at all, stop and tell the user the skill
+cannot run in this environment.
+
 ## Prerequisites
+
+File inputs (must already be in the user's workspace):
 
 | File | Source | Required |
 |------|--------|----------|
 | `plans/<game>/<game>_assets.json` OR `plans/<game>_assets.json` | `technical_prompter` | Yes |
-| `build_psd.py` (at repo root or next to scripts/) | Project | Yes |
-| `pack.py` (at repo root or next to scripts/) | Project | Yes |
-| `Pillow`, `numpy`, `pytoshop`, `psd-tools` | `pip install` | Yes |
-| `ffmpeg` on PATH | OS package / binary | Yes |
+| `scripts/build_psd.py` | Vendored in this skill | Yes |
+| `scripts/pack.py` | Vendored in this skill | Yes |
+
+Runtime dependencies (checked and, if missing, installed by the agent
+inside its own shell sandbox — NOT on the user's machine):
+
+| Dependency | How the agent gets it | Required |
+|------------|-----------------------|----------|
+| `Pillow`, `numpy`, `pytoshop`, `psd-tools` | `pip install --break-system-packages` inside the agent sandbox | Yes |
+| `ffmpeg` on PATH | Usually preinstalled in the sandbox; otherwise `apt install ffmpeg` | Yes |
 
 If any prerequisite is missing, print the gap and stop. Do not attempt to
-generate partial output.
+generate partial output. Do not ask the user to install anything locally
+unless the sandbox truly cannot be provisioned.
 
 ## Workflow
 
@@ -59,7 +81,11 @@ If neither exists, delegate to `technical_prompter`.
 
 ### Step 2: Run the generate stage
 
-Invoke the pipeline driver:
+Invoke the pipeline driver **in the agent's own shell sandbox** (in Cowork
+this means `mcp__workspace__bash`; in Claude Code this is the local shell).
+Use the mounted path to the workspace, not the Windows path — e.g. on Linux
+the user's `D:\wowcube\git\OCT_wowcube-agent-skills\` is mounted at
+`/sessions/<id>/mnt/OCT_wowcube-agent-skills/`.
 
 ```
 python OCT_wowcube-agent-skills/skills/cube_asset-builder/scripts/build_pipeline.py \
@@ -102,7 +128,8 @@ For `edit <name> size <WxH>`:
 
 ### Step 4: Run the pack stage
 
-After the user replies `ok`:
+After the user replies `ok`, run the driver in the same agent shell sandbox
+that ran generate (never on the user's machine):
 
 ```
 python OCT_wowcube-agent-skills/skills/cube_asset-builder/scripts/build_pipeline.py \
@@ -112,6 +139,8 @@ python OCT_wowcube-agent-skills/skills/cube_asset-builder/scripts/build_pipeline
 On success the driver prints:
 - Path to `assets/packed/pal.png` and the packed PNGs.
 - Path to `src/app_<game>_ids.h` with the BMP_* constant count.
+- Path to `assets/assets.psd` (multi-layer atlas, opens in Photoshop).
+- Path to `assets/exported/` (per-sprite PNGs exported from the PSD + `assets.csv` pivots + `assets.psl` packer log).
 
 ### Step 5: Hand-off
 
@@ -121,10 +150,35 @@ Print:
 > - `src/app_<game>_ids.h` ready with N BMP_* constants.
 > - `assets/packed/*.png` + `pal.png` ready.
 > - `assets/mp3/*.mp3` ready.
+> - `assets/assets.psd` ready (multi-layer atlas for Photoshop review / edits).
+> - `assets/exported/` ready (per-sprite PNGs + assets.csv pivots + assets.psl packer log).
 > Run `cube_orchestrator` next.
 
 Do NOT invoke `cube_orchestrator` automatically. The user decides when to
 proceed (same pattern used between `technical_prompter` and `cube_orchestrator`).
+
+## Workspace layout (after `pack`)
+
+```
+assets/
+  art/                    <- source PNGs
+    <name>.png            <- one file per manifest sprite
+  mp3/                    <- source sound placeholders
+    <name>.mp3            <- one file per manifest sound
+  assets.psd              <- multi-layer atlas (Photoshop-editable)
+  exported/               <- psd-tools re-exports from assets.psd
+    <name>.png            <- per-layer PNG (final pixels that were packed)
+    assets.csv            <- pivot/size table for each sprite
+    assets.psl            <- packer log
+  packed/                 <- final packed atlas + palette
+    <name>.png            <- packed sprite (8-bit indexed)
+    pal.png               <- grouped palette
+  app_<game>_ids.h        <- authoritative BMP_* enum (also copied to src/)
+  .pipeline_state.json    <- internal stage + approval record
+```
+
+`pack.py` is invoked with `--art-dir assets --assets assets`, which
+resolves to `assets/assets.psd`.
 
 ## Constraints
 
@@ -145,7 +199,8 @@ proceed (same pattern used between `technical_prompter` and `cube_orchestrator`)
 | Symptom | Action |
 |---------|--------|
 | Manifest invalid (`rc=2`) | Relay all stderr lines to the user; wait for them to fix the manifest (or delegate back to `technical_prompter`). |
-| Missing dependency (`rc=3`) | Print the install hints printed by the driver; stop. |
+| Missing dependency (`rc=3`) | Install the missing package inside the agent's OWN sandbox (e.g. `pip install pytoshop psd-tools --break-system-packages`), then retry. Do NOT ask the user to install anything on their machine. |
 | `build_psd.py` failure during pack | Show the failing filename from stderr. Ask the user to inspect `assets/art/<name>.png`. |
 | `pack.py` palette overflow | Suggest `--target-colors 64`; the driver currently uses default grouped palette — add the flag if this becomes common. |
 | Empty `_ids.h` after pack | Likely `build_psd.py` produced an empty PSD. Diagnose by listing `assets/exported/` contents. |
+| `SyntaxError` from `build_pipeline.py` or `build_psd.py` | The workspace mount may have delivered a truncated copy of the vendored script. Verify file size vs. the repo's canonical version; if truncated, rewrite it from the repo or a writable scratch copy before retrying. |

@@ -12,9 +12,14 @@ import math
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from manifest_schema import Manifest, Sprite, load_manifest
+
+# Bundled TTF guarantees cross-platform byte-identical PNG output; PIL's
+# default bitmap font varies by platform/version and breaks determinism.
+FONT_PATH = Path(__file__).resolve().parent / "fonts" / "Rubik-Bold.ttf"
+FONT_CACHE: dict[int, ImageFont.FreeTypeFont] = {}
 
 SHAPES = ("circle", "rounded_rect", "diamond", "hex", "triangle")
 
@@ -31,19 +36,28 @@ SHAPE_KEYWORDS = {
 }
 
 
-def _derived_group(s: Sprite) -> str:
-    """Explicit group wins; otherwise strip a trailing _NN suffix."""
-    if s.group:
-        return s.group
-    n = s.name
-    if len(n) >= 3 and n[-3] == "_" and n[-2:].isdigit():
-        return n[:-3]
-    return n
-
-
 def _md5_seed(label: str) -> int:
     """Stable integer seed from an MD5 digest of `label`."""
     return int(hashlib.md5(label.encode("utf-8")).hexdigest()[:8], 16)
+
+
+def _font_for(size_px: int) -> ImageFont.FreeTypeFont:
+    """Return a cached TrueType font instance sized for `size_px` pixels tall.
+
+    Falls back to PIL's default font only if the bundled TTF is missing, so
+    development layouts without the font still produce output (though not
+    byte-identical on different platforms).
+    """
+    px = max(8, min(64, size_px))
+    cached = FONT_CACHE.get(px)
+    if cached is not None:
+        return cached
+    if FONT_PATH.exists():
+        font = ImageFont.truetype(str(FONT_PATH), px)
+    else:
+        font = ImageFont.load_default()
+    FONT_CACHE[px] = font
+    return font
 
 
 def _hsl_to_rgb(h: float, s: float, l: float) -> tuple[int, int, int]:
@@ -135,8 +149,13 @@ def _render_sprite(sp: Sprite, style: GroupStyle) -> Image.Image:
 
     label = sp.name[:6]
     txt_color = style.outline + (255,)
+    # Font size: ~1/4 of the smaller side keeps the label legible on 32x32
+    # as well as 128x128 sprites without overflowing the shape.
+    font_size = max(8, min(w, h) // 4)
+    font = _font_for(font_size)
     try:
-        draw.text((pad + 1, pad + 1 + frame_offset), label, fill=txt_color)
+        draw.text((pad + 1, pad + 1 + frame_offset), label,
+                  fill=txt_color, font=font)
     except Exception:
         pass
 
@@ -169,7 +188,7 @@ def generate(manifest: Manifest, out_dir: Path, *, group: str | None = None) -> 
 
     group_map: dict[str, list[Sprite]] = {}
     for s in manifest.sprites:
-        group_map.setdefault(_derived_group(s), []).append(s)
+        group_map.setdefault(s.derived_group(), []).append(s)
 
     written: list[Path] = []
     for grp, members in group_map.items():

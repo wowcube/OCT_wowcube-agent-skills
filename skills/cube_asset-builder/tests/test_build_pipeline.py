@@ -22,11 +22,13 @@ def _deps_available() -> bool:
         return False
 
 
-def test_find_script_returns_repo_root_copy_in_dev():
-    """In the dev layout, find_script('build_psd.py') must resolve to repo root."""
-    p = find_script("build_psd.py")
-    assert p.name == "build_psd.py"
-    assert p.exists()
+def test_find_script_resolves_vendored_scripts():
+    """build_psd.py and pack.py are vendored in the skill's scripts/ dir."""
+    for name in ("build_psd.py", "pack.py"):
+        p = find_script(name)
+        assert p.name == name
+        assert p.exists()
+        assert p.parent.name == "scripts"
 
 
 def test_find_script_raises_for_missing_name():
@@ -80,7 +82,8 @@ def test_pack_stage_end_to_end(tmp_path, tmp_manifest, minimal_manifest, ffmpeg_
 
     rc_pack = _cli(["pack", "--game", "demo",
                     "--workspace", str(project / "assets"),
-                    "--src-dir", str(project / "src")])
+                    "--src-dir", str(project / "src"),
+                    "--force"])
     assert rc_pack == 0
     assert (project / "assets" / "packed" / "pal.png").exists()
     assert (project / "src" / "app_demo_ids.h").exists()
@@ -88,18 +91,9 @@ def test_pack_stage_end_to_end(tmp_path, tmp_manifest, minimal_manifest, ffmpeg_
     assert "BMP_coin" in header
 
 
-def _deps_for_e2e() -> bool:
-    try:
-        import pytoshop  # noqa: F401
-        import psd_tools  # noqa: F401
-        return True
-    except ImportError:
-        return False
-
-
 def test_acceptance_criteria_e2e(tmp_path, tmp_manifest, ffmpeg_available):
     """Covers all four acceptance criteria from the spec §12."""
-    if not (ffmpeg_available and _deps_for_e2e()):
+    if not (ffmpeg_available and _deps_available()):
         pytest.skip("acceptance test needs ffmpeg + pytoshop + psd-tools")
 
     manifest_data = {
@@ -132,7 +126,7 @@ def test_acceptance_criteria_e2e(tmp_path, tmp_manifest, ffmpeg_available):
     assert (workspace / "mp3" / "sfx_coin.mp3").exists()
 
     rc = _cli(["pack", "--game", "mini", "--workspace", str(workspace),
-               "--src-dir", str(src_dir)])
+               "--src-dir", str(src_dir), "--force"])
     assert rc == 0
     assert (workspace / "packed" / "pal.png").exists()
     assert (src_dir / "app_mini_ids.h").exists()

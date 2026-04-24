@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
-import shutil
 import subprocess
 import sys
 import wave
@@ -36,11 +35,7 @@ def _md5_seed(label: str) -> int:
     return int(hashlib.md5(label.encode("utf-8")).hexdigest()[:8], 16)
 
 
-def _derived_group(snd: Sound) -> str:
-    return snd.group or snd.name
-
-
-def _waveform(wf: str, t: np.ndarray, freq: np.ndarray) -> np.ndarray:
+def _waveform(wf: str, freq: np.ndarray) -> np.ndarray:
     phase = 2 * np.pi * np.cumsum(freq) / SAMPLE_RATE
     if wf == "sine":
         return np.sin(phase)
@@ -53,8 +48,12 @@ def _waveform(wf: str, t: np.ndarray, freq: np.ndarray) -> np.ndarray:
     raise ValueError(f"unknown waveform {wf!r}")
 
 
-def _adsr(n: int, attack_ms: int, release_ms: int) -> np.ndarray:
-    """Attack-decay envelope with trailing release."""
+def _ar_envelope(n: int, attack_ms: int, release_ms: int) -> np.ndarray:
+    """Attack-Release envelope (no decay/sustain).
+
+    Linear fade-in over `attack_ms`, unity gain, linear fade-out over
+    `release_ms`. Not a full ADSR — the name reflects that.
+    """
     env = np.ones(n, dtype=np.float32)
     a = max(1, int(SAMPLE_RATE * attack_ms / 1000))
     r = max(1, int(SAMPLE_RATE * release_ms / 1000))
@@ -78,7 +77,6 @@ def render_wav_bytes(
     wf = WAVEFORMS[group_seed % len(WAVEFORMS)]
 
     n = max(1, int(SAMPLE_RATE * duration_ms / 1000))
-    t = np.arange(n, dtype=np.float32) / SAMPLE_RATE
 
     freq_a, freq_b = preset["freq_scale"]
     sweep = np.linspace(base_freq * freq_a, base_freq * freq_b, n, dtype=np.float32)
@@ -87,10 +85,10 @@ def render_wav_bytes(
     if style == "noise_thump":
         rng = np.random.default_rng(name_seed & 0xFFFFFFFF)
         noise = rng.standard_normal(n).astype(np.float32) * 0.4
-        thump = _waveform("sine", t, sweep * 0.5)
+        thump = _waveform("sine", sweep * 0.5)
         signal = noise + thump * 0.7
     elif style == "click":
-        signal = _waveform("square", t, np.full_like(sweep, base_freq))
+        signal = _waveform("square", np.full_like(sweep, base_freq))
     elif style == "arpeggio":
         notes = [1.0, 1.25, 1.5, 2.0]
         signal = np.zeros(n, dtype=np.float32)
@@ -99,16 +97,12 @@ def render_wav_bytes(
             start = i * seg
             end = min(n, start + seg)
             freq_seg = np.full(end - start, base_freq * mult, dtype=np.float32)
-            t_seg = np.arange(end - start, dtype=np.float32) / SAMPLE_RATE
-            signal[start:end] = _waveform(wf, t_seg, freq_seg)
-    elif style == "pad":
-        signal = _waveform(wf, t, sweep)
-    elif style == "rising":
-        signal = _waveform(wf, t, sweep)
+            signal[start:end] = _waveform(wf, freq_seg)
     else:
-        signal = _waveform(wf, t, sweep)
+        # pad / rising / default: sweep over the full duration.
+        signal = _waveform(wf, sweep)
 
-    env = _adsr(n, preset["attack_ms"], preset["release_ms"])
+    env = _ar_envelope(n, preset["attack_ms"], preset["release_ms"])
     signal *= env
 
     peak = float(np.max(np.abs(signal))) or 1.0
@@ -149,20 +143,15 @@ def generate(manifest: Manifest, out_dir: Path, *, group: str | None = None) -> 
     """Generate MP3s for every sound in `manifest` to `out_dir`.
 
     If `group` is given, only sounds whose derived/explicit group matches
-    are regenerated.
+    are regenerated. The caller is responsible for ensuring `ffmpeg` is on
+    PATH (build_pipeline._check_deps does this upstream); invocations that
+    bypass the pipeline will surface a normal FileNotFoundError from subprocess.
     """
-    if not shutil.which("ffmpeg"):
-        raise RuntimeError(
-            "ffmpeg not found on PATH. Install it and retry. "
-            "On macOS: 'brew install ffmpeg'. On Ubuntu: 'apt install ffmpeg'. "
-            "On Windows: https://ffmpeg.org/download.html"
-        )
-
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
     for snd in manifest.sounds:
-        grp = _derived_group(snd)
+        grp = snd.derived_group()
         if group is not None and grp != group:
             continue
         wav_bytes = render_wav_bytes(

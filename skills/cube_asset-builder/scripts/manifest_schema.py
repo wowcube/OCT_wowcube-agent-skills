@@ -1,27 +1,61 @@
-"""Load and validate plans/<game>_assets.json (schema_version 1)."""
+"""Load and validate plans/<game>_assets.json.
+
+Schema version policy
+---------------------
+Every manifest carries an integer `schema_version`. The loader transparently
+upgrades older manifests to CURRENT_SCHEMA_VERSION by running each registered
+migrator in sequence, so downstream code only deals with the current shape.
+
+To introduce a new version:
+  1. Bump CURRENT_SCHEMA_VERSION.
+  2. Register a migrator at SCHEMA_MIGRATORS[OLD_VERSION] that returns a dict
+     with schema_version incremented and whatever field reshaping is needed.
+  3. Add tests covering both the migration path and the post-migration shape.
+"""
 from __future__ import annotations
 
 import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Callable
 
 NAME_RE = re.compile(r"^[a-z0-9_]+$")
 RESERVED_NAMES = frozenset({
-    "pal", "0", "icon",
+    "pal", "0", "icon", "none",
     "bmp_none", "bmp_last", "bmp_0",
     "map_none", "map_last",
 })
 SPRITE_MAX_SIDE = 240
 SOUND_MAX_DURATION_MS = 2000
 SOUND_DEFAULT_DURATION_MS = 500
+ANIM_FRAME_MIN = 0
+ANIM_FRAME_MAX = 99  # two-digit zero-padded suffix: 00..99
 ALLOWED_EVENT_TYPES = frozenset({
     "pickup", "hit", "ui", "ambient", "music", "default",
 })
 
+# Schema evolution. CURRENT_SCHEMA_VERSION is the shape this module parses
+# directly; anything older is upgraded via SCHEMA_MIGRATORS before parsing.
+CURRENT_SCHEMA_VERSION = 1
+MIN_SUPPORTED_SCHEMA_VERSION = 1
+
+# Each migrator upgrades a raw dict from version K to K+1. The registry is
+# keyed by the SOURCE version (the one we are upgrading FROM). Example stub:
+#   SCHEMA_MIGRATORS[1] = _migrate_1_to_2
+# where _migrate_1_to_2(raw) returns the same dict with schema_version=2
+# and any field reshaping applied.
+SCHEMA_MIGRATORS: dict[int, Callable[[dict], dict]] = {
+    # populated as new versions are introduced
+}
+
 
 class ValidationError(Exception):
     """Raised only when load_manifest is asked to enforce via `strict=True`."""
+
+
+class SchemaMigrationError(ValidationError):
+    """Raised when a manifest cannot be brought up to CURRENT_SCHEMA_VERSION."""
 
 
 @dataclass(frozen=True)
@@ -43,6 +77,19 @@ class Sprite:
     pivot: tuple[int, int] = (0, 0)
     flags: Flags = field(default_factory=Flags)
 
+    def derived_group(self) -> str:
+        """Explicit group wins; otherwise strip a trailing _NN suffix.
+
+        Centralised here so generators, pipeline, and pack logic agree on the
+        same grouping rule.
+        """
+        if self.group:
+            return self.group
+        n = self.name
+        if len(n) >= 3 and n[-3] == "_" and n[-2:].isdigit():
+            return n[:-3]
+        return n
+
 
 @dataclass(frozen=True)
 class Sound:
@@ -51,6 +98,10 @@ class Sound:
     duration_ms: int = SOUND_DEFAULT_DURATION_MS
     event_type: str | None = None
     group: str | None = None
+
+    def derived_group(self) -> str:
+        """Explicit group wins; otherwise fall back to the sound name."""
+        return self.group or self.name
 
 
 @dataclass(frozen=True)
@@ -98,12 +149,60 @@ def _parse_sound(raw: dict) -> Sound:
     )
 
 
+def _migrate_to_current(raw: dict) -> dict:
+    """Walk registered migrators until raw['schema_version'] == CURRENT_SCHEMA_VERSION.
+
+    Raises SchemaMigrationError when:
+      - version is missing or not an int,
+      - version is older than MIN_SUPPORTED_SCHEMA_VERSION,
+      - version is newer than CURRENT_SCHEMA_VERSION (manifest from the future),
+      - a migrator for an intermediate version is not registered.
+    """
+    try:
+        v = int(raw.get("schema_version"))
+    except (TypeError, ValueError) as exc:
+        raise SchemaMigrationError(
+            f"schema_version missing or not an integer: {raw.get('schema_version')!r}"
+        ) from exc
+
+    if v < MIN_SUPPORTED_SCHEMA_VERSION:
+        raise SchemaMigrationError(
+            f"schema_version {v}: older than minimum supported "
+            f"({MIN_SUPPORTED_SCHEMA_VERSION})"
+        )
+    if v > CURRENT_SCHEMA_VERSION:
+        raise SchemaMigrationError(
+            f"schema_version {v}: manifest newer than this tool supports "
+            f"(up to {CURRENT_SCHEMA_VERSION}); update the skill or downgrade the manifest"
+        )
+
+    while v < CURRENT_SCHEMA_VERSION:
+        migrator = SCHEMA_MIGRATORS.get(v)
+        if migrator is None:
+            raise SchemaMigrationError(
+                f"schema_version {v}: no migrator registered to upgrade to "
+                f"{v + 1}"
+            )
+        raw = migrator(raw)
+        new_v = int(raw.get("schema_version", -1))
+        if new_v <= v:
+            raise SchemaMigrationError(
+                f"migrator for schema_version {v} did not advance version "
+                f"(got {new_v})"
+            )
+        v = new_v
+    return raw
+
+
 def load_manifest(path: str | Path, strict: bool = False) -> Manifest:
     """Parse a manifest JSON file into a Manifest dataclass.
 
-    If `strict` is True, call validate() and raise on any error.
+    Older manifests are transparently migrated up to CURRENT_SCHEMA_VERSION
+    via SCHEMA_MIGRATORS before parsing. If `strict` is True, call validate()
+    and raise on any error.
     """
     data = json.loads(Path(path).read_text(encoding="utf-8"))
+    data = _migrate_to_current(data)
     m = Manifest(
         game=data["game"],
         schema_version=int(data["schema_version"]),
@@ -121,8 +220,11 @@ def validate(m: Manifest) -> list[str]:
     """Return a list of human-readable error messages. Empty list = valid."""
     errors: list[str] = []
 
-    if m.schema_version != 1:
-        errors.append(f"schema_version: unsupported value {m.schema_version!r} (expected 1)")
+    if m.schema_version != CURRENT_SCHEMA_VERSION:
+        errors.append(
+            f"schema_version: unsupported value {m.schema_version!r} "
+            f"(expected {CURRENT_SCHEMA_VERSION}); migration should have handled this"
+        )
 
     sprite_names: list[str] = []
     anim_frames: dict[str, list[tuple[int, str]]] = {}
@@ -149,6 +251,12 @@ def validate(m: Manifest) -> list[str]:
                 f"sprite {s.name!r}: anim and frame must be set together"
             )
         if s.anim is not None:
+            # Enforce two-digit frame range: 00..99 only.
+            if not (ANIM_FRAME_MIN <= s.frame <= ANIM_FRAME_MAX):
+                errors.append(
+                    f"sprite {s.name!r}: frame {s.frame} out of range "
+                    f"({ANIM_FRAME_MIN}..{ANIM_FRAME_MAX}); two-digit suffix required"
+                )
             anim_frames.setdefault(s.anim, []).append((s.frame, s.name))
 
     seen: set[str] = set()

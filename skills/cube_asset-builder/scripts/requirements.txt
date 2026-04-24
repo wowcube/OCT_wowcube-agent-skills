@@ -1,0 +1,9 @@
+# Image processing (used by build_psd.py, pack.py, unpack.py)
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# PSD file writing (used by build_psd.py)
+pytoshop>=1.2.1
+
+# PSD file reading (used by pack.py)
+psd-tools>=1.9.0
