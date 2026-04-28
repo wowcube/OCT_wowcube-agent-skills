@@ -1,9 +1,12 @@
 """Pipeline driver for cube_asset-builder.
 
 Two subcommands:
-  generate  - validate manifest, render PNG placeholders and MP3 placeholders.
+  generate  - validate manifest and render MP3 placeholders for every sound.
+              Sprite PNGs are NOT produced here; they are rendered upstream by
+              canvas-design (driven by cube_asset-prompter) and must already be
+              present in <workspace>/art/ before `pack` runs.
   pack      - build assets.psd at the workspace root, then run pack.py to
-              produce packed/ and _ids.h.
+              produce packed/ and _ids.h from the sprite PNGs in <workspace>/art/.
 
 `build_psd.py` and `pack.py` are vendored into this skill's `scripts/` folder
 and resolved via `find_script()`.
@@ -26,7 +29,6 @@ from manifest_schema import (
     load_manifest,
     validate,
 )
-import gen_placeholders
 import gen_sounds
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -93,15 +95,18 @@ def find_script(name: str) -> Path:
     )
 
 
-GENERATE_PY_DEPS = ("PIL", "numpy")
+# Generate stage now only synthesises MP3 placeholders, so numpy + ffmpeg are
+# the only runtime deps. PIL is no longer needed here — sprite PNGs are
+# produced upstream by canvas-design.
+GENERATE_PY_DEPS = ("numpy",)
 PACK_PY_DEPS = ("PIL", "numpy", "pytoshop", "psd_tools")
 
 
 def _check_deps(stage: Stage) -> list[str]:
     """Return list of missing dependency messages. Empty = everything installed.
 
-    Generate stage needs PIL+numpy+ffmpeg; pack stage also needs pytoshop and
-    psd_tools.
+    Generate stage needs numpy + ffmpeg (for sounds); pack stage additionally
+    needs PIL + pytoshop + psd_tools (for PSD assembly and atlas packing).
     """
     required = PACK_PY_DEPS if stage is Stage.PACK else GENERATE_PY_DEPS
     missing: list[str] = []
@@ -173,15 +178,37 @@ def do_generate(args: argparse.Namespace) -> int:
 
     # Ensure the workspace layout exists before generators try to write files.
     # On read-only or unusual mounts the generators would otherwise fail with
-    # a confusing FileNotFoundError from Pillow / ffmpeg.
+    # a confusing FileNotFoundError from ffmpeg.
     workspace.mkdir(parents=True, exist_ok=True)
     art_dir.mkdir(parents=True, exist_ok=True)
     mp3_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("Generating placeholders -> %s", art_dir)
-    png_paths = gen_placeholders.generate(manifest, art_dir, group=args.group)
+    # Sprite PNGs are produced upstream by canvas-design (driven by
+    # cube_asset-prompter). We do not render them here, but we DO report how
+    # many of the manifest's sprites are already on disk so the user sees the
+    # gap before running `pack`.
+    expected_sprite_names = {s.name for s in manifest.sprites}
+    if args.group is not None:
+        expected_sprite_names = {
+            s.name for s in manifest.sprites if s.derived_group() == args.group
+        }
+    existing_pngs = {p.stem for p in art_dir.glob("*.png")}
+    missing_pngs = sorted(expected_sprite_names - existing_pngs)
+    found_sprites = len(expected_sprite_names) - len(missing_pngs)
 
-    logger.info("Generating sounds        -> %s", mp3_dir)
+    logger.info("Checking sprite PNGs    -> %s", art_dir)
+    logger.info("  %d/%d manifest sprites already present",
+                found_sprites, len(expected_sprite_names))
+    if missing_pngs:
+        logger.warning(
+            "%d sprite PNG(s) missing from %s; render them via "
+            "cube_asset-prompter + canvas-design before running `pack`",
+            len(missing_pngs), art_dir,
+        )
+        for name in missing_pngs:
+            logger.warning("  - %s.png", name)
+
+    logger.info("Generating sounds       -> %s", mp3_dir)
     mp3_paths = gen_sounds.generate(manifest, mp3_dir, group=args.group)
 
     groups: set[str] = set()
@@ -195,15 +222,19 @@ def do_generate(args: argparse.Namespace) -> int:
         "game": manifest.game,
         "manifest": str(manifest_path),
         "group": args.group,
-        "png_count": len(png_paths),
+        "sprite_expected": len(expected_sprite_names),
+        "sprite_found": found_sprites,
+        "sprite_missing": missing_pngs,
         "mp3_count": len(mp3_paths),
         "groups": sorted(groups),
         "user_approved": False,
     })
 
     logger.info("=" * 60)
-    logger.info("  %d PNG(s), %d MP3(s)", len(png_paths), len(mp3_paths))
-    logger.info("  groups: %s", sorted(groups))
+    logger.info("  sprites: %d/%d present in art/ (upstream-provided)",
+                found_sprites, len(expected_sprite_names))
+    logger.info("  sounds : %d MP3(s) generated", len(mp3_paths))
+    logger.info("  groups : %s", sorted(groups))
     logger.info("=" * 60)
     return 0
 
@@ -229,7 +260,11 @@ def do_pack(args: argparse.Namespace) -> int:
     ids_path = workspace / f"app_{args.game}_ids.h"
 
     if not art_dir.exists() or not any(art_dir.glob("*.png")):
-        logger.error("no PNGs found in %s. Run 'generate' first.", art_dir)
+        logger.error(
+            "no PNGs found in %s. Sprite PNGs are produced upstream by "
+            "canvas-design (via cube_asset-prompter). Render them first, "
+            "then re-run `pack`.", art_dir,
+        )
         return 4
 
     # Make sure every output directory exists before the child processes run.
@@ -375,12 +410,18 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--manifest", required=True, help="Path to <game>_assets.json")
     v.set_defaults(func=do_validate)
 
-    g = sub.add_parser("generate", help="Render placeholders from manifest")
+    g = sub.add_parser(
+        "generate",
+        help="Synthesise sound placeholders from manifest and report sprite-PNG gap.",
+    )
     g.add_argument("--manifest", required=True, help="Path to <game>_assets.json")
     g.add_argument("--workspace", default="assets",
-                   help="Workspace root (default: assets). PNGs -> <ws>/art, MP3s -> <ws>/mp3.")
+                   help="Workspace root (default: assets). MP3s -> <ws>/mp3. "
+                        "Sprite PNGs are expected to already live in <ws>/art "
+                        "(produced upstream by canvas-design).")
     g.add_argument("--group", default=None,
-                   help="Only regenerate one group (sprites + sounds)")
+                   help="Only regenerate sounds for one group; sprite-gap "
+                        "reporting is also scoped to this group.")
     g.set_defaults(func=do_generate)
 
     a = sub.add_parser("approve",

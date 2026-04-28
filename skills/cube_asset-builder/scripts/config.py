@@ -165,6 +165,12 @@ DEFAULT_LAYER_MARK = -16777216   # 0xFF000000 as signed int32
 
 PLACEHOLDER_SPRITE_NAME = '0'
 PLACEHOLDER_SPRITE_PIVOT = (-0.5, -0.5)
+# Reserved sprite slot 0 (BMP_0 = BMP_none = 0) is a TECHNICAL REQUIREMENT
+# of the engine: BMP_none is the "no sprite / clear" sentinel and must point
+# at a real, harmless asset. If `0.png` is missing the packer auto-creates
+# it from these defaults. See _ensure_placeholder_sprite() in pack.py.
+PLACEHOLDER_SPRITE_SIZE  = (1, 1)            # 1x1 pixel - minimum legal PNG
+PLACEHOLDER_SPRITE_COLOR = (0, 0, 0, 0)      # fully transparent RGBA
 PALETTE_SPRITE_NAME     = 'pal'
 
 DEFAULT_ASSET_NAME = 'assets'

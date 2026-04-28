@@ -182,6 +182,18 @@ resolves to `assets/assets.psd`.
 
 ## Constraints
 
+- **Reserved placeholder `0.png` is auto-created and must always exist.**
+  Slot 0 of the BMP enum is hard-aliased to `BMP_none` by the engine
+  (`enum BMP { BMP_none = 0, BMP_0 = 0, ... }`). The packer guarantees
+  this slot by ensuring `assets/art/0.png` is present before every pack
+  run: if it is missing, a 1x1 fully transparent PNG is generated from
+  `PLACEHOLDER_SPRITE_SIZE` / `PLACEHOLDER_SPRITE_COLOR` (see
+  `scripts/config.py`). A hand-crafted `0.png` is preserved if already
+  present. `0.png` is NOT a gameplay sprite - it must NOT appear in the
+  asset manifest, the GDD asset list, or any per-asset prompt; the
+  manifest schema explicitly rejects the reserved name `0`. Game code
+  MUST use `BMP_none` (preferred) or `BMP_0` for any 'no sprite / empty
+  slot / placeholder' intent and MUST NOT redefine or shadow them.
 - **Assets are deterministic placeholders**, not final art. The user must
   approve before packing. Never silently replace a file the user provided
   by hand unless they explicitly said `regen`.

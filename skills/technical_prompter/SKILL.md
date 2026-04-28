@@ -106,6 +106,7 @@ Naming rules — ENFORCED by `cube_asset-builder`'s validator:
 - Sprite `size`: both dimensions 1..240.
 - Sound `duration_ms`: 1..2000 (default 500 if omitted).
 - Reserved names forbidden: `pal`, `0`, `icon`, `bmp_none`, `bmp_last`, `bmp_0`, `map_none`, `map_last`.
+- **Reserved slot 0 (`BMP_0` / `BMP_none`)** is owned by the engine and the asset packer auto-creates `assets/art/0.png` if missing. NEVER list `0.png` in the manifest, NEVER instruct an artist to draw it, and NEVER write a per-asset prompt for it - it is a build-pipeline asset, not a gameplay asset. In prompts, ALWAYS use `BMP_none` (preferred) or `BMP_0` for 'no sprite / empty slot / placeholder' intents; never invent another BMP constant for that purpose.
 - `description` is a short placeholder-generator hint (color, shape, mood).
 - Prefer explicit `group` for visually or tonally related assets.
 

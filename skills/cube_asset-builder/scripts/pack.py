@@ -66,6 +66,7 @@ from config import (
     PAL_MAX_TOTAL_COLORS, PAL_TRANSPARENT_IDX, PALETTE_SIZES_TRIED,
     PALETTE_SPRITE_NAME, PALETTE_TIERS_USABLE, PIVOT_HALFPIX, PIVOT_SCALE,
     PLACEHOLDER_SPRITE_NAME, PLACEHOLDER_SPRITE_PIVOT,
+    PLACEHOLDER_SPRITE_SIZE, PLACEHOLDER_SPRITE_COLOR,
     PSL_CENTER_X_OFFSET, PSL_CENTER_Y_OFFSET, PSL_GROUP_OFFSET,
     PSL_GROUP_SIZE, PSL_HEADER_SIZE, PSL_LAYERMARK_OFFSET,
     PSL_NAME_OFFSET, PSL_NAME_SIZE, PSL_NUMBER_OFFSET, PSL_RATE_OFFSET,
@@ -108,6 +109,30 @@ _RE_SEQ_FRAME    = re.compile(r'^(.+?)_(\d{2,})$')
 def _norm(s: str) -> str:
     """Normalize a free-form string to a lowercase snake-case identifier."""
     return s.lower().replace('-', '_').replace(' ', '_')
+
+
+def _ensure_placeholder_sprite(art_dir: str) -> str:
+    """Guarantee the reserved `0.png` placeholder exists in art_dir.
+
+    Slot 0 of the BMP enum is hard-aliased to BMP_none by the engine
+    (`enum BMP { BMP_none = 0, BMP_0 = 0, ... }`). The packer must fill
+    that slot with a real, harmless asset, otherwise the next sprite
+    slides into ID 0 and silently corrupts every code site that uses
+    BMP_none as the 'no sprite' sentinel.
+
+    Idempotent: a hand-crafted 0.png is preserved if already present;
+    if missing, a fresh one is generated from PLACEHOLDER_SPRITE_SIZE
+    / PLACEHOLDER_SPRITE_COLOR defined in config.py. Returns the
+    absolute path to the placeholder file.
+    """
+    os.makedirs(art_dir, exist_ok=True)
+    zero_path = os.path.join(art_dir, f'{PLACEHOLDER_SPRITE_NAME}.png')
+    if not os.path.isfile(zero_path):
+        Image.new('RGBA', PLACEHOLDER_SPRITE_SIZE,
+                  PLACEHOLDER_SPRITE_COLOR).save(zero_path)
+        print(f'  Auto-created reserved placeholder {PLACEHOLDER_SPRITE_NAME}.png '
+              f'at {zero_path} (BMP_none/BMP_0 slot)')
+    return zero_path
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1555,10 +1580,10 @@ def export_all_python(art_dir: str, exported_dir: str,
             except OSError:
                 pass
 
-    # Copy 0.png placeholder
-    zero_png = os.path.join(art_dir, f'{PLACEHOLDER_SPRITE_NAME}.png')
-    if os.path.isfile(zero_png):
-        shutil.copy2(zero_png, os.path.join(exported_dir, f'{PLACEHOLDER_SPRITE_NAME}.png'))
+    # Reserved placeholder: BMP_0 / BMP_none - must always exist in slot 0.
+    # Auto-create in art_dir if missing, then copy into exported_dir.
+    zero_png = _ensure_placeholder_sprite(art_dir)
+    shutil.copy2(zero_png, os.path.join(exported_dir, f'{PLACEHOLDER_SPRITE_NAME}.png'))
 
     asset_names_out: list[str] = []
     map_names_exported: list[str] = []
@@ -2477,10 +2502,12 @@ def main() -> None:
 
     sprite_assignments, palettes, has_palette = _phase_palette(args, files)
 
-    # Copy 0.png placeholder into exported/ if missing
-    zero_art = os.path.join(args.art_dir, f'{PLACEHOLDER_SPRITE_NAME}.png')
+    # Reserved placeholder: BMP_0 / BMP_none - must always exist in slot 0.
+    # Guarantee 0.png in art_dir (auto-create if missing) and mirror it
+    # into exported_dir if not already there.
+    zero_art = _ensure_placeholder_sprite(args.art_dir)
     zero_exp = os.path.join(args.exported_dir, f'{PLACEHOLDER_SPRITE_NAME}.png')
-    if os.path.isfile(zero_art) and not os.path.isfile(zero_exp):
+    if not os.path.isfile(zero_exp):
         os.makedirs(args.exported_dir, exist_ok=True)
         shutil.copy2(zero_art, zero_exp)
         print(f"  Copied 0.png from {args.art_dir}/ to {args.exported_dir}/")

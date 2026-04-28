@@ -40,6 +40,7 @@ This is NON-NEGOTIABLE. Never batch multiple prompts. Never skip the checkpoint.
 | `plans/<game>_prompts.md` | `technical_prompter` skill | Yes |
 | `plans/<game>_gdd.md` | `cube_game-designer` skill | Yes |
 | `plans/<game>_assets.json` | `technical_prompter` skill | Yes |
+| `plans/<game>/style_profile.md` | `cube_asset-prompter` Step 0 | Yes |
 | `src/app_<game>_ids.h` | `cube_asset-builder` skill | Yes |
 | `assets/packed/pal.png` | `cube_asset-builder` skill | Yes |
 | `OCT_wowcube-agent-skills/templates/app_ai_template.h` | Project template | Yes |
@@ -49,6 +50,7 @@ Missing prerequisite → delegate to the appropriate skill. Do not proceed until
 - Missing `plans/<game>_assets.json` → delegate to `technical_prompter`.
 - Missing `plans/<game>_prompts.md` → delegate to `technical_prompter`.
 - Missing `plans/<game>_gdd.md` → delegate to `cube_game-designer`.
+- Missing `plans/<game>/style_profile.md` → delegate to `cube_asset-prompter` Step 0. The prompter owns the **initial** style selection; this orchestrator only handles **rotation** later (see "Style profile rotation" below).
 
 ## Constraints
 
@@ -186,6 +188,28 @@ All data between orchestrator and agents is JSON.
 ```
 
 ## Workflow
+
+### Step 0: Style profile rotation (mid-pipeline only)
+
+The **initial** style profile is selected by `cube_asset-prompter` Step 0 — the orchestrator does NOT pick the style for a new game. This step only handles **rotation** of an already-selected profile during the implementation phase.
+
+If `plans/<game>/style_profile.md` is missing entirely (new game, asset pipeline never ran), STOP and delegate to `cube_asset-prompter` Step 0. Do not proceed to Step 1 until the file exists.
+
+If the user requests a style change mid-pipeline ("change the look", "make it more <X>", "switch to retro_8bit"):
+
+1. **Confirm the rotation target.** List available presets from `OCT_wowcube-agent-skills/skills/cube_orchestrator/styles/README.md` and confirm the new choice with the user via `AskUserQuestion`. Never rotate without explicit user approval.
+
+2. **Rotate the profile.** Overwrite `plans/<game>/style_profile.md` with the new preset (verbatim, with the same header convention `cube_asset-prompter` uses, marking the date and game).
+
+3. **Cascade regeneration.** Re-invoke `cube_asset-prompter` to regenerate `art_bible.md` and per-asset prompts against the new profile, then re-run `canvas-design` for affected sprites, then re-run `cube_asset-builder pack`. The implementation source code (`src/app_<game>.h`) does NOT need to be regenerated — only assets and atlases.
+
+4. **Forbid procedural-fallback art.** A common failure mode is to substitute the real `canvas-design` rendering with a quick PIL/SVG primitive script "for speed". When the active style is anything other than `minimalist_flat`, the orchestrator MUST refuse procedural fallbacks and require real `canvas-design` invocations (one per per-asset prompt). The `minimalist_flat` preset is the ONLY style where procedural primitives are acceptable, because it was designed for that.
+
+5. **Re-checkpoint after rotation.** Treat the cascade above as a checkpointable batch — present the diff (which sprites re-rendered, which palette indices shifted) to the user before resuming the prompt cycle.
+
+### Step 0 output
+
+- `plans/<game>/style_profile.md` is up-to-date and matches the preset the user actually wants for the current implementation phase.
 
 ### Step 1: Initialize
 
