@@ -63,6 +63,7 @@ typedef enum {
     DEMO_6,
     DEMO_7,
     DEMO_8,
+    DEMO_9,
     DEMO_COUNT
 } demoId_t;
 
@@ -138,6 +139,9 @@ void processDemo7(void);
 
 void initDemo8(void);
 void twistDemo8(int32_t twid);
+
+void initDemo9(void);
+void processDemo9(void);
 
 
 ////////////////////////////////
@@ -250,7 +254,7 @@ void initDemo0(void) {
                     // Short: OCT_add adds a sprite to the scene; returns idx in gObjects.
                     // Declaration: int OCT_add(int layer, bool twistable, int plane, float x, float y, int a, bool loop, int bmpfrom, int bmpto, int framelen);
                     // Comment: twistable=false means the engine automatically resets the position after a twist.
-                    // Comment: parameter 'a' is the sprite angle in degrees; positive values rotate counter-clockwise (CCW), 0 degrees points right (+X).
+                    // Comment: parameter 'a' is the sprite angle in degrees (int16_t, not float); only right angles are supported (0, 90, 180, 270). Positive values rotate counter-clockwise (CCW), 0 degrees points right (+X).
                     // Comment: (loop, bmpfrom, bmpto, framelen) are used for animation; framelen is the number of global ticks per frame.
                     // Critical Comment: NO NEED to account for GAP in the x/y coordinates - the engine handles GAP offsets automatically!
                     OCT_add(1, true, (int32_t)plane, (float)x, (float)y, 0, false, BMP_001, BMP_001, 0);
@@ -272,7 +276,7 @@ void twistDemo0(void) {
         if ((size_t)gObjects[i].Idx != i) continue;
 
         gObjects[i].Tm.A = 0; // Reset angle (relative to Tm.Plane)
-        // Comment: Tm.A is the sprite angle in degrees; positive values rotate counter-clockwise (CCW), 0 degrees points right (+X).
+        // Comment: Tm.A is the sprite angle in degrees (int16_t, not float); only right angles are supported (0, 90, 180, 270). Positive values rotate counter-clockwise (CCW), 0 degrees points right (+X).
     }
 }
 
@@ -423,6 +427,7 @@ void initDemo4(void) {
 
     // Short: OCT_add_label adds a text label to the scene; returns idx in gObjects.
     // Declaration: int OCT_add_label(int layer, bool twistable, int side, float x, float y, int a, int font_idx, int align);
+    // Comment: parameter 'a' is int16_t (not float); only right angles are supported (0, 90, 180, 270).
     // Comment: font_idx selects the font [1..3] (FONT_1, FONT_2, FONT_3); align sets text alignment (ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT).
     // Comment: Each glyph is a separate child sprite with Parent set to the label's Idx.
     // Comment: Use OCT_label_set to assign text after creation; use showLabel to toggle visibility of the label and its glyphs.
@@ -571,6 +576,7 @@ void processDemo6(void) {
             // Short: OCT_TM_set sets a transform's position, angle, and plane directly (teleport).
             // Declaration: void OCT_TM_set(octTm_t* tm, float x, float y, int a, int plane);
             // Comment: Unlike OCT_TM_walk, this does not animate or handle transitions - it overwrites all fields at once.
+            // Comment: parameter 'a' is int16_t (not float); only right angles are supported (0, 90, 180, 270).
             OCT_TM_set(&vars.demo6.obj->Tm, x, y, 0, q / OCT_QUADS_AT_PLANE);
         }
     }
@@ -635,6 +641,49 @@ void twistDemo8(int32_t twid) {
         (uint32_t)tw->RingsMask);
 }
 
+// Demo: do not copy-paste this code
+void initDemo9(void) {
+    // API info + demo
+    // Demo 9: parent-child sprite relationship.
+    // Child sprite uses local coordinates relative to its parent.
+    // When parent moves or rotates, the child follows automatically
+    // (the engine composes transforms via OCT_TM_combine at render time).
+
+    // create parent sprite at center of TOP plane, quad 0
+    int32_t parentId = OCT_add(0, false, OCT_PLANE_TOP, 120.f, 120.f, 0, false, BMP_001, BMP_001, 0);
+    vars.demoObj = &gObjects[parentId];
+
+    // create child sprite - world coords first, then convert to local
+    int32_t childId = OCT_add(0, false, OCT_PLANE_TOP, 120.f + 60.f, 120.f, 0, false, BMP_002, BMP_002, 0);
+    appObject_t* child = &gObjects[childId];
+
+    // Short: Setting Parent to the parent's Idx makes the child's Tm local (relative to parent).
+    // Comment: The engine applies OCT_TM_combine at render time: rotates child's local (X,Y) by parent's angle, adds parent's position, and inherits parent's plane.
+    // Comment: After setting Parent, child coordinates MUST be converted to parent-local space by subtracting the parent's world position.
+    child->Parent = vars.demoObj->Idx;
+    child->Tm.X = child->Tm.X - vars.demoObj->Tm.X; // convert to local X (= 60)
+    child->Tm.Y = child->Tm.Y - vars.demoObj->Tm.Y; // convert to local Y (= 0)
+}
+
+// Demo: do not copy-paste this code
+void processDemo9(void) {
+    // API info + demo
+    // Demo 9: parent orbits around the quad center; child follows automatically.
+
+    // Short: OCT_TM_sin/cos return sin/cos for an integer angle in degrees; backed by a 360-entry lookup table.
+    // Declaration: float OCT_TM_sin(int deg);
+    // Declaration: float OCT_TM_cos(int deg);
+
+    float radius = 120.f;
+    int32_t angle = (int32_t)(vars.tick * 6) % 360; // 6 deg/tick → full circle in 3 seconds
+    float cx = 0.f; // plane center X
+    float cy = 0.f; // plane center Y
+
+    float x = cx + radius * OCT_TM_cos(angle);
+    float y = cy + radius * OCT_TM_sin(angle);
+    OCT_TM_set(&vars.demoObj->Tm, x, y, 0, (int32_t)vars.demoObj->Tm.Plane);
+}
+
 
 // State machine
 
@@ -652,16 +701,17 @@ void switchDemo(demoId_t demo) {
     vars.tick = 0;
 
     switch (demo) {
-        case DEMO_0:      initDemo0(); break;
-        case DEMO_1:      initDemo1(); break;
-        case DEMO_2:      initDemo2(); break;
+        case DEMO_0: initDemo0(); break;
+        case DEMO_1: initDemo1(); break;
+        case DEMO_2: initDemo2(); break;
         case DEMO_2_LERP: initDemo2(); break;
-        case DEMO_3:      initDemo3(); break;
-        case DEMO_4:      initDemo4(); break;
-        case DEMO_5:      initDemo5(); break;
-        case DEMO_6:      initDemo6(); break;
-        case DEMO_7:      initDemo7(); break;
-        case DEMO_8:      initDemo8(); break;
+        case DEMO_3: initDemo3(); break;
+        case DEMO_4: initDemo4(); break;
+        case DEMO_5: initDemo5(); break;
+        case DEMO_6: initDemo6(); break;
+        case DEMO_7: initDemo7(); break;
+        case DEMO_8: initDemo8(); break;
+        case DEMO_9: initDemo9(); break;
         default: break;
     }
 }
@@ -676,7 +726,7 @@ WASM_EXPORT void on_init() {
     OCT_viewports_layout(SCHEME_CUBE, GAP, GAP); // Set default viewport layout with gap between quads = GAP
     OCT_dev_mode(OCT_DEV_TEXT);
 
-    switchDemo(DEMO_8);
+    switchDemo(DEMO_9);
 }
 
 WASM_EXPORT void on_pretwisted(int32_t twid) {
@@ -787,15 +837,19 @@ WASM_EXPORT void on_tick() {
         OCT_trace(0, "gX: %f; gY: %f; gN: %f; top: %s; bottom: %s\n", gX, gY, gN, planes[topPlane], planes[bottomPlane]);
     }
 
+    if (vars.tick % OCT_1SEC_TICKS == 0)
+        OCT_trace(0, "demo:%d tick:%lu\n", (int32_t)vars.currentDemo, vars.tick);
+
     switch (vars.currentDemo) {
-        case DEMO_0:      processDemo0(); break;
-        case DEMO_2:      processDemo2(); break;
+        case DEMO_0: processDemo0(); break;
+        case DEMO_2: processDemo2(); break;
         case DEMO_2_LERP: processDemo2Lerp(); break;
-        case DEMO_3:      processDemo3(); break;
-        case DEMO_4:      processDemo4(); break;
-        case DEMO_5:      processDemo5(); break;
-        case DEMO_6:      processDemo6(); break;
-        case DEMO_7:      processDemo7(); break;
+        case DEMO_3: processDemo3(); break;
+        case DEMO_4: processDemo4(); break;
+        case DEMO_5: processDemo5(); break;
+        case DEMO_6: processDemo6(); break;
+        case DEMO_7: processDemo7(); break;
+        case DEMO_9: processDemo9(); break;
         default: break;
     }
 
