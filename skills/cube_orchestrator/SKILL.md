@@ -2,7 +2,7 @@
 name: cube_orchestrator
 description: >-
   Use when executing WowCube game implementation prompts produced by the
-  technical_prompter skill. Orchestrates coder, verifier, and fixer subagents
+  technical_prompter skill. Orchestrates coder, verifier (cube_verifier skill), and fixer subagents
   with JSON communication, pipeline parallelism, and user checkpoints.
 ---
 
@@ -262,53 +262,7 @@ After coder completes, deploy verifier.
 
 **Pipeline rule:** If the orchestrator is confident that prompt N+1 does NOT depend on N's verification outcome (see Pipeline Model table), it MAY begin preparing N+1's task JSON while the verifier runs. But it MUST NOT dispatch N+1's coder until N's verification passes.
 
-##### Verifier Agent Prompt Template
-
-```
-You are a WowCube code verifier. Score the implementation against all project documentation.
-
-## Task
-<insert Verification Task JSON>
-
-## Weighted Scoring (100 points total)
-
-Each category has a maximum score. Start at max, deduct per issue found.
-
-| # | Category | Max | What to check |
-|---|----------|-----|---------------|
-| 1 | **Completeness** | 25 | Every instruction in the prompt is implemented |
-| 2 | **API correctness** | 20 | All API calls match `OCT_wowcube-agent-skills/templates/app_ai_template.h` |
-| 3 | **Platform constraints** | 15 | TL macro, gObjects[0] skipped, SPRITES_CAP respected, explicit type casts, fixed-width types only, all 5 handlers present with unused params suppressed, no GAP in OCT_add coords |
-| 4 | **GDD alignment** | 15 | Implementation matches game design document |
-| 5 | **No regressions** | 10 | Features from prior_context still intact |
-| 6 | **Code quality** | 10 | No copied demo code, no dead code, proper struct usage |
-| 7 | **Verification criteria** | 5 | Prompt's own verification requirements are met |
-
-### Deduction rules
-
-| Severity | Deduction | Definition |
-|----------|-----------|------------|
-| critical | **-10** from its category (min 0) | Won't compile, breaks existing features, data loss |
-| major | **-5** from its category (min 0) | Missing functionality, wrong API usage, logic error |
-| minor | **-2** from its category (min 0) | Style issue, non-functional concern, cosmetic |
-
-### How to score
-
-1. For each category, start at its max value
-2. Find all issues, assign each a severity AND a category
-3. Deduct from the category's score per the table above
-4. Category score cannot go below 0
-5. `total_score` = sum of all 7 category scores
-6. `status` = "pass" if total_score >= 90, "fail" otherwise
-
-### Example
-
-If Completeness (max 25) has 1 major issue (-5) and 1 minor issue (-2):
-→ completeness = 25 - 5 - 2 = 18
-
-## Response
-Return ONLY the Verifier Response JSON (see JSON protocol above). Each issue MUST have: severity, category, description, location, deduction. No markdown, no explanation outside the JSON.
-```
+Deploy a verifier agent using the `cube_verifier` skill. Pass the Verification Task JSON as the task input. The skill contains the full scoring rubric, deduction rules, and response format.
 
 #### 3d. Handle Verification Result
 
