@@ -2,15 +2,16 @@
 name: cube_verifier
 description: >-
     Use when verifying WowCube game code after a coder agent completes
-    implementation. Deployed by cube_orchestrator to score code against the
-    prompt instructions, API template, GDD, and platform constraints.
+    implementation. Contains two agent roles: Requirements Agent (checks
+    completeness, GDD, regressions) and Template Agent (checks code against
+    app_ai_template.h). The orchestrator deploys each agent separately.
 ---
 
 # WowCube Code Verifier
 
-Score a WowCube game implementation against all project documentation. Return a structured verdict with per-category scores and an itemized issue list.
+This skill defines two verification agents. The orchestrator deploys them sequentially — first Requirements, then Template. Each returns its own JSON response scored out of 100. Both must score >= 90 to pass.
 
-**Core principle:** The verifier never modifies code. It reads, analyzes, scores, and reports. Every finding must cite a concrete location and reference the authoritative source (template, GDD, or prompt).
+**Core principle:** Verifier agents never modify code. They read, analyze, score, and report. Every finding must cite a concrete location and reference the authoritative source.
 
 ## When to Use
 
@@ -22,108 +23,191 @@ Score a WowCube game implementation against all project documentation. Return a 
 - No implementation exists yet — use `cube_orchestrator` to generate code first
 - User wants to fix issues — the orchestrator's fixer agent handles that
 
-## Input
+## Two Agents
 
-The orchestrator passes a **Verification Task JSON**:
+| Agent | Categories | Max |
+|-------|-----------|-----|
+| **Requirements Agent** | completeness (45), gdd_alignment (25), no_regressions (20), verification_criteria (10) | **100** |
+| **Template Agent** | api_correctness (45), platform_constraints (35), code_quality (20) | **100** |
 
-```json
-{
-  "task": "verify",
-  "game": "<game_name>",
-  "prompt_number": N,
-  "prompt_title": "...",
-  "instructions": "<original prompt instructions>",
-  "verification_criteria": "<what the user should see/hear>",
-  "files_to_read": [
-    "src/app_<game>.h",
-    "plans/<game>_gdd.md",
-    "OCT_wowcube-agent-skills/templates/app_ai_template.h"
-  ],
-  "prior_context": [ ... ]
-}
-```
+The orchestrator deploys Requirements Agent first, then Template Agent. Each scores out of 100. Pass threshold >= 90 for each.
 
-## Workflow
+## Deduction Rules (shared by both agents)
 
-1. **Read ALL files** listed in `files_to_read` before scoring
+| Severity | Deduction | Definition |
+|----------|-----------|------------|
+| critical | **-10** from its category (min 0) | Won't compile, feature missing entirely, breaks existing features |
+| major | **-5** from its category (min 0) | Wrong API usage, partially implemented, logic error |
+| minor | **-2** from its category (min 0) | Style issue, cosmetic difference, non-functional concern |
+
+**How to score:** Start each category at its max. Deduct per issue. Category cannot go below 0. Total = sum of all categories.
+
+---
+
+## Requirements Agent
+
+Checks implementation against prompt instructions, GDD, prior context, and verification criteria.
+
+### How to Verify
+
+1. **Read the game code** and **GDD**
 2. **Read `prior_context`** to understand what existed before this prompt
-3. **Score** the implementation using the weighted rubric below
-4. **Return** the Verifier Response JSON — nothing else
+3. **Compare implementation to prompt `instructions`** — is every instruction implemented?
+4. **Compare implementation to GDD** — does it match the game design?
+5. **Check for regressions** — are features from prior prompts still intact?
+6. **Check verification criteria** — does the implementation meet the prompt's test requirements?
 
-## Weighted Scoring (100 points total)
+### Categories
 
-Each category has a maximum score. Start at max, deduct per issue found.
+| Category | Max | What to check |
+|----------|-----|---------------|
+| **completeness** | 45 | Every instruction in the prompt is implemented; nothing missing, nothing extra |
+| **gdd_alignment** | 25 | Implementation matches the game design document (mechanics, visuals, behavior) |
+| **no_regressions** | 20 | Features documented in `prior_context` still work; no broken functionality |
+| **verification_criteria** | 10 | The prompt's own verification/test requirements are met |
 
-| #   | Category                  | Max | What to check                                                                                                                                                                     |
-| --- | ------------------------- | --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | **Completeness**          | 25  | Every instruction in the prompt is implemented                                                                                                                                    |
-| 2   | **API correctness**       | 20  | All API calls match `OCT_wowcube-agent-skills/templates/app_ai_template.h`                                                                                                        |
-| 3   | **Platform constraints**  | 15  | TL macro, gObjects[0] skipped, SPRITES_CAP respected, explicit type casts, fixed-width types only, all 5 handlers present with unused params suppressed, no GAP in OCT_add coords |
-| 4   | **GDD alignment**         | 15  | Implementation matches game design document                                                                                                                                       |
-| 5   | **No regressions**        | 10  | Features from prior_context still intact                                                                                                                                          |
-| 6   | **Code quality**          | 10  | No copied demo code, no dead code, proper struct usage                                                                                                                            |
-| 7   | **Verification criteria** | 5   | Prompt's own verification requirements are met                                                                                                                                    |
+### Prompt Template
 
-### Platform Constraints Checklist
+```
+You are a WowCube requirements verifier. Your job is to check whether the
+game code implements what was asked — completely, correctly, and without
+breaking existing features.
 
-When scoring category 3, check each of these:
+## Task
+<insert Verification Task JSON>
 
-| Constraint        | Rule                                                                                                                        |
-| ----------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| TL macro          | All globals must use `TL static type name;`                                                                                 |
-| Object pools      | `gObjects[0]` is reserved — start from index 1                                                                              |
-| Sprite budget     | SPRITES_CAP = 400 max                                                                                                       |
-| Type safety       | Explicit casts required — no implicit conversions between numeric types, pointers, or enums                                 |
-| Fixed-width types | Only `<stdint.h>` types (int8_t, int16_t, int32_t, uint8_t, uint16_t, uint32_t, size_t). Never plain `int`, `short`, `long` |
-| Handlers          | All 5 required: on_init, on_tick, on_tap, on_twisted, on_pretwisted. Unused params must be referenced to suppress warnings  |
-| GAP in coords     | No GAP offsets in OCT_add coordinates — the engine handles GAP automatically                                                |
+## Rules
+1. Read the game code, GDD, and prior_context BEFORE scoring
+2. Check every instruction in `instructions` — is it implemented?
+3. Check the GDD — does the implementation match the design?
+4. Check prior_context — are previous features still intact?
+5. Check verification_criteria — are test requirements met?
+6. Do NOT check API correctness or template compliance — another agent handles that
+7. Score ONLY these categories: completeness (max 45),
+   gdd_alignment (max 25), no_regressions (max 20),
+   verification_criteria (max 10)
 
-### Deduction Rules
+## Deduction Rules
+- critical (-10): feature entirely missing, breaks existing feature
+- major (-5): partially implemented, wrong behavior, GDD mismatch
+- minor (-2): cosmetic difference, minor deviation
 
-| Severity | Deduction                         | Definition                                          |
-| -------- | --------------------------------- | --------------------------------------------------- |
-| critical | **-10** from its category (min 0) | Won't compile, breaks existing features, data loss  |
-| major    | **-5** from its category (min 0)  | Missing functionality, wrong API usage, logic error |
-| minor    | **-2** from its category (min 0)  | Style issue, non-functional concern, cosmetic       |
-
-### How to Score
-
-1. For each category, start at its max value
-2. Find all issues, assign each a severity AND a category
-3. Deduct from the category's score per the table above
-4. Category score cannot go below 0
-5. `total_score` = sum of all 7 category scores
-6. `status` = "pass" if total_score >= 90, "fail" otherwise
-
-### Example
-
-If Completeness (max 25) has 1 major issue (-5) and 1 minor issue (-2):
-→ completeness = 25 - 5 - 2 = 18
-
-## Output
-
-Return ONLY the Verifier Response JSON. Each issue MUST have: severity, category, description, location, deduction. No markdown, no explanation outside the JSON.
-
-```json
+## Response
+Return ONLY this JSON — no markdown, no explanation:
 {
-  "status": "pass|fail",
+  "agent": "requirements",
   "prompt": N,
   "scores": {
-    "completeness": 25,
-    "api_correctness": 20,
-    "platform_constraints": 15,
-    "gdd_alignment": 15,
-    "no_regressions": 10,
-    "code_quality": 10,
-    "verification_criteria": 5
+    "completeness": <0-45>,
+    "gdd_alignment": <0-25>,
+    "no_regressions": <0-20>,
+    "verification_criteria": <0-10>
   },
-  "total_score": 100,
+  "total": <sum of above, 0-100>,
+  "status": "pass if total >= 90, else fail",
   "issues": [
     {
       "severity": "critical|major|minor",
-      "category": "completeness|api_correctness|platform_constraints|gdd_alignment|no_regressions|code_quality|verification_criteria",
+      "category": "completeness|gdd_alignment|no_regressions|verification_criteria",
       "description": "...",
-      "location": "...",
+      "location": "file:line or function name",
+      "deduction": N
+    }
+  ],
+  "summary": "one sentence assessment"
+}
+```
+
+---
+
+## Template Agent
+
+Reads `app_ai_template.h` and verifies the game code against **everything** documented in it: instructions, API signatures, comments, warnings, and usage rules.
+
+### How to Verify
+
+1. **Read `app_ai_template.h` in full** — this is the source of truth
+2. **Extract every rule** from the template:
+   - The `INSTRUCTIONS FOR AI AGENT` block — each bullet (`*`) is a mandatory coding standard
+   - `// Short:` annotations — what the API does
+   - `// Declaration:` annotations — exact function signatures (parameter count, types, order)
+   - `// Comment:` annotations — usage semantics, constraints, valid ranges, edge cases
+   - `// Critical Comment:` annotations — mandatory rules; ignoring causes bugs
+   - `// Warn:` annotations — things that MUST NOT be done
+   - Inline comments on code lines — parameter meanings, value ranges, behavioral notes
+   - `// Demo: do not copy-paste this code` markers — code below must not be copied
+3. **Read the game code** (`src/app_<game>.h`)
+4. **For each API call in the game code:**
+   - Find the matching `Declaration:` in the template
+   - Verify parameter count, types, and order match
+   - Verify usage semantics match all `Comment:` annotations for that API
+   - Check for `Critical Comment:` and `Warn:` violations
+5. **For coding patterns:**
+   - Verify no demo code was copied from sections marked `Demo: do not copy-paste this code`
+   - Verify no internal template comments (Short/Declaration/Comment/Warn) appear in game code
+   - Check all rules from the `INSTRUCTIONS FOR AI AGENT` block:
+     - Explicit type casts on every narrowing/widening/cross-type assignment
+     - Fixed-width types only (`<stdint.h>`)
+     - Project header structure preserved
+     - All 5 handlers present; unused params referenced
+     - Modular code: structs for state, small focused functions, named constants
+
+### Categories
+
+| Category | Max | What to check |
+|----------|-----|---------------|
+| **api_correctness** | 45 | Every API call matches the template's Declaration, Comment, Critical Comment, and Warn annotations |
+| **platform_constraints** | 35 | All rules from the template's INSTRUCTIONS block and platform-specific comments: TL macro, gObjects[0] reserved, SPRITES_CAP, explicit casts, fixed-width types, all 5 handlers, no GAP in OCT_add |
+| **code_quality** | 20 | No copied demo code or internal comments, modular design with structs/functions/named constants per INSTRUCTIONS block |
+
+### Prompt Template
+
+```
+You are a WowCube template compliance verifier. Your job is to read the
+API template and check the game code against EVERY instruction, annotation,
+and comment in it.
+
+## Task
+<insert Verification Task JSON>
+
+## Rules
+1. Read `app_ai_template.h` FIRST — this is your source of truth
+2. Read the game code file
+3. Every template annotation (Short, Declaration, Comment, Critical Comment,
+   Warn) and every INSTRUCTIONS bullet is a verifiable rule
+4. For each API call in the game code, find the matching Declaration in the
+   template and verify correctness against ALL associated comments
+5. Check coding standards from the INSTRUCTIONS block
+6. Check that no demo code (sections marked "Demo: do not copy-paste") was copied
+7. Check that no internal template comments appear in the game code
+8. Score ONLY these categories: api_correctness (max 45),
+   platform_constraints (max 35), code_quality (max 20)
+9. Cite the specific template annotation for every issue
+
+## Deduction Rules
+- critical (-10): won't compile, breaks engine contract, data loss
+- major (-5): wrong API usage, missing cast, wrong param type
+- minor (-2): style issue, non-functional concern
+
+## Response
+Return ONLY this JSON — no markdown, no explanation:
+{
+  "agent": "template",
+  "prompt": N,
+  "scores": {
+    "api_correctness": <0-45>,
+    "platform_constraints": <0-35>,
+    "code_quality": <0-20>
+  },
+  "total": <sum of above, 0-100>,
+  "status": "pass if total >= 90, else fail",
+  "issues": [
+    {
+      "severity": "critical|major|minor",
+      "category": "api_correctness|platform_constraints|code_quality",
+      "description": "...",
+      "location": "file:line or function name",
+      "template_rule": "the specific annotation or instruction violated",
       "deduction": N
     }
   ],
