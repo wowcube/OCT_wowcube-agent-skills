@@ -28,7 +28,7 @@ This skill defines two verification agents. The orchestrator deploys them sequen
 | Agent | Categories | Max |
 |-------|-----------|-----|
 | **Requirements Agent** | completeness (45), gdd_alignment (25), no_regressions (20), verification_criteria (10) | **100** |
-| **Template Agent** | api_correctness (45), platform_constraints (35), code_quality (20) | **100** |
+| **Template Agent** | api_correctness (40), platform_constraints (30), code_quality (30) | **100** |
 
 The orchestrator deploys Requirements Agent first, then Template Agent. Each scores out of 100. Pass threshold >= 90 for each.
 
@@ -151,14 +151,17 @@ Reads `app_ai_template.h` and verifies the game code against **everything** docu
      - Project header structure preserved
      - All 5 handlers present; unused params referenced
      - Modular code: structs for state, small focused functions, named constants
+6. **For struct organization and sprite references:**
+   - `appvars_t` must not be a flat bag of fields. Related state must be grouped into dedicated sub-structs with `_t` suffix. Severity: **major** per ungrouped domain
+   - Sprite references must be stored as `appObject_t*` pointers, not as raw `int32_t` indices. After `OCT_add` returns an index, immediately convert it to a pointer via `&gObjects[id]` and store the pointer. Use `NULL` for "no sprite". Severity: **major** per field that stores an index instead of a pointer
 
 ### Categories
 
 | Category | Max | What to check |
 |----------|-----|---------------|
-| **api_correctness** | 45 | Every API call matches the template's Declaration, Comment, Critical Comment, and Warn annotations |
-| **platform_constraints** | 35 | All rules from the template's INSTRUCTIONS block and platform-specific comments: TL macro, gObjects[0] reserved, SPRITES_CAP, explicit casts, fixed-width types, all 5 handlers, no GAP in OCT_add |
-| **code_quality** | 20 | No copied demo code or internal comments, modular design with structs/functions/named constants per INSTRUCTIONS block |
+| **api_correctness** | 40 | Every API call matches the template's Declaration, Comment, Critical Comment, and Warn annotations |
+| **platform_constraints** | 30 | All rules from the template's INSTRUCTIONS block and platform-specific comments: TL macro, gObjects[0] reserved, SPRITES_CAP, explicit casts, fixed-width types, all 5 handlers, no GAP in OCT_add |
+| **code_quality** | 30 | No copied demo code or internal comments; modular struct organization (related state grouped into sub-structs, not flat); sprite references as `appObject_t*` pointers not raw indices; small focused functions; named constants |
 
 ### Prompt Template
 
@@ -178,11 +181,20 @@ and comment in it.
 4. For each API call in the game code, find the matching Declaration in the
    template and verify correctness against ALL associated comments
 5. Check coding standards from the INSTRUCTIONS block
-6. Check that no demo code (sections marked "Demo: do not copy-paste") was copied
-7. Check that no internal template comments appear in the game code
-8. Score ONLY these categories: api_correctness (max 45),
-   platform_constraints (max 35), code_quality (max 20)
-9. Cite the specific template annotation for every issue
+6. Check struct organization: `appvars_t` must not be a flat bag of fields.
+   Related state must be grouped into dedicated sub-structs with `_t`
+   suffix. Each ungrouped domain is a major (-5) code_quality violation
+7. Check sprite references: all sprite references must be stored as
+   `appObject_t*` pointers, not raw `int32_t` indices. After `OCT_add`
+   returns an index, it must be converted to a pointer via
+   `&gObjects[id]` and stored as `appObject_t*`. Use `NULL` for
+   "no sprite". Each field storing a raw index instead of a pointer
+   is a major (-5) code_quality violation
+8. Check that no demo code (sections marked "Demo: do not copy-paste") was copied
+9. Check that no internal template comments appear in the game code
+10. Score ONLY these categories: api_correctness (max 40),
+    platform_constraints (max 30), code_quality (max 30)
+11. Cite the specific template annotation for every issue
 
 ## Deduction Rules
 - critical (-10): won't compile, breaks engine contract, data loss
@@ -195,9 +207,9 @@ Return ONLY this JSON — no markdown, no explanation:
   "agent": "template",
   "prompt": N,
   "scores": {
-    "api_correctness": <0-45>,
-    "platform_constraints": <0-35>,
-    "code_quality": <0-20>
+    "api_correctness": <0-40>,
+    "platform_constraints": <0-30>,
+    "code_quality": <0-30>
   },
   "total": <sum of above, 0-100>,
   "status": "pass if total >= 90, else fail",
