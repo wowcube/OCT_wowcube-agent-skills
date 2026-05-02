@@ -8,7 +8,7 @@ effects so that any subsystem can consume it cheaply.
 
 from __future__ import annotations
 
-from enum import IntFlag
+from enum import IntEnum, IntFlag
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -82,7 +82,7 @@ RLE_ENCODE: dict[int, tuple[int, int]] = {
 }
 
 # Default bit widths written into a newly-built header
-DEFAULT_OFFSET_BITNESS = 5
+DEFAULT_OFFSET_BITNESS = 7  # matches the reference pack format used by the sim
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -195,8 +195,37 @@ BMFONT_FIRST_PRINTABLE = 33      # skip control codes + space
 # Miscellaneous
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Sprite pivot encoding
+# ─────────────────────────────────────────────────────────────────────────────
+
+class PivotMode(IntEnum):
+    """How the sprite pivot is stored in the octBmp_t header.
+
+    ATLAS  - utils.exe convention: pivot encodes the sprite's top-left
+             position on the PSD canvas, scaled and negated:
+                 pivot = -(atlas_xy * PIVOT_SCALE + PIVOT_HALFPIX)
+    LEGACY - legacy psd.exe / hand-tuned convention: pivot is stored in the
+             sprite's own local pixel coordinates with a half-pixel offset:
+                 pivot = (w - PIVOT_LOCAL_OFFSET, h - PIVOT_LOCAL_OFFSET)
+             Matches the byte-exact layout of packed_old/.
+    """
+    ATLAS  = 0
+    LEGACY = 1
+
+
+# Active pivot encoding mode for newly built headers. Switch to ATLAS only
+# when targeting the utils.exe-based runtime; the engine in this repo
+# expects LEGACY pivots.
+PIVOT_MODE = PivotMode.LEGACY
+
+# Half-pixel offset used by the LEGACY pivot encoding (pivot points to the
+# sprite's bottom-right pixel center).
+PIVOT_LOCAL_OFFSET = 0.5
+
 PIVOT_SCALE    = 2               # utils.exe stores pivot * 2x zoom
-PIVOT_HALFPIX  = 0.5             # + half-pixel offset
+PIVOT_HALFPIX  = 0.5             # + half-pixel offset (used by ATLAS mode)
 NUMBER_FIELD_MASK = 0x7FFF       # 15-bit Number field in octPlace_t
 BYTES_PER_RGBA  = 4              # RGBA PNG container stride
 WORD_BITS       = 32
+# (config rev 2026-04-29: a

@@ -201,9 +201,22 @@ If the user requests a style change mid-pipeline ("change the look", "make it mo
 
 2. **Rotate the profile.** Overwrite `plans/<game>/style_profile.md` with the new preset (verbatim, with the same header convention `cube_asset-prompter` uses, marking the date and game).
 
-3. **Cascade regeneration.** Re-invoke `cube_asset-prompter` to regenerate `art_bible.md` and per-asset prompts against the new profile, then re-run `canvas-design` for affected sprites, then re-run `cube_asset-builder pack`. The implementation source code (`src/app_<game>.h`) does NOT need to be regenerated — only assets and atlases.
+3. **Cascade regeneration.** Re-invoke `cube_asset-prompter` to regenerate `art_bible.md` and per-asset prompts against the new profile, then re-run the appropriate renderer for affected sprites (see the routing table below), then re-run `cube_asset-builder pack`. The implementation source code (`src/app_<game>.h`) does NOT need to be regenerated — only assets and atlases.
 
-4. **Forbid procedural-fallback art.** A common failure mode is to substitute the real `canvas-design` rendering with a quick PIL/SVG primitive script "for speed". When the active style is anything other than `minimalist_flat`, the orchestrator MUST refuse procedural fallbacks and require real `canvas-design` invocations (one per per-asset prompt). The `minimalist_flat` preset is the ONLY style where procedural primitives are acceptable, because it was designed for that.
+   **Per-style renderer routing.** Each style is owned by exactly one renderer skill:
+
+   | Style profile             | Renderer skill   | Output                          |
+   |---------------------------|------------------|---------------------------------|
+   | `minimalist_flat`         | `cube_svg-design` | `assets/svg/<n>.svg` + `assets/art/<n>.png` |
+   | `cartoon_thick_outline`   | `cube_svg-design` | `assets/svg/<n>.svg` + `assets/art/<n>.png` |
+   | `realistic_render`        | `cube_svg-design` | `assets/svg/<n>.svg` + `assets/art/<n>.png` |
+   | `detailed_pixelart`       | `canvas-design`  | `assets/art/<n>.png`            |
+   | `retro_8bit`              | `canvas-design`  | `assets/art/<n>.png`            |
+   | `painterly_storybook`     | `canvas-design`  | `assets/art/<n>.png`            |
+
+   The orchestrator MUST read the active `style_profile.md` and dispatch each per-asset prompt to the matching skill — never the wrong one.
+
+4. **Forbid procedural-fallback art.** A common failure mode is to substitute the real renderer with a quick PIL/SVG primitive script "for speed". When the active style is anything other than `minimalist_flat`, the orchestrator MUST refuse procedural fallbacks and require real renderer invocations (`cube_svg-design` or `canvas-design` per the routing table above). The `minimalist_flat` preset is the ONLY style where procedural primitives are acceptable, because it was designed for that — and even there, `cube_svg-design` is the default path.
 
 5. **Re-checkpoint after rotation.** Treat the cascade above as a checkpointable batch — present the diff (which sprites re-rendered, which palette indices shifted) to the user before resuming the prompt cycle.
 

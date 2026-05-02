@@ -3,7 +3,9 @@ name: cube_asset-prompter
 description: >-
   Use after `technical_prompter` has produced `plans/<game>_assets.json` and
   BEFORE `cube_asset-builder` runs. Turns the GDD + asset manifest into
-  per-asset visual prompts for `canvas-design`: a shared `art_bible.md`
+  per-asset visual prompts for the renderer skills (`cube_svg-design` for
+  vector-friendly styles; `canvas-design` for raster-native styles):
+  a shared `art_bible.md`
   (palette, style, typography, naming contract), an `asset_index.md` overview,
   and one self-contained `prompts/<name>.md` per sprite and sound. Enforces
   the same naming rules that `cube_asset-builder`'s validator will later
@@ -12,16 +14,17 @@ description: >-
 
 # WowCube Asset Prompter
 
-Bridge between design (GDD) and art generation (`canvas-design`). This
-skill never renders pixels and never writes game code. It produces the
-prompt package that a downstream renderer will execute to fill
-`assets/art/*.png` and `assets/mp3/*.mp3` with real content instead of
-deterministic placeholders.
+Bridge between design (GDD) and art generation. This skill never renders
+pixels and never writes game code. It produces the prompt package that a
+downstream renderer (`cube_svg-design` or `canvas-design`, depending on
+the active style profile) will execute to fill `assets/art/*.png` and
+`assets/mp3/*.mp3` with real content instead of deterministic
+placeholders.
 
 **Core principle:** every prompt is self-contained and uses an asset name
 that is already guaranteed to pass `cube_asset-builder`'s validator. The
 art bible, not the individual prompt, carries the shared visual language
-so that N independent `canvas-design` invocations yield one coherent set.
+so that N independent renderer invocations yield one coherent set.
 
 ## When to Use
 
@@ -37,7 +40,8 @@ so that N independent `canvas-design` invocations yield one coherent set.
 - No GDD → delegate to `cube_game-designer`.
 - No manifest → delegate to `technical_prompter`.
 - The user wants real PNGs on disk → this skill emits prompts only; the
-  renderer (`canvas-design` per prompt) is a separate invocation.
+  renderer (`cube_svg-design` or `canvas-design`, one per prompt) is a
+  separate invocation.
 - The user wants the packed atlas, `pal.png`, or `_ids.h` → that is
   `cube_asset-builder`'s territory.
 
@@ -45,8 +49,9 @@ so that N independent `canvas-design` invocations yield one coherent set.
 
 This skill is pure text I/O — it reads markdown and JSON, writes
 markdown. No shell commands, no dependencies, no rendering. The prompts
-it produces are later consumed by `canvas-design`, whose scripts run in
-the agent's `mcp__workspace__bash` sandbox (never on the user's machine).
+it produces are later consumed by `cube_svg-design` or `canvas-design`,
+whose scripts run in the agent's `mcp__workspace__bash` sandbox (never on
+the user's machine).
 
 ## Prerequisites
 
@@ -93,9 +98,22 @@ If it does NOT exist, do the following BEFORE any other step:
 
 4. **Honor the profile downstream.** The art bible written in Step 4 inherits the profile's "Visual identity", "Palette policy", and "Reference language for prompts" sections verbatim. Every per-asset prompt written in Step 6 quotes 2–4 sentences from the profile's "Reference language for prompts" section. The profile is the law; the GDD is the flavor on top.
 
-5. **Forbid procedural-fallback art (signal to downstream).** A common failure mode is to substitute the real `canvas-design` rendering with a quick PIL/SVG primitive script "for speed". When the chosen style is anything other than `minimalist_flat`, every per-asset prompt MUST explicitly forbid procedural fallbacks (under "Hard no's"). The `minimalist_flat` preset is the ONLY style where procedural primitives are acceptable, because it was designed for that. The actual enforcement happens in `canvas-design` and `cube_orchestrator`, but the prohibition is signalled in the prompts this skill writes.
+5. **Forbid procedural-fallback art (signal to downstream).** A common failure mode is to substitute the real renderer with a quick PIL/SVG primitive script "for speed". When the chosen style is anything other than `minimalist_flat`, every per-asset prompt MUST explicitly forbid procedural fallbacks (under "Hard no's"). The `minimalist_flat` preset is the ONLY style where procedural primitives are acceptable, because it was designed for that. The actual enforcement happens in the renderer skill (`cube_svg-design` or `canvas-design`) and `cube_orchestrator`, but the prohibition is signalled in the prompts this skill writes.
 
-6. **Style rotation belongs to `cube_orchestrator`.** If, later in the pipeline, the user asks to "change the look" or "make it more <X>", do NOT handle that here — it is `cube_orchestrator`'s job to rotate the profile, then re-invoke this skill to regenerate the art bible and per-asset prompts, then re-run `canvas-design` and `cube_asset-builder`. This skill owns the **initial** selection only; the orchestrator owns the **lifecycle**.
+6. **Renderer routing.** Each style is owned by exactly one renderer skill. The orchestrator dispatches per-asset prompts based on the active style:
+
+   | Style profile             | Renderer skill   |
+   |---------------------------|------------------|
+   | `minimalist_flat`         | `cube_svg-design` (vector → PNG via cairosvg) |
+   | `cartoon_thick_outline`   | `cube_svg-design` (vector → PNG via cairosvg) |
+   | `realistic_render`        | `cube_svg-design` (vector → PNG via cairosvg) |
+   | `detailed_pixelart`       | `canvas-design` (raster, `pixel_lib`)       |
+   | `retro_8bit`              | `canvas-design` (raster, `pixel_lib`)       |
+   | `painterly_storybook`     | `canvas-design` (raster, `painterly_lib`)   |
+
+   This skill does NOT invoke either renderer; it just makes sure the prompts it produces include enough context so the right renderer can run later. The "Style-profile reference language" section in each per-asset prompt should already reflect the chosen profile.
+
+7. **Style rotation belongs to `cube_orchestrator`.** If, later in the pipeline, the user asks to "change the look" or "make it more <X>", do NOT handle that here — it is `cube_orchestrator`'s job to rotate the profile, then re-invoke this skill to regenerate the art bible and per-asset prompts, then re-run the matching renderer (`cube_svg-design` or `canvas-design`) and `cube_asset-builder`. This skill owns the **initial** selection only; the orchestrator owns the **lifecycle**.
 
 ### Step 0 output
 
@@ -331,8 +349,8 @@ Art bible: [art_bible.md](art_bible.md)
 
 For each sprite in the manifest, create
 `plans/<game>/prompts/<name>.md`. Every file must be self-contained so
-a fresh `canvas-design` invocation can run it without reading the
-manifest directly.
+a fresh renderer invocation (`cube_svg-design` or `canvas-design`) can
+run it without reading the manifest directly.
 
 Sprite prompt template:
 
@@ -345,6 +363,9 @@ Sprite prompt template:
 - Pivot: (<px>, <py>) — see art bible for how to align artwork to pivot
 - Group: `<derived_group>`
 - Animation: `<anim>` frame `<N>` of `<total_in_group>` (omit if not animated)
+- Renderer: `<cube_svg-design or canvas-design>` (chosen by the active
+  style profile — vector styles use `cube_svg-design`, which also writes
+  `assets/svg/<name>.svg` next to the PNG)
 
 ## Visual brief
 <One sentence lifted from the manifest's `description` field.>
@@ -398,7 +419,7 @@ keys everything off this filename.
 
 For each sound in the manifest, create
 `plans/<game>/prompts/<name>.md` with an analogous template. Sounds are
-NOT rendered by `canvas-design` — the sound prompt file exists so that
+NOT rendered by either renderer skill — the sound prompt file exists so that
 when an audio renderer is added, the contract is already in place.
 
 Sound prompt template:
@@ -464,12 +485,16 @@ Print:
 > - Per-asset prompts: `plans/<game>/prompts/*.md` (N sprites + M sounds)
 > Typography is locked to `skills/canvas-design/canvas-fonts/Rubik-Bold.ttf`.
 > Palette is derived from GDD §1.2 — review the art bible before rendering.
-> Next: run `canvas-design` once per `prompts/<name>.md` to produce
-> `assets/art/<name>.png`. Sounds are emitted as prompt files but
-> wait for a future audio renderer.
+> Next: invoke the renderer that matches the active style profile —
+> `cube_svg-design` for `minimalist_flat` / `cartoon_thick_outline` /
+> `realistic_render`, or `canvas-design` for `detailed_pixelart` /
+> `retro_8bit` / `painterly_storybook` — once per `prompts/<name>.md` to
+> produce `assets/art/<name>.png` (and `assets/svg/<name>.svg` when the
+> SVG renderer is used). Sounds are emitted as prompt files but wait
+> for a future audio renderer.
 
-Do NOT invoke `canvas-design` automatically. The user decides when
-to render and may want to hand-edit the art bible first.
+Do NOT invoke the renderer automatically. The user decides when to
+render and may want to hand-edit the art bible first.
 
 ## Workspace layout (after this skill runs)
 
@@ -488,7 +513,7 @@ plans/
 ## Constraints
 
 - **Never render pixels.** This skill only writes markdown. Rendering
-  is `canvas-design`'s job.
+  is the renderer skill's job (`cube_svg-design` or `canvas-design`).
 - **Never invent asset names.** Every prompt corresponds to a manifest
   entry. If the manifest is wrong, stop and send the user back to
   `technical_prompter`.
