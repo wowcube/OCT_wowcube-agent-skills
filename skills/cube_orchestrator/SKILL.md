@@ -2,7 +2,7 @@
 name: cube_orchestrator
 description: >-
   Use when executing WowCube game implementation prompts produced by the
-  technical_prompter skill. Orchestrates coder, verifier, and fixer subagents
+  technical_prompter skill. Orchestrates coder, verifier (cube_verifier skill), and fixer subagents
   with JSON communication, pipeline parallelism, and user checkpoints.
 ---
 
@@ -152,24 +152,42 @@ All data between orchestrator and agents is JSON.
 }
 ```
 
-### Verifier Response JSON (verifier agent → orchestrator)
+### Requirements Verifier Response JSON (requirements agent → orchestrator)
 
 ```json
 {
-  "status": "pass|fail",
+  "agent": "requirements",
   "prompt": N,
   "scores": {
-    "completeness": 25,
-    "api_correctness": 20,
-    "platform_constraints": 15,
-    "gdd_alignment": 15,
-    "no_regressions": 10,
-    "code_quality": 10,
-    "verification_criteria": 5
+    "completeness": 45,
+    "gdd_alignment": 25,
+    "no_regressions": 20,
+    "verification_criteria": 10
   },
-  "total_score": 100,
+  "total": 100,
+  "status": "pass|fail",
   "issues": [
-    {"severity": "critical|major|minor", "category": "completeness|api_correctness|platform_constraints|gdd_alignment|no_regressions|code_quality|verification_criteria", "description": "...", "location": "...", "deduction": N}
+    {"severity": "critical|major|minor", "category": "completeness|gdd_alignment|no_regressions|verification_criteria", "description": "...", "location": "...", "deduction": N}
+  ],
+  "summary": "one sentence assessment"
+}
+```
+
+### Template Verifier Response JSON (template agent → orchestrator)
+
+```json
+{
+  "agent": "template",
+  "prompt": N,
+  "scores": {
+    "api_correctness": 45,
+    "platform_constraints": 35,
+    "code_quality": 20
+  },
+  "total": 100,
+  "status": "pass|fail",
+  "issues": [
+    {"severity": "critical|major|minor", "category": "api_correctness|platform_constraints|code_quality", "description": "...", "location": "...", "template_rule": "...", "deduction": N}
   ],
   "summary": "one sentence assessment"
 }
@@ -256,59 +274,17 @@ You are a WowCube game coder. Implement exactly what the task describes.
 Return ONLY the Coder Response JSON. No markdown, no explanation outside the JSON.
 ```
 
-#### 3c. Dispatch Verifier Agent
+#### 3c. Dispatch Verifier Agents
 
-After coder completes, deploy verifier.
+After coder completes, deploy two verifier agents **sequentially** using the `cube_verifier` skill. Pass the same Verification Task JSON to each.
 
-**Pipeline rule:** If the orchestrator is confident that prompt N+1 does NOT depend on N's verification outcome (see Pipeline Model table), it MAY begin preparing N+1's task JSON while the verifier runs. But it MUST NOT dispatch N+1's coder until N's verification passes.
+**Step 1 — Requirements Agent.** Deploy an agent with the Requirements Agent prompt template from the `cube_verifier` skill. Returns a JSON with scores for: completeness (25), gdd_alignment (15), no_regressions (10), verification_criteria (5). Max 55 points.
 
-##### Verifier Agent Prompt Template
+**Step 2 — Template Agent.** Deploy an agent with the Template Agent prompt template from the `cube_verifier` skill. Returns a JSON with scores for: api_correctness (20), platform_constraints (15), code_quality (10). Max 45 points.
 
-```
-You are a WowCube code verifier. Score the implementation against all project documentation.
+**Evaluate:** Each agent scores out of 100 independently. Both must score >= 90 to pass. If either fails, pass its issues to the fix agent.
 
-## Task
-<insert Verification Task JSON>
-
-## Weighted Scoring (100 points total)
-
-Each category has a maximum score. Start at max, deduct per issue found.
-
-| # | Category | Max | What to check |
-|---|----------|-----|---------------|
-| 1 | **Completeness** | 25 | Every instruction in the prompt is implemented |
-| 2 | **API correctness** | 20 | All API calls match `OCT_wowcube-agent-skills/templates/app_ai_template.h` |
-| 3 | **Platform constraints** | 15 | TL macro, gObjects[0] skipped, SPRITES_CAP respected, explicit type casts, fixed-width types only, all 5 handlers present with unused params suppressed, no GAP in OCT_add coords |
-| 4 | **GDD alignment** | 15 | Implementation matches game design document |
-| 5 | **No regressions** | 10 | Features from prior_context still intact |
-| 6 | **Code quality** | 10 | No copied demo code, no dead code, proper struct usage |
-| 7 | **Verification criteria** | 5 | Prompt's own verification requirements are met |
-
-### Deduction rules
-
-| Severity | Deduction | Definition |
-|----------|-----------|------------|
-| critical | **-10** from its category (min 0) | Won't compile, breaks existing features, data loss |
-| major | **-5** from its category (min 0) | Missing functionality, wrong API usage, logic error |
-| minor | **-2** from its category (min 0) | Style issue, non-functional concern, cosmetic |
-
-### How to score
-
-1. For each category, start at its max value
-2. Find all issues, assign each a severity AND a category
-3. Deduct from the category's score per the table above
-4. Category score cannot go below 0
-5. `total_score` = sum of all 7 category scores
-6. `status` = "pass" if total_score >= 90, "fail" otherwise
-
-### Example
-
-If Completeness (max 25) has 1 major issue (-5) and 1 minor issue (-2):
-→ completeness = 25 - 5 - 2 = 18
-
-## Response
-Return ONLY the Verifier Response JSON (see JSON protocol above). Each issue MUST have: severity, category, description, location, deduction. No markdown, no explanation outside the JSON.
-```
+**Pipeline rule:** If the orchestrator is confident that prompt N+1 does NOT depend on N's verification outcome (see Pipeline Model table), it MAY begin preparing N+1's task JSON while the verifiers run. But it MUST NOT dispatch N+1's coder until verification passes.
 
 #### 3d. Handle Verification Result
 
@@ -425,6 +401,6 @@ After all prompts executed and final checkpoint passes:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Verification threshold | 90 | Minimum score to pass |
+| Verification threshold | 90 | Minimum score to pass (per agent, each scores out of 100) |
 | Max retry attempts | 5 | Max fix+re-verify cycles per prompt |
 | Start from | 1 | First prompt to execute (for resumption) |
