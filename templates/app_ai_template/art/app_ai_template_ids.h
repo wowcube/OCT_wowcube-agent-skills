@@ -315,5 +315,5 @@ const uint8_t TYPE_last = 1;
 //#tags
 
 
-//207002 pixels input - 21843 pixels trimmed = 185159 bytes + 25552 trims = 210711 bytes total. Bitpacked = 67836
+//207002 pixels input - 21843 pixels trimmed = 185159 bytes + 25552 trims = 210711 bytes total. Bitpacked = 71432
  
