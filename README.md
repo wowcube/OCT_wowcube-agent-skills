@@ -8,9 +8,15 @@ A knowledge base and skill set for LLM-powered coding agents (Kilo Code, Claude 
 ├── skills/
 │   ├── cube_game-designer/       # Skill: game concept → GDD
 │   │   └── SKILL.md
-│   ├── cube_orchestrator/        # Skill: orchestrate implementation from prompts
+│   ├── technical_prompter/       # Skill: GDD → implementation prompts
 │   │   └── SKILL.md
-│   └── technical_prompter/       # Skill: GDD → implementation prompts
+│   ├── wowcube-boilerplate/      # Skill: scaffold + verify build infra (app folder, assets, sim build)
+│   │   ├── SKILL.md
+│   │   └── scripts/
+│   │       ├── check_env.ps1     #   verify/install toolchain (ARM GCC, CMake, Ninja, MSVC)
+│   │       ├── new_app.ps1       #   scaffold app_<game>, pack assets, build+launch simulator
+│   │       └── build_device.ps1  #   ARM build + pack the cube-loadable .oct
+│   └── cube_orchestrator/        # Skill: orchestrate implementation from prompts
 │       └── SKILL.md
 ├── templates/
 │   ├── app_ai_template.h         # OctaviOS API reference template
@@ -40,7 +46,11 @@ Takes a game concept or idea and produces a non-technical Game Design Document a
 
 Reads an existing GDD from `plans/` and decomposes it into the smallest possible vertical-slice implementation prompts at `plans/<game_name>_prompts.md`. Each prompt produces a testable increment.
 
-### 3. Cube Orchestrator (`cube_orchestrator`)
+### 3. WowCube Boilerplate (`wowcube-boilerplate`)
+
+Runs **after** the technical prompter and **before** the orchestrator. First verifies the toolchain (`check_env.ps1` — installs everything missing via winget: the MSVC C++ build tools + Windows 11 SDK for the simulator, plus ARM GCC, CMake, and Ninja for the device build). Then scaffolds the `app_<game>/` folder from the template, renames every name-bearing file, packs the art assets, and smoke-builds + launches the simulator (`new_app.ps1`, exit 0 = infra ready). This guarantees the first implementation prompt executes against known-good infrastructure instead of failing on a missing folder, an unpacked asset, or a broken toolchain. The infra **gate** verifies the **simulator** build; the final cube-loadable **`.oct`** is produced at delivery time via `build_device.ps1` (ARM build → `out/app_<game>.bin`, then the sim packs assets + sounds + ARM code into `app_<game>/app_<game>.oct`).
+
+### 4. Cube Orchestrator (`cube_orchestrator`)
 
 Deploys coder, verifier, and fixer subagents for each prompt. All inter-agent communication uses JSON. Pipeline parallelism where safe (prepare next task while verifying current). Orchestrator decides when to wait vs. pipeline based on prompt dependencies. Scores below 90 trigger automatic rework (up to 5 attempts). Context accumulates in `context/<game>_context.json`.
 
