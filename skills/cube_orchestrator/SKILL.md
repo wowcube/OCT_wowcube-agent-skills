@@ -410,19 +410,37 @@ If actual source diverges from context JSON:
 
 After all prompts executed and final checkpoint passes:
 1. Summary: total prompts, fix cycles, average verification score
-2. **Point the user to the cube-loadable binary.** The file to flash onto the
-   physical WowCube is the `.oct` package at:
+2. **Build the cube-loadable binary — this is mandatory, not optional.** A
+   passing simulator build is **not** a shippable result. The simulator runs its
+   own PC-compiled code, so a game can look perfect in the sim while the `.oct`
+   contains **no ARM code at all** and is completely dead on the physical cube.
+   This is the single most common way to "finish" a game that doesn't actually
+   run on hardware — so the orchestrator must close this gap itself rather than
+   leaving it to the user.
+
+   Run the device build via the `wowcube-boilerplate` skill as the **last** step:
+
+   ```
+   scripts/build_device.ps1 -AppDir <workspace>/app_<game>
+   ```
+
+   It compiles the ARM target (`out/app_<game>.bin`), has the simulator pack
+   assets + sounds + ARM code into `app_<game>/app_<game>.oct`, and **verifies the
+   ARM code is actually embedded** (it fails loudly on an asset-only pack). The
+   task is not complete until this script exits 0. If the ARM toolchain is
+   missing it will say so — that's a `wowcube-boilerplate` `check_env.ps1` /
+   `winget` problem to resolve, not a reason to ship the sim-only `.oct`.
+
+   Then report the absolute path to the verified package:
 
    ```
    app_<game>/app_<game>.oct
    ```
 
-   This is **not** produced by the simulator build alone — it must contain the
-   ARM device code. Tell the user to produce it via the `wowcube-boilerplate`
-   skill's device build (`scripts/build_device.ps1 -AppDir <workspace>/app_<game>`),
-   which runs the ARM build (`out/app_<game>.bin`) and then has the simulator
-   pack assets + sounds + ARM code into `app_<game>/app_<game>.oct`. Report the
-   absolute path to that `.oct` once generated.
+   **Critical ordering:** the simulator rewrites `app_<game>.oct` as an
+   asset-only pack on *every* launch, so any sim testing must happen *before* the
+   device build. Never hand the user a `.oct` that was last touched by a plain
+   sim run — always regenerate it with `build_device.ps1` as the final action.
 3. Suggest next steps (testing on device, polish, features)
 
 ## Configuration

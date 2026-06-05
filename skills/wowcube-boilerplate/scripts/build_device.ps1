@@ -66,9 +66,15 @@ try {
 
 $bin = Join-Path $out "$app.bin"
 if (-not (Test-Path $bin)) { Fail "device build produced no $bin" }
-Write-Host "    built $bin ($((Get-Item $bin).Length) bytes ARM code)"
+$binLen = (Get-Item $bin).Length
+if ($binLen -le 0) { Fail "$bin is empty -- ARM build produced no code" }
+Write-Host "    built $bin ($binLen bytes ARM code)"
 
 # --- 2. Pack the .oct by launching the sim once ---------------------------
+# The simulator assembles the .oct at launch. It embeds out/<app>.bin ONLY if
+# that file exists (sim.h treats ARM code as optional -- a sim-only launch
+# writes an asset-only .oct that runs on the PC but is DEAD on the cube). We
+# just built the .bin above, so this launch must embed it -- and we verify it.
 $exe = Join-Path $AppDir "bin\$app.exe"
 if (-not (Test-Path $exe)) {
     Fail "simulator exe missing ($exe) -- run new_app.ps1 / build_sim.cmd first"
@@ -85,9 +91,37 @@ if (-not (Test-Path $oct)) {
     Fail "simulator did not produce $oct"
 }
 
+# --- 3. Verify the ARM code is actually embedded --------------------------
+# This is the whole point: prove the cube package contains the ARM binary, not
+# just assets. The sim appends the ARM code as the LAST chunk of the pack
+# (sim.h: assets -> sounds -> code, then header->Size = end), so the final
+# <binLen> bytes of the .oct must equal the .bin byte-for-byte. If they don't,
+# the sim packed an asset-only .oct (e.g. it couldn't find the .bin) and the
+# package would silently fail on the cube -- so we refuse to ship it.
+$binBytes = [System.IO.File]::ReadAllBytes($bin)
+$octBytes = [System.IO.File]::ReadAllBytes($oct)
+$embedded = $false
+if ($octBytes.Length -ge $binBytes.Length) {
+    $start = $octBytes.Length - $binBytes.Length
+    $embedded = $true
+    for ($i = 0; $i -lt $binBytes.Length; $i++) {
+        if ($octBytes[$start + $i] -ne $binBytes[$i]) { $embedded = $false; break }
+    }
+}
+if (-not $embedded) {
+    Fail ("the .oct does NOT contain the ARM code (asset-only pack). It would run " +
+          "in the simulator but is dead on the cube. Check that out\$app.bin exists " +
+          "and that APP_DIR in src\app.h points back at this app folder.")
+}
+Write-Host "    verified ARM code embedded ($binLen bytes) in the .oct"
+
 Write-Host ""
 Write-Host "CUBE PACKAGE READY:" -ForegroundColor Green
 Write-Host "  $oct"
-Write-Host "  ($((Get-Item $oct).Length) bytes -- assets + sounds + ARM code)"
+Write-Host "  ($($octBytes.Length) bytes -- assets + sounds + $binLen bytes ARM code)"
 Write-Host "Load this .oct onto the WowCube."
+Write-Host ""
+Write-Host "NOTE: launching the simulator again will OVERWRITE this .oct with an" -ForegroundColor Yellow
+Write-Host "asset-only pack (no ARM code). Re-run this script after any sim testing" -ForegroundColor Yellow
+Write-Host "to regenerate the cube-loadable .oct as the LAST step before shipping." -ForegroundColor Yellow
 exit 0

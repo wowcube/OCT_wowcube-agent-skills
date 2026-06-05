@@ -167,11 +167,21 @@ prompt — that's expected; this skill's job is to prove the *surrounding* infra
 The simulator `.exe` is for PC testing. The file you actually load onto the
 physical WowCube is **`app_<game>/app_<game>.oct`**. It is assembled by the
 **simulator at launch**, which packs the art `.raw` assets + the sounds +
-(if present) the ARM device code from `app_<game>/out/app_<game>.bin`. So a
-*loadable* `.oct` requires the ARM build to have produced the `.bin` first —
-otherwise the `.oct` carries assets only and won't run on the cube.
+(if present) the ARM device code from `app_<game>/out/app_<game>.bin`.
 
-Two steps, bundled in `scripts/build_device.ps1`:
+> **The footgun:** the engine treats the ARM `.bin` as *optional* when packing
+> (see `octavios/sim/src/sim.h`: *"it's optional because app running in
+> simulator has own code"*). So if you just build and run the simulator, the
+> sim still writes an `app_<game>.oct` — but it contains **assets only, no ARM
+> code**. That package runs fine on the PC (the sim executes its own compiled
+> code) and is **completely dead on the cube**. Worse, the sim **rewrites the
+> `.oct` as asset-only on every launch**, so a good package gets clobbered if
+> you run the sim again afterward. This is why "it works in the sim" is never
+> proof the cube build is done.
+
+The cube `.oct` therefore **must** be produced by the ARM build, and the device
+build **must be the last step** — after any simulator testing. Both steps are
+bundled in `scripts/build_device.ps1`:
 
 ```powershell
 powershell -File OCT_wowcube-agent-skills/skills/wowcube-boilerplate/scripts/build_device.ps1 -AppDir <workspace>/app_<game>
@@ -180,13 +190,16 @@ powershell -File OCT_wowcube-agent-skills/skills/wowcube-boilerplate/scripts/bui
 1. **ARM device build** → `app_<game>/out/app_<game>.bin`
    (`cmake -G Ninja -S octavios/apps -B out` then `cmake --build out`, run from
    the app folder — this is the ARM target from `octavios/apps/CMakeLists.txt`,
-   needing the Step 0 device toolchain)
+   needing the Step 0 device toolchain). Fails if the `.bin` is missing or empty.
 2. **Pack** → launches the sim once, which writes `app_<game>/app_<game>.oct`
-   (assets + sounds + ARM code)
+   (assets + sounds + ARM code).
+3. **Verify** → confirms the ARM code is actually embedded in the `.oct` (the
+   final `.bin`-sized bytes of the pack must match the `.bin` byte-for-byte). It
+   fails loudly on an asset-only pack, so you can never ship a `.oct` that would
+   silently die on the cube.
 
-The script fails loudly if the ARM `.bin` is missing, so you never ship an
-asset-only `.oct` by accident. This is the final deliverable the orchestrator
-points the user to on completion.
+This is the final deliverable the orchestrator runs (mandatorily) on completion
+and points the user to.
 
 ## Gotchas (why the script exists)
 
