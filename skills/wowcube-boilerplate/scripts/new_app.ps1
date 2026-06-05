@@ -1,0 +1,216 @@
+<#
+.SYNOPSIS
+    Scaffold a WowCube app folder from the template, pack its assets, and verify
+    the simulator toolchain -- the "infrastructure ready" gate that must pass
+    BEFORE the orchestrator runs the first technical prompt.
+
+.DESCRIPTION
+    Mirrors the proven manual procedure:
+      1. Copy templates/app_ai_template -> <workspace>/app_<name>
+      2. Rename the .target marker and the game/ids headers to app_<name>*
+      3. Replace every name-bearing reference (app.h, app_<name>.h, !pack.bat)
+      4. Guarantee app.h defines APP_VERSION (the template omits it -> sim won't compile)
+      5. Pack art assets (art/!pack.bat) and sync the generated _ids.h into src/
+      6. Smoke-build the simulator (octavios/apps/build_sim.cmd) -- simulator ONLY,
+         never the ARM/device target
+      7. (optional) launch the .exe briefly to confirm it does not crash on start
+
+    Exit code 0 = infrastructure verified. Non-zero = a step failed; the message
+    says which one.
+
+.PARAMETER Name
+    Game/app name. "tetris" or "app_tetris" both yield the folder app_tetris.
+
+.PARAMETER Workspace
+    Root that contains octavios/ and where app_<name>/ is created. Default: CWD.
+
+.PARAMETER Template
+    Template app folder to clone. Default: the app_ai_template shipped next to
+    this skill (..\..\..\templates\app_ai_template).
+
+.PARAMETER BuildScript
+    Path to build_sim.cmd. Default: <Workspace>\octavios\apps\build_sim.cmd.
+
+.PARAMETER Run
+    After a successful build, launch the .exe for a few seconds and confirm it
+    stays alive (catches missing-asset crashes the compiler cannot see).
+
+.PARAMETER SkipBuild
+    Scaffold + pack only; skip the simulator build (e.g. MSVC not installed).
+
+.PARAMETER SkipEnvCheck
+    Skip the toolchain check/install (check_env.ps1) at the start.
+
+.PARAMETER SkipMsvc
+    Forward to check_env.ps1: don't auto-install MSVC even if it's missing
+    (e.g. it's already installing in another window).
+
+.EXAMPLE
+    powershell -File .\new_app.ps1 -Name tetris -Run
+#>
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)] [string] $Name,
+    [string] $Workspace = (Get-Location).Path,
+    [string] $Template,
+    [string] $BuildScript,
+    [switch] $Run,
+    [switch] $SkipBuild,
+    [switch] $SkipEnvCheck,
+    [switch] $SkipMsvc
+)
+
+$ErrorActionPreference = 'Stop'
+$TOKEN = 'app_ai_template'   # literal name baked into the template files
+
+function Fail($msg) { Write-Host "ERROR: $msg" -ForegroundColor Red; exit 1 }
+function Step($msg) { Write-Host "==> $msg" -ForegroundColor Cyan }
+
+# --- Resolve names and paths ----------------------------------------------
+$app = if ($Name -match '^app_') { $Name } else { "app_$Name" }
+if ($app -notmatch '^app_[A-Za-z0-9_]+$') {
+    Fail "Invalid app name '$app' - expected app_<alphanumeric_or_underscore>"
+}
+
+if (-not $Template) {
+    $Template = Join-Path $PSScriptRoot '..\..\..\templates\app_ai_template'
+}
+$resolvedTemplate = Resolve-Path $Template -ErrorAction SilentlyContinue
+if (-not $resolvedTemplate) { Fail "Template folder not found: $Template (pass -Template)" }
+$Template = $resolvedTemplate.Path
+
+$Workspace = (Resolve-Path $Workspace).Path
+$AppDir    = Join-Path $Workspace $app
+if (-not $BuildScript) {
+    $BuildScript = Join-Path $Workspace 'octavios\apps\build_sim.cmd'
+}
+
+if (Test-Path $AppDir) {
+    Fail "$AppDir already exists - remove it first or pick another name"
+}
+
+# --- 0. Verify (and install) the toolchain --------------------------------
+# Sim build needs MSVC; the cube .oct deliverable needs ARM GCC + CMake + Ninja.
+# check_env.ps1 installs the winget-available device tools if they're missing.
+if (-not $SkipEnvCheck) {
+    Step "Checking toolchain (check_env.ps1)"
+    & (Join-Path $PSScriptRoot 'check_env.ps1') -SkipMsvc:$SkipMsvc
+    $envCode = $LASTEXITCODE
+    if ($envCode -ne 0) {
+        Write-Host "    toolchain check returned $envCode -- some tools missing." -ForegroundColor Yellow
+        Write-Host "    Scaffolding continues; the device .oct build may not work until resolved." -ForegroundColor Yellow
+    }
+}
+
+# --- 1. Clone the template ------------------------------------------------
+Step "Cloning template -> $app"
+Copy-Item -Recurse $Template $AppDir
+# Strip any generated artifacts that may have been committed
+foreach ($p in @('bin', 'out', 'art\packed', 'art\exported')) {
+    $f = Join-Path $AppDir $p
+    if (Test-Path $f) { Remove-Item -Recurse -Force $f }
+}
+Get-ChildItem -Recurse $AppDir -Include *.log, *.oct -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
+
+# --- 2. Rename name-bearing files -----------------------------------------
+Step "Renaming marker and headers"
+Get-ChildItem $AppDir -Recurse -File | Where-Object { $_.Name -like "*$TOKEN*" } | ForEach-Object {
+    $newName = $_.Name.Replace($TOKEN, $app)
+    Rename-Item $_.FullName $newName
+}
+
+# --- 3. Replace name references inside text files -------------------------
+Step "Patching name references ($TOKEN -> $app)"
+Get-ChildItem $AppDir -Recurse -File -Include *.h, *.bat, *.txt | ForEach-Object {
+    $raw = Get-Content $_.FullName -Raw
+    if ($raw -match [regex]::Escape($TOKEN)) {
+        ($raw -replace [regex]::Escape($TOKEN), $app) |
+            Set-Content $_.FullName -NoNewline -Encoding utf8
+    }
+}
+
+# --- 4. Guarantee APP_VERSION in app.h (template omits it) ----------------
+$appH = Join-Path $AppDir 'src\app.h'
+if (-not (Test-Path $appH)) { Fail "expected $appH after clone" }
+$appHraw = Get-Content $appH -Raw
+if ($appHraw -notmatch 'APP_VERSION') {
+    Step "Adding missing APP_VERSION to src/app.h"
+    $lines = Get-Content $appH
+    $out = foreach ($l in $lines) {
+        $l
+        if ($l -match '^\s*#include\s+"app_') { '#define APP_VERSION 100 //v1.00' }
+    }
+    $out | Set-Content $appH -Encoding utf8
+}
+
+# --- 5. Pack assets -------------------------------------------------------
+$artDir  = Join-Path $AppDir 'art'
+$packBat = Join-Path $artDir '!pack.bat'
+if (Test-Path $packBat) {
+    Step "Packing assets (art/!pack.bat)"
+    Push-Location $artDir
+    # The leading '!' requires an explicit .\ ; pack.bat's legacy xcopy steps
+    # emit harmless 'file not found' noise and a non-zero code, so we judge
+    # success by the output it produces, not its exit code.
+    cmd /c 'call ".\!pack.bat"' | Out-Host
+    Pop-Location
+
+    $packed = Join-Path $artDir 'packed'
+    $rawCount = (Get-ChildItem $packed -Filter *.raw -ErrorAction SilentlyContinue | Measure-Object).Count
+    if ($rawCount -eq 0) { Fail "packing produced no .raw assets in $packed" }
+    Write-Host "    packed $rawCount .raw assets"
+
+    # Sync the freshly generated ids header into src/ so compiled sprite
+    # indices match the packed assets (pack.bat copies it to a legacy path only).
+    $artIds = Join-Path $artDir "${app}_ids.h"
+    $srcIds = Join-Path $AppDir "src\${app}_ids.h"
+    if (Test-Path $artIds) {
+        if (-not (Test-Path $srcIds) -or
+            (Get-FileHash $artIds).Hash -ne (Get-FileHash $srcIds).Hash) {
+            Copy-Item $artIds $srcIds -Force
+            Write-Host "    synced ${app}_ids.h -> src/"
+        }
+    }
+} else {
+    Write-Host "    (no art/!pack.bat - skipping pack)" -ForegroundColor Yellow
+}
+
+# --- 6. Smoke-build the simulator (NOT arm) -------------------------------
+if ($SkipBuild) {
+    Step "SkipBuild set - scaffolding done, build skipped"
+    Write-Host "INFRA SCAFFOLDED (build not verified): $AppDir" -ForegroundColor Green
+    exit 0
+}
+if (-not (Test-Path $BuildScript)) {
+    Fail "build script not found: $BuildScript (pass -BuildScript or -SkipBuild)"
+}
+Step "Building simulator (build_sim.cmd)"
+Push-Location $AppDir
+cmd /c "`"$BuildScript`"" | Out-Host
+$buildCode = $LASTEXITCODE
+Pop-Location
+if ($buildCode -ne 0) { Fail "simulator build failed (exit $buildCode)" }
+
+$exe = Join-Path $AppDir "bin\$app.exe"
+if (-not (Test-Path $exe)) { Fail "build reported success but $exe is missing" }
+Write-Host "    built $exe"
+
+# --- 7. Optional run smoke test -------------------------------------------
+if ($Run) {
+    Step "Launching simulator (smoke test)"
+    $p = Start-Process -FilePath $exe -PassThru
+    Start-Sleep -Seconds 4
+    if ($p.HasExited) {
+        Fail "simulator exited early (code $($p.ExitCode)) - likely missing/unpacked assets"
+    }
+    Write-Host "    running OK (pid $($p.Id), '$($p.MainWindowTitle)')"
+    # Leave it open for the user to inspect; they can close it.
+}
+
+Write-Host ""
+Write-Host "INFRA READY: $AppDir" -ForegroundColor Green
+Write-Host "  marker : $app.target"
+Write-Host "  source : src/$app.h  (orchestrator writes game code here)"
+Write-Host "  exe    : bin/$app.exe"
+exit 0

@@ -35,13 +35,22 @@ This is NON-NEGOTIABLE. Never batch multiple prompts. Never skip the checkpoint.
 
 ## Prerequisites
 
-| File | Source | Required |
+| File / state | Source | Required |
 |------|--------|----------|
 | `plans/<game>_prompts.md` | `technical_prompter` skill | Yes |
 | `plans/<game>_gdd.md` | `cube_game-designer` skill | Yes |
 | `OCT_wowcube-agent-skills/templates/app_ai_template.h` | Project template | Yes |
+| `app_<game>/` scaffolded, assets packed, **simulator builds and launches** | `wowcube-boilerplate` skill | Yes |
 
 Missing prerequisite → delegate to the appropriate skill. Do not proceed until all are satisfied.
+
+**Infrastructure gate (do this before Step 1):** Verify the build environment is
+ready — `app_<game>/` exists with its `.target` marker, `art/packed/*.raw` are
+present, and `app_<game>/bin/app_<game>.exe` builds and launches. If any of these
+is missing, **delegate to the `wowcube-boilerplate` skill** to scaffold and verify
+the infra, then return here. Never dispatch the first coder agent against an
+unverified or non-existent project — a broken toolchain discovered mid-implementation
+is far more expensive to untangle than one caught before any code is written.
 
 ## Constraints
 
@@ -197,11 +206,17 @@ All data between orchestrator and agents is JSON.
 
 ### Step 1: Initialize
 
-1. Verify all prerequisites exist
+1. Verify all prerequisites exist — including the infrastructure gate above. If
+   `app_<game>/` isn't scaffolded and simulator-verified, delegate to
+   `wowcube-boilerplate` before continuing.
 2. Read `plans/<game>_prompts.md` — parse all prompts (delimited by `## Prompt N:`)
 3. Read `plans/<game>_gdd.md` for game understanding
 4. Check if `context/<game>_context.json` exists — if yes, offer to resume
-5. If new game, copy `OCT_wowcube-agent-skills/src/app_structure_example.h` → `src/app_<game>.h` (project root)
+5. If new game, reset the game source to a clean skeleton: copy
+   `OCT_wowcube-agent-skills/src/app_structure_example.h` → `app_<game>/src/app_<game>.h`.
+   (`wowcube-boilerplate` left a working demo there to prove the build; overwriting
+   it with the skeleton is expected — the verified folder, marker, packed assets,
+   and toolchain are what carry forward.)
 6. Count total prompts, present execution plan to user
 
 ### Step 2: Validate Prompts
@@ -395,7 +410,20 @@ If actual source diverges from context JSON:
 
 After all prompts executed and final checkpoint passes:
 1. Summary: total prompts, fix cycles, average verification score
-2. Suggest next steps (testing, polish, features)
+2. **Point the user to the cube-loadable binary.** The file to flash onto the
+   physical WowCube is the `.oct` package at:
+
+   ```
+   app_<game>/app_<game>.oct
+   ```
+
+   This is **not** produced by the simulator build alone — it must contain the
+   ARM device code. Tell the user to produce it via the `wowcube-boilerplate`
+   skill's device build (`scripts/build_device.ps1 -AppDir <workspace>/app_<game>`),
+   which runs the ARM build (`out/app_<game>.bin`) and then has the simulator
+   pack assets + sounds + ARM code into `app_<game>/app_<game>.oct`. Report the
+   absolute path to that `.oct` once generated.
+3. Suggest next steps (testing on device, polish, features)
 
 ## Configuration
 

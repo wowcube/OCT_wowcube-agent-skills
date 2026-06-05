@@ -236,3 +236,14 @@ After writing, provide a summary:
 - Dependency graph overview
 - Any GDD gaps or ambiguities resolved with assumptions
 - Estimated complexity (sprite count, function count)
+
+## Next Step — Prepare the Build Infrastructure
+
+The prompts file alone is not enough to start coding: the orchestrator needs a
+scaffolded, build-verified `app_<game>/` project to write into. **Before handing
+off to `cube_orchestrator`, run the `wowcube-boilerplate` skill** to create the
+app folder from the template, pack the art assets, and confirm the simulator
+builds and launches. This guarantees the first prompt executes against
+known-good infrastructure instead of failing on a missing folder, an unpacked
+asset, or a broken toolchain. Only after boilerplate reports "infra ready"
+should the orchestrator begin executing prompts.
