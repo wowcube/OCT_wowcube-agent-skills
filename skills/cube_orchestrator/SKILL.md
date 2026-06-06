@@ -86,7 +86,7 @@ These files must exist before the **implementation workflow (Stage 4)** runs. Th
 | `plans/<game>_assets.json` | Stage 2 (`technical_prompter`) | Yes |
 | `src/app_<game>_ids.h` | Stage 3 (`cube_asset-builder`) | Yes |
 | `assets/packed/pal.png` | Stage 3 (`cube_asset-builder`) | Yes |
-| `OCT_wowcube-agent-skills/templates/app_ai_template.h` | Project template | Yes |
+| `OCT_wowcube-agent-skills/templates/app_ai_template/src/app_ai_template.h` | Project template | Yes |
 | `app_<game>/` scaffolded, assets packed, **simulator builds and launches** | `wowcube-boilerplate` skill | Yes |
 
 If any Stage 4 prerequisite is missing when implementation is expected, do NOT proceed — re-run **Stage Detection & Routing** above and drive the missing stage's sub-skill yourself (Stage 1 → `cube_game-designer`, Stage 2 → `technical_prompter`, Stage 3 → `cube_asset-builder`), checkpointing at each boundary.
@@ -152,7 +152,7 @@ All data between orchestrator and agents is JSON.
   "platform_reminders": ["..."],
   "verification_criteria": "<what the user should see/hear>",
   "files_to_read": [
-    "OCT_wowcube-agent-skills/templates/app_ai_template.h",
+    "OCT_wowcube-agent-skills/templates/app_ai_template/src/app_ai_template.h",
     "src/app_<game>.h"
   ],
   "files_to_write": [
@@ -186,7 +186,7 @@ All data between orchestrator and agents is JSON.
   "files_to_read": [
     "src/app_<game>.h",
     "plans/<game>_gdd.md",
-    "OCT_wowcube-agent-skills/templates/app_ai_template.h"
+    "OCT_wowcube-agent-skills/templates/app_ai_template/src/app_ai_template.h"
   ],
   "prior_context": [ ... ]
 }
@@ -325,7 +325,7 @@ You are a WowCube game coder. Implement exactly what the task describes.
 
 ## Rules
 1. Read ALL files listed in `files_to_read` BEFORE writing any code
-2. `OCT_wowcube-agent-skills/templates/app_ai_template.h` is the SOURCE OF TRUTH for API usage — do NOT copy demo code
+2. `OCT_wowcube-agent-skills/templates/app_ai_template/src/app_ai_template.h` is the SOURCE OF TRUTH for API usage — do NOT copy demo code
 3. Follow `instructions` exactly — do not add features, do not refactor unrelated code
 4. Respect all `platform_reminders`
 5. Use `prior_context` to understand what already exists — do not break it
@@ -368,7 +368,7 @@ You are a WowCube code fixer. Fix the issues found by the verifier.
   "prompt_number": N,
   "original_instructions": "<original prompt instructions>",
   "issues": <issues array from verifier>,
-  "files_to_read": ["src/app_<game>.h", "OCT_wowcube-agent-skills/templates/app_ai_template.h"],
+  "files_to_read": ["src/app_<game>.h", "OCT_wowcube-agent-skills/templates/app_ai_template/src/app_ai_template.h"],
   "files_to_write": ["src/app_<game>.h"]
 }
 
