@@ -1,58 +1,60 @@
 """Pipeline driver for cube_asset-builder.
 
 Two subcommands:
-  generate  — validate manifest, render PNG placeholders and MP3 placeholders.
+  generate  — validate manifest, generate AI sprite PNGs (from each sprite's
+              gen_prompt) and synthesise WAV sound placeholders.
   pack      — build assets.psd then run pack.py to produce packed/ and _ids.h.
 
 Designed to work identically in the dev repo layout and inside the
 corporate-Claude package (where build_psd.py/pack.py are copied next to this
-file). `find_script()` walks two candidate locations.
+file). `find_script()` checks the scripts dir then walks up the ancestors.
 """
 from __future__ import annotations
 
 import argparse
-import shutil
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 from manifest_schema import ValidationError, load_manifest, validate
-import gen_placeholders
+import gen_sprites
 import gen_sounds
+from genimg import API_KEY_ENV
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 
 def find_script(name: str) -> Path:
-    """Return absolute path to `name` in the package scripts/ dir or at repo root.
+    """Return absolute path to `name` in the package scripts/ dir or an ancestor.
 
     Package mode: scripts/<name> lives next to this file.
-    Dev mode: <name> lives at the repo root, 4 levels up from this file:
-      <repo>/OCT_wowcube-agent-skills/skills/cube_asset-builder/scripts/build_pipeline.py
-      -> repo = SCRIPT_DIR.parent.parent.parent.parent
+    Dev mode: <name> lives at the repo root somewhere above this file. The repo
+    may be nested at any depth, so we walk every ancestor and return the first
+    `<ancestor>/<name>` that exists.
     """
     local = SCRIPT_DIR / name
     if local.exists():
         return local
-    repo_root = SCRIPT_DIR.parent.parent.parent.parent
-    remote = repo_root / name
-    if remote.exists():
-        return remote
+    for ancestor in SCRIPT_DIR.parents:
+        for candidate in (ancestor / name, ancestor / "scripts" / name):
+            if candidate.exists():
+                return candidate
     raise FileNotFoundError(
         f"{name} not found near {SCRIPT_DIR} (checked {local}) "
-        f"and not at {remote}"
+        f"or in any ancestor directory (or its scripts/ subdir)"
     )
 
 
-GENERATE_PY_DEPS = ("PIL", "numpy")
+GENERATE_PY_DEPS = ("PIL", "numpy", "requests")
 PACK_PY_DEPS = ("PIL", "numpy", "pytoshop", "psd_tools")
 
 
 def _check_deps(stage: str) -> list[str]:
     """Return list of missing dependency messages. Empty = everything installed.
 
-    `stage` is 'generate' or 'pack'. Generate needs PIL+numpy+ffmpeg; pack also
-    needs pytoshop and psd_tools.
+    `stage` is 'generate' or 'pack'. Generate needs PIL+numpy+requests and the
+    OPENROUTER_API_KEY env var (AI sprites); pack needs PIL+numpy+pytoshop+psd_tools.
     """
     required = PACK_PY_DEPS if stage == "pack" else GENERATE_PY_DEPS
     missing: list[str] = []
@@ -62,8 +64,11 @@ def _check_deps(stage: str) -> list[str]:
         except ImportError:
             pip_name = {"PIL": "Pillow", "psd_tools": "psd-tools"}.get(mod, mod)
             missing.append(f"python module {mod!r} - install with: pip install {pip_name}")
-    if not shutil.which("ffmpeg"):
-        missing.append("binary 'ffmpeg' on PATH - see https://ffmpeg.org/download.html")
+    if stage == "generate" and not os.environ.get(API_KEY_ENV):
+        missing.append(
+            f"environment variable {API_KEY_ENV} - AI sprite generation needs "
+            f"an OpenRouter key: `export {API_KEY_ENV}=sk-or-...`"
+        )
     return missing
 
 
@@ -96,22 +101,26 @@ def do_generate(args: argparse.Namespace) -> int:
 
     workspace = Path(args.workspace)
     art_dir = workspace / "art"
-    mp3_dir = workspace / "mp3"
+    wav_dir = workspace / "wav"
 
-    print(f"Generating placeholders -> {art_dir}")
-    png_paths = gen_placeholders.generate(manifest, art_dir, group=args.group)
+    print(f"Generating AI sprites -> {art_dir}")
+    try:
+        png_paths = gen_sprites.generate(manifest, art_dir, group=args.group)
+    except (gen_sprites.genimg.ImageGenError, ValueError) as e:
+        print(f"ERROR: sprite generation failed: {e}", file=sys.stderr)
+        return 6
 
-    print(f"Generating sounds        -> {mp3_dir}")
-    mp3_paths = gen_sounds.generate(manifest, mp3_dir, group=args.group)
+    print(f"Generating sounds     -> {wav_dir}")
+    wav_paths = gen_sounds.generate(manifest, wav_dir, group=args.group)
 
     groups: set[str] = set()
     for s in manifest.sprites:
-        groups.add(s.group or gen_placeholders._derived_group(s))
+        groups.add(s.group or gen_sprites._derived_group(s))
     for snd in manifest.sounds:
         groups.add(snd.group or snd.name)
 
     print("=" * 60)
-    print(f"  {len(png_paths)} PNG(s), {len(mp3_paths)} MP3(s)")
+    print(f"  {len(png_paths)} PNG(s), {len(wav_paths)} WAV(s)")
     print(f"  groups: {sorted(groups)}")
     print("=" * 60)
     return 0
@@ -198,10 +207,10 @@ def build_parser() -> argparse.ArgumentParser:
         description="cube_asset-builder pipeline driver")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    g = sub.add_parser("generate", help="Render placeholders from manifest")
+    g = sub.add_parser("generate", help="Generate AI sprites + WAV sounds from manifest")
     g.add_argument("--manifest", required=True, help="Path to <game>_assets.json")
     g.add_argument("--workspace", default="assets",
-                   help="Workspace root (default: assets). PNGs -> <ws>/art, MP3s -> <ws>/mp3.")
+                   help="Workspace root (default: assets). PNGs -> <ws>/art, WAVs -> <ws>/wav.")
     g.add_argument("--group", default=None,
                    help="Only regenerate one group (sprites + sounds)")
     g.set_defaults(func=do_generate)

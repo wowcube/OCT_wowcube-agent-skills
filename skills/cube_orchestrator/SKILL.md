@@ -22,12 +22,13 @@ The orchestrator owns a four-stage pipeline. It is the only skill the user invok
 |-------|----------|-----------|-----|
 | 1. Design | `plans/<game>_gdd.md` | `cube_game-designer` | Skill tool (interactive, main context) |
 | 2. Prompts | `plans/<game>_prompts.md` + `plans/<game>_assets.json` | `technical_prompter` | Skill tool (main context) |
-| 3. Assets | `assets/packed/*.png`, `assets/mp3/*.mp3`, `src/app_<game>_ids.h` | `cube_asset-builder` | Skill tool (runs Python pipeline + user review) |
+| 3. Assets | `assets/packed/*.png`, `assets/mp3/*.mp3`, `src/app_<game>_ids.h` | `cube_asset-builder` + asset-consistency review subagent | Skill tool: AI sprite generation (OpenRouter image model from each sprite's `gen_prompt`), then an agent consistency review, then the mandatory user review — see [Stage 3: Asset Generation](#stage-3-asset-generation-ai) |
 | 4. Implement | `src/app_<game>.h` (per-prompt) | coder / verifier / fixer | Agent tool (subagents) |
 | 5. Package | `app_<game>/app_<game>.oct` (ARM code embedded, verified) | `wowcube-boilerplate` | Skill tool (runs `build_device.ps1`) |
 
 **Invocation mechanism:**
 - **Stages 1–3 and Stage 5 run in the main context via the Skill tool.** Stages 1–3 each require user interaction (the designer's discovery interview, the asset-review checkpoint); Stage 5 invokes `wowcube-boilerplate` to run the device build. In each case the orchestrator invokes the sub-skill, lets it run to completion, then returns here.
+- **Stage 3 additionally dispatches one read-only subagent via the Agent tool** — the asset-consistency reviewer — after AI generation and before the user review. See [Stage 3: Asset Generation](#stage-3-asset-generation-ai).
 - **Stage 4 dispatches subagents via the Agent tool**, exactly as described in the implementation workflow below.
 
 ## Stage Detection & Routing (do this FIRST on every entry)
@@ -38,7 +39,7 @@ On entry — including resumption — determine the active `<game>` (ask the use
 |----------------|----------|--------|
 | No `plans/<game>_gdd.md` | **Stage 1** | Invoke `cube_game-designer` via the Skill tool |
 | GDD exists, but no `plans/<game>_prompts.md` or no `plans/<game>_assets.json` | **Stage 2** | Invoke `technical_prompter` via the Skill tool |
-| Prompts + manifest exist, but `assets/packed/` or `src/app_<game>_ids.h` is missing | **Stage 3** | Invoke `cube_asset-builder` via the Skill tool |
+| Prompts + manifest exist, but `assets/packed/` or `src/app_<game>_ids.h` is missing | **Stage 3** | Run the [Stage 3: Asset Generation](#stage-3-asset-generation-ai) workflow (gate the manifest + key, drive `cube_asset-builder`, run the consistency review, then user review) |
 | All Stage 1–3 outputs present, but prompts remain unimplemented | **Stage 4** | Run the implementation workflow below |
 | All prompts implemented, but no verified device `.oct` exists (or it was last touched by a sim run) | **Stage 5** | Invoke `wowcube-boilerplate` via the Skill tool to run the device build (`build_device.ps1`) |
 
@@ -250,6 +251,95 @@ All data between orchestrator and agents is JSON.
   ],
   "summary": "one sentence assessment"
 }
+```
+
+## Stage 3: Asset Generation (AI)
+
+Reached when the GDD, prompts, and manifest exist but `assets/packed/` or `src/app_<game>_ids.h` is missing. Sprites are now produced by an **external image model** (OpenRouter, called from `cube_asset-builder/scripts/genimg.py`) directly from each sprite's `gen_prompt` in the manifest — they are NOT hand-drawn or procedural placeholders. The orchestrator owns the gates around that generation: it checks readiness before generating, runs an automated consistency review after generating, and only then hands the set to the user.
+
+### Step 3.1: Pre-generation gates (do BEFORE invoking `cube_asset-builder`)
+
+Both gates must pass. If either fails, do NOT generate — fix the cause first.
+
+1. **`gen_prompt` coverage.** Load `plans/<game>_assets.json` and confirm **every sprite** has a non-empty `gen_prompt`. (Sounds do NOT need one — they stay deterministic placeholders.) A missing/blank `gen_prompt` makes `gen_sprites.py` fail with `ValueError`. If any sprite is missing it, **return to Stage 2 (`technical_prompter`)** to complete the manifest — do not patch the manifest yourself.
+2. **`OPENROUTER_API_KEY` present.** The generation step calls OpenRouter; without the key `genimg.py` raises `ImageGenError`. Confirm the key is set in the sandbox where `build_pipeline.py` runs. If it is missing, STOP and ask the user to export it (`export OPENROUTER_API_KEY=sk-or-...`) before proceeding — never hardcode it.
+
+### Step 3.2: Generate (AI sprites)
+
+Invoke `cube_asset-builder` via the Skill tool. It runs `build_pipeline.py generate`, which calls `gen_sprites.generate()` → `genimg.generate_image(gen_prompt, size)` per sprite (OpenRouter image model) and writes PNGs to `assets/art/`; sounds are synthesised as placeholders into `assets/mp3/`. Output is non-deterministic across runs.
+
+### Step 3.3: Consistency review (automated, BEFORE the user review)
+
+After generation, dispatch one **read-only** asset-consistency reviewer via the Agent tool. It inspects the rendered `assets/art/*.png` against the GDD's global art style and each sprite's `gen_prompt`, and reports which **groups** (derived per `manifest_schema`) are stylistically off — wrong palette/mood, inconsistent line weight or scale, broken animation continuity, leaked text/watermark/background, or off-spec dimensions.
+
+Pass it the Asset Consistency Task JSON; it returns the Asset Consistency Response JSON (both below).
+
+- **`status: "pass"`** → proceed to Step 3.4 (user review).
+- **`status: "fail"`** → for each flagged group, re-run generation for that group only via `cube_asset-builder`'s `regen <group>` (which calls `build_pipeline.py generate --group <name>`), then re-run this review. **Max 3 review→regen cycles.** After 3, present the remaining issues to the user and let them decide at Step 3.4.
+
+This is a quality gate, not a replacement for the human checkpoint — the user still reviews everything in Step 3.4.
+
+### Step 3.4: User review checkpoint (MANDATORY — never skip)
+
+This is `cube_asset-builder`'s own mandatory review. Present the generated set and the consistency reviewer's verdict, then STOP and wait for the user. Offer the verbatim options the asset-builder supports: `ok`/`continue`, `regen <group>`, `swap <name>`, `edit <name> size <WxH>`. Never auto-continue to pack.
+
+### Step 3.5: Pack & boundary checkpoint
+
+After the user replies `ok`, `cube_asset-builder` runs `build_pipeline.py pack` → `assets/packed/*.png` + `pal.png` + `src/app_<game>_ids.h`. Then run the normal **Stage 3→4 boundary checkpoint** (summarize asset counts + BMP_* constant count, wait for approval) before any Stage 4 work.
+
+### Asset Consistency Task JSON (orchestrator → reviewer agent)
+
+```json
+{
+  "task": "asset_consistency",
+  "game": "<game_name>",
+  "art_style": "<GDD §1 global art style, palette, mood — the cohesion contract>",
+  "art_dir": "assets/art",
+  "files_to_read": [
+    "plans/<game>_assets.json",
+    "plans/<game>_gdd.md"
+  ],
+  "sprites": [
+    {"name": "hero_idle_00", "size": [64, 64], "group": "hero",
+     "anim": "hero_idle", "frame": 0, "gen_prompt": "..."}
+  ]
+}
+```
+
+### Asset Consistency Response JSON (reviewer agent → orchestrator)
+
+```json
+{
+  "agent": "asset_consistency",
+  "status": "pass|fail",
+  "groups": [
+    {
+      "group": "hero",
+      "verdict": "pass|fail",
+      "issues": [
+        {"sprite": "hero_idle_01", "category": "palette|style|scale|anim_continuity|leaked_content|dimensions", "severity": "major|minor", "description": "..."}
+      ],
+      "regen_recommended": true
+    }
+  ],
+  "summary": "one-sentence assessment of set-wide visual cohesion"
+}
+```
+
+### Asset Consistency Reviewer Agent Prompt Template
+
+```
+You are a WowCube asset-consistency reviewer. You do NOT generate or edit images — you only inspect and report.
+
+## Task
+<insert Asset Consistency Task JSON>
+
+## Rules
+1. Read the GDD art style and every sprite's gen_prompt. The `art_style` field is the cohesion contract — the whole set must look like one game.
+2. View each PNG in `art_dir`. Judge per derived group (sprites sharing a group, e.g. all frames of one animation).
+3. Flag: palette/mood drift from the GDD, inconsistent line weight or scale across the set, broken animation continuity (pose jumps, pivot drift), leaked text/watermark/border/background scenery, and dimensions that do not match the manifest `size`.
+4. Recommend `regen` for any group that fails. Be specific and per-sprite.
+5. Return ONLY the Asset Consistency Response JSON. No markdown, no prose outside the JSON.
 ```
 
 ## Stage 4: Implementation Workflow

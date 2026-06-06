@@ -187,6 +187,51 @@ def test_unknown_event_type_rejected(tmp_manifest):
     assert any("event_type" in e for e in errors)
 
 
+# ── gen_prompt (AI asset-generation prompt) ────────────────────────────
+
+def test_gen_prompt_parsed(tmp_manifest):
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [32, 32], "description": "d",
+                     "gen_prompt": "Pixel-art coin, gold, transparent bg"}],
+        "sounds": [],
+    }
+    m = load_manifest(tmp_manifest(data))
+    assert m.sprites[0].gen_prompt == "Pixel-art coin, gold, transparent bg"
+
+
+def test_gen_prompt_absent_defaults_to_none(tmp_manifest):
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [32, 32], "description": "d"}],
+        "sounds": [],
+    }
+    m = load_manifest(tmp_manifest(data))
+    assert m.sprites[0].gen_prompt is None
+
+
+def test_gen_prompt_present_passes_validation(tmp_manifest):
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [32, 32], "description": "d",
+                     "gen_prompt": "Pixel-art coin, gold, transparent bg"}],
+        "sounds": [],
+    }
+    assert validate(load_manifest(tmp_manifest(data))) == []
+
+
+@pytest.mark.parametrize("bad", ["", "   "])
+def test_empty_gen_prompt_rejected(tmp_manifest, bad):
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [32, 32], "description": "d",
+                     "gen_prompt": bad}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert any("gen_prompt" in e for e in errors)
+
+
 # ── Minimal valid ──────────────────────────────────────────────────────
 
 def test_minimal_manifest_has_no_errors(tmp_manifest, minimal_manifest):

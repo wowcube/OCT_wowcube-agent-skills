@@ -1,7 +1,8 @@
 """Tests for build_pipeline.py.
 
-Heavy integration (pack stage) runs only when ffmpeg AND pytoshop AND psd-tools
-are importable. Otherwise those tests skip.
+Sprite generation is stubbed offline via the `stub_ai` fixture (no real
+OpenRouter call). Heavy integration (pack stage) runs only when pytoshop AND
+psd-tools are importable; otherwise those tests skip.
 """
 from __future__ import annotations
 
@@ -34,9 +35,7 @@ def test_find_script_raises_for_missing_name():
         find_script("definitely_not_a_real_script.py")
 
 
-def test_generate_stage_runs(tmp_path, tmp_manifest, minimal_manifest, ffmpeg_available):
-    if not ffmpeg_available:
-        pytest.skip("ffmpeg required for generate stage")
+def test_generate_stage_runs(tmp_path, tmp_manifest, minimal_manifest, stub_ai):
     manifest = tmp_manifest(minimal_manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -49,12 +48,10 @@ def test_generate_stage_runs(tmp_path, tmp_manifest, minimal_manifest, ffmpeg_av
                "--workspace", str(project / "assets")])
     assert rc == 0
     assert (project / "assets" / "art" / "coin.png").exists()
-    assert (project / "assets" / "mp3" / "sfx_coin.mp3").exists()
+    assert (project / "assets" / "wav" / "sfx_coin.wav").exists()
 
 
-def test_generate_rejects_invalid_manifest(tmp_path, tmp_manifest, ffmpeg_available):
-    if not ffmpeg_available:
-        pytest.skip("generate runs _check_deps first; need ffmpeg to reach validation path")
+def test_generate_rejects_invalid_manifest(tmp_path, tmp_manifest, stub_ai):
     bad = {
         "game": "demo", "schema_version": 1,
         "sprites": [{"name": "BadName", "size": [32, 32], "description": "x"}],
@@ -66,10 +63,19 @@ def test_generate_rejects_invalid_manifest(tmp_path, tmp_manifest, ffmpeg_availa
     assert rc == 2
 
 
+def test_generate_missing_api_key_fails(tmp_path, tmp_manifest, minimal_manifest, monkeypatch):
+    """Without OPENROUTER_API_KEY the generate stage stops at the dep check."""
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    manifest = tmp_manifest(minimal_manifest)
+    rc = _cli(["generate", "--manifest", str(manifest),
+               "--workspace", str(tmp_path / "assets")])
+    assert rc == 3
+
+
 @pytest.mark.slow
-def test_pack_stage_end_to_end(tmp_path, tmp_manifest, minimal_manifest, ffmpeg_available):
-    if not (ffmpeg_available and _deps_available()):
-        pytest.skip("pack stage needs ffmpeg + pytoshop + psd-tools")
+def test_pack_stage_end_to_end(tmp_path, tmp_manifest, minimal_manifest, stub_ai):
+    if not _deps_available():
+        pytest.skip("pack stage needs pytoshop + psd-tools")
     manifest = tmp_manifest(minimal_manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -97,20 +103,23 @@ def _deps_for_e2e() -> bool:
         return False
 
 
-def test_acceptance_criteria_e2e(tmp_path, tmp_manifest, ffmpeg_available):
+def test_acceptance_criteria_e2e(tmp_path, tmp_manifest, stub_ai):
     """Covers all four acceptance criteria from the spec §12."""
-    if not (ffmpeg_available and _deps_for_e2e()):
-        pytest.skip("acceptance test needs ffmpeg + pytoshop + psd-tools")
+    if not _deps_for_e2e():
+        pytest.skip("acceptance test needs pytoshop + psd-tools")
 
     manifest_data = {
         "game": "mini",
         "schema_version": 1,
         "sprites": [
             {"name": "hero_idle_00", "size": [32, 32], "description": "round blue hero",
+             "gen_prompt": "Pixel-art round blue hero, idle frame 0, 32x32, transparent bg",
              "group": "hero", "anim": "hero_idle", "frame": 0},
             {"name": "hero_idle_01", "size": [32, 32], "description": "mid bounce",
+             "gen_prompt": "Pixel-art round blue hero, idle frame 1, 32x32, transparent bg",
              "group": "hero", "anim": "hero_idle", "frame": 1},
             {"name": "coin", "size": [16, 16], "description": "shiny yellow coin",
+             "gen_prompt": "Pixel-art shiny yellow coin, 16x16, transparent bg",
              "group": "pickup"},
         ],
         "sounds": [
@@ -129,7 +138,7 @@ def test_acceptance_criteria_e2e(tmp_path, tmp_manifest, ffmpeg_available):
     assert rc == 0
     for fname in ("0.png", "hero_idle_00.png", "hero_idle_01.png", "coin.png"):
         assert (workspace / "art" / fname).exists(), fname
-    assert (workspace / "mp3" / "sfx_coin.mp3").exists()
+    assert (workspace / "wav" / "sfx_coin.wav").exists()
 
     rc = _cli(["pack", "--game", "mini", "--workspace", str(workspace),
                "--src-dir", str(src_dir)])
@@ -142,18 +151,15 @@ def test_acceptance_criteria_e2e(tmp_path, tmp_manifest, ffmpeg_available):
                      "BMP_hero_idle", "BMP_hero_idle_end"):
         assert constant in header, f"missing {constant} in _ids.h"
 
-    png_hashes_1 = {p.name: hashlib.md5(p.read_bytes()).hexdigest()
-                    for p in (workspace / "art").glob("*.png")}
-    mp3_hashes_1 = {p.name: hashlib.md5(p.read_bytes()).hexdigest()
-                    for p in (workspace / "mp3").glob("*.mp3")}
+    wav_hashes_1 = {p.name: hashlib.md5(p.read_bytes()).hexdigest()
+                    for p in (workspace / "wav").glob("*.wav")}
 
     workspace2 = project / "assets2"
     rc = _cli(["generate", "--manifest", str(manifest_path),
                "--workspace", str(workspace2)])
     assert rc == 0
-    png_hashes_2 = {p.name: hashlib.md5(p.read_bytes()).hexdigest()
-                    for p in (workspace2 / "art").glob("*.png")}
-    mp3_hashes_2 = {p.name: hashlib.md5(p.read_bytes()).hexdigest()
-                    for p in (workspace2 / "mp3").glob("*.mp3")}
-    assert png_hashes_1 == png_hashes_2
-    assert mp3_hashes_1 == mp3_hashes_2
+    wav_hashes_2 = {p.name: hashlib.md5(p.read_bytes()).hexdigest()
+                    for p in (workspace2 / "wav").glob("*.wav")}
+    # Sounds are deterministic (pure synthesis); AI sprites are not, so only
+    # the WAVs are hash-compared across runs.
+    assert wav_hashes_1 == wav_hashes_2

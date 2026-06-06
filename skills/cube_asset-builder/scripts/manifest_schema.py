@@ -37,6 +37,7 @@ class Sprite:
     name: str
     size: tuple[int, int]
     description: str
+    gen_prompt: str | None = None
     group: str | None = None
     anim: str | None = None
     frame: int | None = None
@@ -80,6 +81,7 @@ def _parse_sprite(raw: dict) -> Sprite:
         name=raw["name"],
         size=(int(w), int(h)),
         description=raw["description"],
+        gen_prompt=raw.get("gen_prompt"),
         group=raw.get("group"),
         anim=raw.get("anim"),
         frame=raw.get("frame"),
@@ -142,6 +144,14 @@ def validate(m: Manifest) -> list[str]:
             errors.append(
                 f"sprite {s.name!r}: size {s.size} out of range "
                 f"(must be 1..{SPRITE_MAX_SIDE} per axis)"
+            )
+
+        if s.gen_prompt is not None and not (
+            isinstance(s.gen_prompt, str) and s.gen_prompt.strip()
+        ):
+            errors.append(
+                f"sprite {s.name!r}: gen_prompt, when present, must be a "
+                f"non-empty string"
             )
 
         if (s.anim is None) != (s.frame is None):
