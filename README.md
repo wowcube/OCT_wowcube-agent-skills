@@ -5,21 +5,20 @@ A knowledge base and skill set for LLM-powered coding agents (Kilo Code, Claude 
 ## 📂 Repository Structure
 
 ```
-├── skills/
-│   ├── cube_orchestrator/        # Skill: MASTER controller + entry point (routes all stages)
-│   │   └── SKILL.md
+├── skills/                       # each contains a SKILL.md (+ scripts/ where noted)
+│   ├── cube_orchestrator/        # MASTER controller + entry point (routes all stages)
 │   ├── cube_game-designer/       # Stage 1 component: game concept → GDD
-│   │   └── SKILL.md
 │   ├── technical_prompter/       # Stage 2 component: GDD → prompts + asset manifest
-│   │   └── SKILL.md
-│   └── cube_asset-builder/       # Stage 3 component: manifest → packed assets + _ids.h
-│       └── SKILL.md
+│   ├── cube_asset-builder/       # Stage 3 component: manifest → packed assets + _ids.h (+ scripts/, tests/)
+│   ├── cube_verifier/            # Stage 4 component: scores coder output (requirements + template agents)
+│   └── wowcube-boilerplate/      # Infra gate (pre-Stage 4) + Stage 5: scaffold, build & verify .oct (+ scripts/)
+├── scripts/                      # Shared asset-pipeline tools (pack.py, unpack.py, build_psd.py, requirements.txt)
 ├── templates/
-│   ├── app_ai_template.h         # OctaviOS API reference template
-│   └── app_test_ids.h            # Example sprite/asset ID definitions
-├── src/                          # Example source files
+│   └── app_ai_template/          # Template app cloned per game (art/, sound/, src/, *.target)
+│       └── src/app_ai_template.h # Annotated OctaviOS API reference — source of truth for all C/C++
+├── src/                          # Example source (app_structure_example.h skeleton)
 ├── context/                      # JSON context files for orchestrator (per-game state)
-└── plans/                        # Output directory for generated game plans
+└── plans/                        # Output directory for generated GDDs, prompts, and asset manifests
 ```
 
 ### Key Files
@@ -30,13 +29,15 @@ A knowledge base and skill set for LLM-powered coding agents (Kilo Code, Claude 
 | `skills/cube_game-designer/SKILL.md` | Stage 1 component — transforms a user's game idea into a structured design document (GDD) |
 | `skills/technical_prompter/SKILL.md` | Stage 2 component — converts a GDD into step-by-step implementation prompts plus the asset manifest |
 | `skills/cube_asset-builder/SKILL.md` | Stage 3 component — turns the asset manifest into packed sprites/sounds and `_ids.h` |
-| `templates/app_ai_template.h` | Annotated OctaviOS API reference — the authoritative guide for all WowCube C/C++ code |
-| `templates/app_ai_template_ids.h` | Asset ID header (BMP enum pattern) |
-| `src/app_structure_example.h` | Clean project skeleton for new games |
+| `skills/cube_verifier/SKILL.md` | Stage 4 component — scores each coder result against requirements and the API template (two verifier agents) |
+| `skills/wowcube-boilerplate/SKILL.md` | Infra gate (before Stage 4) + Stage 5 — scaffolds `app_<game>/`, verifies the simulator build, and produces the verified cube `.oct` |
+| `templates/app_ai_template/src/app_ai_template.h` | Annotated OctaviOS API reference — the authoritative guide for all WowCube C/C++ code |
+| `templates/app_ai_template/` | Template app cloned per game by `wowcube-boilerplate` (art, sound, src, `.target` marker) |
+| `src/app_structure_example.h` | Clean project skeleton the orchestrator copies to `src/app_<game>.h` |
 
 ## 🎮 Available Skills
 
-**`cube_orchestrator` is the single entry point.** For any WowCube game request — at any stage — the user invokes the orchestrator. It detects which pipeline stage the project is in and drives the right component skill or subagents itself, pausing for user approval at every stage boundary. The other three skills are components the orchestrator manages, not user-facing entry points.
+**`cube_orchestrator` is the single entry point.** For any WowCube game request — at any stage — the user invokes the orchestrator. It detects which pipeline stage the project is in and drives the right component skill or subagents itself, pausing for user approval at every stage boundary. The other five skills (`cube_game-designer`, `technical_prompter`, `cube_asset-builder`, `cube_verifier`, `wowcube-boilerplate`) are components the orchestrator manages, not user-facing entry points.
 
 ### Cube Orchestrator (`cube_orchestrator`) — master controller
 
@@ -61,6 +62,10 @@ Component invoked by the orchestrator. Reads the GDD and decomposes it into the 
 ### Stage 3 — Asset Builder (`cube_asset-builder`)
 
 Component invoked by the orchestrator. Turns the validated asset manifest into placeholder PNGs and MP3s, pauses for user review, then packs them into `assets/packed/`, `assets/mp3/`, and `src/app_<game>_ids.h`.
+
+### Stage 4 — Verifier (`cube_verifier`)
+
+Component invoked by the orchestrator during the implementation loop. After each coder agent finishes a prompt, the orchestrator dispatches two `cube_verifier` agents sequentially — a **requirements agent** (completeness, GDD alignment, no regressions, verification criteria) and a **template agent** (API correctness, platform constraints, code quality) — which together score the result out of 100. A score below the threshold triggers automatic fix-and-re-verify cycles.
 
 ### Stage 5 — Device Package (`wowcube-boilerplate`)
 
