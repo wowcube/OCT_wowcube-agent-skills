@@ -1,19 +1,23 @@
 ---
 name: cube_asset-builder
 description: >-
-  Use after `technical_prompter` has produced `plans/<game>_assets.json` and
-  before `cube_orchestrator` runs. Generates deterministic PNG placeholders
-  and short MP3 placeholders for every sprite and sound in the manifest,
-  pauses for user review, then packs them through `build_psd.py` + `pack.py`
-  to produce `assets/packed/`, `assets/mp3/`, and `src/app_<game>_ids.h`.
+  Stage 3 component of the WowCube pipeline, invoked by cube_orchestrator — not a
+  standalone user entry point. Use only when the orchestrator routes to asset
+  generation because the manifest exists but packed assets and _ids.h do not.
+  Generates placeholder PNGs and MP3s, pauses for user review, then packs them
+  into `assets/packed/`, `assets/mp3/`, and `src/app_<game>_ids.h`.
 ---
 
 # WowCube Asset Builder
 
+> **This skill is Stage 3 of the `cube_orchestrator` pipeline.** The orchestrator invokes it (via the Skill tool) when the asset manifest exists but `assets/packed/` / `src/app_<game>_ids.h` do not. It is not a user-facing entry point — the user enters through `cube_orchestrator`, which routes here.
+
 Drive the early-prototype asset pipeline from a structured manifest. This
 skill never writes game code and never creates prompts — it exists solely to
 turn a validated `<game>_assets.json` into a runnable set of packed sprites
-and sound files that `cube_orchestrator`'s coder agents can reference.
+and sound files that `cube_orchestrator`'s coder agents can reference. The packed
+assets are the Stage 3 artifact; `cube_orchestrator` checkpoints them with the
+user and then runs Stage 4 (implementation).
 
 **Core principle:** every asset name that appears in a prompt must exist as a
 file after this skill runs. The manifest is the contract. No placeholder text
@@ -22,16 +26,17 @@ manifest and gets generated, or the user is asked to fix the manifest.
 
 ## When to Use
 
-- A manifest `plans/<game>/<game>_assets.json` (or `plans/<game>_assets.json`)
-  exists and the orchestrator has not yet started.
-- The user says "generate assets", "build assets", "run the asset pipeline",
-  or similar after `technical_prompter` finished.
+- `cube_orchestrator` routed here because the manifest exists but `assets/packed/`
+  or `src/app_<game>_ids.h` is missing.
 - Resuming a partially-completed asset build after a user requested regeneration.
+
+Do not trigger this skill directly for "generate assets" / "build assets"
+requests — those are owned by `cube_orchestrator`, which routes here as Stage 3.
 
 ## When NOT to Use
 
-- No manifest exists → delegate to `technical_prompter`.
-- No GDD exists → delegate to `cube_game-designer`.
+- No manifest exists → the orchestrator will route to Stage 2 (`technical_prompter`).
+- No GDD exists → the orchestrator will route to Stage 1 (`cube_game-designer`).
 - The user wants to modify game code → this skill does not touch `src/app_<game>.h`.
 
 ## Prerequisites
@@ -55,7 +60,7 @@ Look in this order:
 1. `plans/<game>/<game>_assets.json`
 2. `plans/<game>_assets.json`
 
-If neither exists, delegate to `technical_prompter`.
+If neither exists, stop and **return control to `cube_orchestrator`** — the manifest is a Stage 2 output, so the orchestrator will route to Stage 2 (`technical_prompter`) to produce it.
 
 ### Step 2: Run the generate stage
 
@@ -121,10 +126,11 @@ Print:
 > - `src/app_<game>_ids.h` ready with N BMP_* constants.
 > - `assets/packed/*.png` + `pal.png` ready.
 > - `assets/mp3/*.mp3` ready.
-> Run `cube_orchestrator` next.
 
-Do NOT invoke `cube_orchestrator` automatically. The user decides when to
-proceed (same pattern used between `technical_prompter` and `cube_orchestrator`).
+Then **return control to `cube_orchestrator`**. Do NOT start implementation
+yourself. The orchestrator will run the Stage 3→4 boundary checkpoint with the
+user and begin the implementation workflow (coder/verifier/fixer subagents) when
+approved.
 
 ## Constraints
 

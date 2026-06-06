@@ -1,25 +1,29 @@
 ---
 name: technical_prompter
 description: >-
-  Use when a WowCube game design document or GDD already exists and needs to be
-  decomposed into step-by-step implementation prompts, or when someone says
-  "implement this plan", "build this game", or "start coding" after a GDD is ready.
+  Stage 2 component of the WowCube pipeline, invoked by cube_orchestrator — not a
+  standalone user entry point. Use only when the orchestrator routes to prompt
+  generation because a GDD exists but the prompts file and asset manifest do not.
+  Decomposes a GDD into implementation prompts plus the asset manifest.
 ---
 
 # WowCube Technical Prompter
 
-Decompose a Game Design Document into the smallest possible vertical-slice implementation prompts, where each prompt produces a testable increment. Output is consumed by the `cube_orchestrator` skill.
+> **This skill is Stage 2 of the `cube_orchestrator` pipeline.** The orchestrator invokes it (via the Skill tool) when a GDD exists but `plans/<game>_prompts.md` / `plans/<game>_assets.json` do not. It is not a user-facing entry point — the user enters through `cube_orchestrator`, which routes here.
+
+Decompose a Game Design Document into the smallest possible vertical-slice implementation prompts, where each prompt produces a testable increment. The prompts and asset manifest are the Stage 2 artifacts; `cube_orchestrator` checkpoints them with the user and then drives Stage 3 (`cube_asset-builder`).
 
 ## When to Use
 
-- A GDD exists in `plans/` and implementation needs to begin
-- User says "implement this," "build this game," or "start coding" after design is complete
-- An orchestrator needs to break a game plan into implementable agent tasks
+- `cube_orchestrator` routed here because a GDD exists but `plans/<game>_prompts.md` or `plans/<game>_assets.json` is missing
+- The orchestrator needs prompts and the asset manifest before it can drive Stage 3 (assets)
+
+Do not trigger this skill directly for "implement this" / "start coding" requests — those are owned by `cube_orchestrator`, which routes here as Stage 2.
 
 ## When NOT to Use
 
-- No GDD exists yet — use `cube_game-designer` first
-- User wants to modify existing running code — this produces fresh implementation prompts
+- No GDD exists yet — the orchestrator will route to Stage 1 (`cube_game-designer`) first
+- The request is to modify existing running code — this produces fresh implementation prompts
 
 ## Constraints
 
@@ -288,3 +292,5 @@ After writing, provide a summary:
 - Dependency graph overview
 - Any GDD gaps or ambiguities resolved with assumptions
 - Estimated complexity (sprite count, function count)
+
+Then **return control to `cube_orchestrator`** — do NOT invoke `cube_asset-builder` yourself. The orchestrator will run the Stage 2→3 boundary checkpoint with the user and route to Stage 3 when approved.

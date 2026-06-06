@@ -1,16 +1,56 @@
 ---
 name: cube_orchestrator
 description: >-
-  Use when executing WowCube game implementation prompts produced by the
-  technical_prompter skill. Orchestrates coder, verifier, and fixer subagents
-  with JSON communication, pipeline parallelism, and user checkpoints.
+  Use as the single entry point for ANY WowCube game work — when the user says
+  "make a game", "design a game", "create a game", "build the game", "implement
+  this", "start coding", "run the prompts", or wants to resume a WowCube project.
+  The master controller for the whole pipeline: it routes through design, prompts,
+  assets, and implementation, and manages every sub-skill and subagent.
 ---
 
 # WowCube Cube Orchestrator
 
-Deploy subagents to implement WowCube game prompts. All inter-agent communication uses JSON. Use pipeline parallelism where safe. Verify every result.
+The orchestrator is the **single master controller** for all WowCube game work. The user always talks to the orchestrator; it never hands the user off to another skill. Instead, it detects which pipeline stage the project is in and drives the appropriate sub-skill or subagents itself.
 
-**Core principle:** The orchestrator never writes game code itself. It reads, plans, dispatches, and coordinates. Every coding task and every verification task is a separate Agent. Parallelism must never compromise correctness — when in doubt, wait.
+**Core principle:** The orchestrator never writes game code, never designs the game, never authors prompts, and never generates assets *itself*. It reads, plans, routes, dispatches, and coordinates. Every stage of work is done by a sub-skill (`cube_game-designer`, `technical_prompter`, `cube_asset-builder`) or by a subagent (coder, verifier, fixer). Parallelism must never compromise correctness — when in doubt, wait.
+
+## The Pipeline (what the orchestrator manages)
+
+The orchestrator owns a four-stage pipeline. It is the only skill the user invokes; the other three skills are components the orchestrator drives.
+
+| Stage | Produces | Driven by | How |
+|-------|----------|-----------|-----|
+| 1. Design | `plans/<game>_gdd.md` | `cube_game-designer` | Skill tool (interactive, main context) |
+| 2. Prompts | `plans/<game>_prompts.md` + `plans/<game>_assets.json` | `technical_prompter` | Skill tool (main context) |
+| 3. Assets | `assets/packed/*.png`, `assets/mp3/*.mp3`, `src/app_<game>_ids.h` | `cube_asset-builder` | Skill tool (runs Python pipeline + user review) |
+| 4. Implement | `src/app_<game>.h` (per-prompt) | coder / verifier / fixer | Agent tool (subagents) |
+
+**Invocation mechanism:**
+- **Stages 1–3 run in the main context via the Skill tool**, because each requires user interaction (the designer's discovery interview, the asset-review checkpoint). The orchestrator invokes the sub-skill, lets it run to completion with its own internal interactions, then returns here.
+- **Stage 4 dispatches subagents via the Agent tool**, exactly as described in the implementation workflow below.
+
+## Stage Detection & Routing (do this FIRST on every entry)
+
+On entry — including resumption — determine the active `<game>` (ask the user if ambiguous or multiple games exist; otherwise infer from `plans/` and `context/`). Then inspect the filesystem and route to the FIRST stage whose output is missing:
+
+| Detected state | Route to | Action |
+|----------------|----------|--------|
+| No `plans/<game>_gdd.md` | **Stage 1** | Invoke `cube_game-designer` via the Skill tool |
+| GDD exists, but no `plans/<game>_prompts.md` or no `plans/<game>_assets.json` | **Stage 2** | Invoke `technical_prompter` via the Skill tool |
+| Prompts + manifest exist, but `assets/packed/` or `src/app_<game>_ids.h` is missing | **Stage 3** | Invoke `cube_asset-builder` via the Skill tool |
+| All Stage 1–3 outputs present | **Stage 4** | Run the implementation workflow below |
+
+After each stage completes, **re-run this detection** to find the next stage — do not assume the next stage; verify its inputs exist.
+
+## Stage-Boundary Checkpoint (MANDATORY between every stage)
+
+After a stage produces its artifact and BEFORE invoking the next stage, the orchestrator MUST:
+1. Summarize what the completed stage produced (GDD path, prompt count, asset counts, etc.)
+2. **STOP. Do NOT invoke the next stage's sub-skill or any agent.**
+3. Present the next stage and wait for explicit user approval ("ok", "continue", "next", etc.)
+4. Only after approval, route into the next stage
+
+This is the same non-negotiable discipline as the per-prompt checkpoint in Stage 4. Never auto-advance across a stage boundary. The user reviews each artifact (design, prompts, assets) before the pipeline proceeds.
 
 **MANDATORY RULE — CHECKPOINT AFTER EVERY PROMPT:**
 After each prompt cycle (coder → verifier → context save), you MUST:
@@ -23,32 +63,30 @@ This is NON-NEGOTIABLE. Never batch multiple prompts. Never skip the checkpoint.
 
 ## When to Use
 
-- A prompts file exists in `plans/` (produced by `technical_prompter`) and implementation needs to be orchestrated
-- User says "run the prompts," "execute the implementation," or "build the game from prompts"
-- Resuming a partially-completed implementation (read `context/<game>_context.json`)
+- ANY WowCube game request, at any stage — this is the entry point
+- User says "make a game," "design a game," or "create a game" (→ routes to Stage 1)
+- User says "implement this," "start coding," "run the prompts," or "build the game from prompts" (→ routes to the first incomplete stage)
+- Resuming a partially-completed project at any stage (read `context/<game>_context.json` and re-run stage detection)
 
 ## When NOT to Use
 
-- No prompts file exists — use `technical_prompter` first
-- No GDD exists — use `cube_game-designer` first
-- User wants to design a game — use `cube_game-designer`
+- The request is not about a WowCube game
+- (There is no "use another skill first" case — the orchestrator owns the whole pipeline and routes into the sub-skills itself.)
 
-## Prerequisites
+## Stage 4 Prerequisites
 
-| File | Source | Required |
-|------|--------|----------|
-| `plans/<game>_prompts.md` | `technical_prompter` skill | Yes |
-| `plans/<game>_gdd.md` | `cube_game-designer` skill | Yes |
-| `plans/<game>_assets.json` | `technical_prompter` skill | Yes |
-| `src/app_<game>_ids.h` | `cube_asset-builder` skill | Yes |
-| `assets/packed/pal.png` | `cube_asset-builder` skill | Yes |
+These files must exist before the **implementation workflow (Stage 4)** runs. They are produced by Stages 1–3, so under normal flow they will already be present when stage detection routes here.
+
+| File | Produced by | Required |
+|------|-------------|----------|
+| `plans/<game>_prompts.md` | Stage 2 (`technical_prompter`) | Yes |
+| `plans/<game>_gdd.md` | Stage 1 (`cube_game-designer`) | Yes |
+| `plans/<game>_assets.json` | Stage 2 (`technical_prompter`) | Yes |
+| `src/app_<game>_ids.h` | Stage 3 (`cube_asset-builder`) | Yes |
+| `assets/packed/pal.png` | Stage 3 (`cube_asset-builder`) | Yes |
 | `OCT_wowcube-agent-skills/templates/app_ai_template.h` | Project template | Yes |
 
-Missing prerequisite → delegate to the appropriate skill. Do not proceed until all are satisfied. Specifically:
-- Missing `_ids.h` or `assets/packed/` → delegate to `cube_asset-builder`.
-- Missing `plans/<game>_assets.json` → delegate to `technical_prompter`.
-- Missing `plans/<game>_prompts.md` → delegate to `technical_prompter`.
-- Missing `plans/<game>_gdd.md` → delegate to `cube_game-designer`.
+If any Stage 4 prerequisite is missing when implementation is expected, do NOT proceed — re-run **Stage Detection & Routing** above and drive the missing stage's sub-skill yourself (Stage 1 → `cube_game-designer`, Stage 2 → `technical_prompter`, Stage 3 → `cube_asset-builder`), checkpointing at each boundary.
 
 ## Constraints
 
@@ -185,11 +223,13 @@ All data between orchestrator and agents is JSON.
 }
 ```
 
-## Workflow
+## Stage 4: Implementation Workflow
+
+This is the implementation stage — reached only after Stages 1–3 are complete and their boundary checkpoints approved. Here the orchestrator dispatches coder/verifier/fixer **subagents via the Agent tool** to implement the prompts one at a time.
 
 ### Step 1: Initialize
 
-1. Verify all prerequisites exist
+1. Verify all Stage 4 prerequisites exist
 2. Read `plans/<game>_prompts.md` — parse all prompts (delimited by `## Prompt N:`)
 3. Read `plans/<game>_gdd.md` for game understanding
 4. Check if `context/<game>_context.json` exists — if yes, offer to resume

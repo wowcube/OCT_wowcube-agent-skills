@@ -6,11 +6,13 @@ A knowledge base and skill set for LLM-powered coding agents (Kilo Code, Claude 
 
 ```
 ├── skills/
-│   ├── cube_game-designer/       # Skill: game concept → GDD
+│   ├── cube_orchestrator/        # Skill: MASTER controller + entry point (routes all stages)
 │   │   └── SKILL.md
-│   ├── cube_orchestrator/        # Skill: orchestrate implementation from prompts
+│   ├── cube_game-designer/       # Stage 1 component: game concept → GDD
 │   │   └── SKILL.md
-│   └── technical_prompter/       # Skill: GDD → implementation prompts
+│   ├── technical_prompter/       # Stage 2 component: GDD → prompts + asset manifest
+│   │   └── SKILL.md
+│   └── cube_asset-builder/       # Stage 3 component: manifest → packed assets + _ids.h
 │       └── SKILL.md
 ├── templates/
 │   ├── app_ai_template.h         # OctaviOS API reference template
@@ -24,43 +26,56 @@ A knowledge base and skill set for LLM-powered coding agents (Kilo Code, Claude 
 
 | Path | Purpose |
 |------|---------|
-| `skills/cube_game-designer/SKILL.md` | Transforms a user's game idea into a structured technical plan (GDD) |
-| `skills/technical_prompter/SKILL.md` | Converts an existing game plan into step-by-step implementation prompts for code agents |
+| `skills/cube_orchestrator/SKILL.md` | **Master controller and single entry point** — routes every stage and manages all sub-skills and subagents |
+| `skills/cube_game-designer/SKILL.md` | Stage 1 component — transforms a user's game idea into a structured design document (GDD) |
+| `skills/technical_prompter/SKILL.md` | Stage 2 component — converts a GDD into step-by-step implementation prompts plus the asset manifest |
+| `skills/cube_asset-builder/SKILL.md` | Stage 3 component — turns the asset manifest into packed sprites/sounds and `_ids.h` |
 | `templates/app_ai_template.h` | Annotated OctaviOS API reference — the authoritative guide for all WowCube C/C++ code |
 | `templates/app_ai_template_ids.h` | Asset ID header (BMP enum pattern) |
 | `src/app_structure_example.h` | Clean project skeleton for new games |
 
 ## 🎮 Available Skills
 
-### 1. Game Designer (`cube_game-designer`)
+**`cube_orchestrator` is the single entry point.** For any WowCube game request — at any stage — the user invokes the orchestrator. It detects which pipeline stage the project is in and drives the right component skill or subagents itself, pausing for user approval at every stage boundary. The other three skills are components the orchestrator manages, not user-facing entry points.
 
-Takes a game concept or idea and produces a non-technical Game Design Document at `plans/<game_name>_gdd.md` through a discovery interview with the user.
+### Cube Orchestrator (`cube_orchestrator`) — master controller
 
-### 2. Technical Prompter (`technical_prompter`)
+The entry point and master controller of the entire pipeline. On every entry it runs **stage detection** and routes:
 
-Reads an existing GDD from `plans/` and decomposes it into the smallest possible vertical-slice implementation prompts at `plans/<game_name>_prompts.md`. Each prompt produces a testable increment.
+1. No GDD → drives **Stage 1** (`cube_game-designer`)
+2. GDD but no prompts/manifest → drives **Stage 2** (`technical_prompter`)
+3. Prompts/manifest but no packed assets → drives **Stage 3** (`cube_asset-builder`)
+4. All inputs present → runs **Stage 4**: deploys coder, verifier, and fixer subagents for each prompt
 
-### 3. Cube Orchestrator (`cube_orchestrator`)
+Stages 1–3 run in the main context via the Skill tool (they need user interaction); Stage 4 dispatches subagents via the Agent tool. All inter-agent communication uses JSON. Pipeline parallelism where safe (prepare next task while verifying current). Scores below 90 trigger automatic rework (up to 5 attempts). Context accumulates in `context/<game>_context.json`. The orchestrator checkpoints with the user at every stage boundary and after every prompt.
 
-Deploys coder, verifier, and fixer subagents for each prompt. All inter-agent communication uses JSON. Pipeline parallelism where safe (prepare next task while verifying current). Orchestrator decides when to wait vs. pipeline based on prompt dependencies. Scores below 90 trigger automatic rework (up to 5 attempts). Context accumulates in `context/<game>_context.json`.
+### Stage 1 — Game Designer (`cube_game-designer`)
+
+Component invoked by the orchestrator. Takes a game concept and produces a non-technical Game Design Document at `plans/<game_name>_gdd.md` through a discovery interview with the user.
+
+### Stage 2 — Technical Prompter (`technical_prompter`)
+
+Component invoked by the orchestrator. Reads the GDD and decomposes it into the smallest possible vertical-slice implementation prompts at `plans/<game_name>_prompts.md`, plus the asset manifest `plans/<game_name>_assets.json`. Each prompt produces a testable increment.
+
+### Stage 3 — Asset Builder (`cube_asset-builder`)
+
+Component invoked by the orchestrator. Turns the validated asset manifest into placeholder PNGs and MP3s, pauses for user review, then packs them into `assets/packed/`, `assets/mp3/`, and `src/app_<game>_ids.h`.
 
 ## 🤖 How to Use
 
-### Designing a New Game
-
-Point your AI agent to this repository and describe your game idea:
+**You only ever talk to the orchestrator.** Describe your game idea (or ask to continue an existing one) and the orchestrator figures out where you are in the pipeline and drives the right stage:
 
 > "I want to make a WowCube game where the player catches falling stars by twisting the cube. Stars appear on random faces and fall toward the bottom plane. The player twists to move a basket between faces to catch them."
 
-The agent will use the **Game Designer** skill to analyze your concept, read the API template, and produce a complete technical plan in `plans/`.
+The **Cube Orchestrator** runs stage detection, sees there is no GDD yet, and drives **Stage 1** (Game Designer) to interview you and produce the GDD. After you approve it at the stage checkpoint, the orchestrator drives **Stage 2** (Technical Prompter) for prompts + asset manifest, then **Stage 3** (Asset Builder) for placeholder assets, then **Stage 4** (coder/verifier/fixer subagents) to implement the prompts one at a time.
 
-### Implementing a Game Plan
+### Resuming
 
-Once a plan exists in `plans/`, ask the agent to implement it:
+Just ask the orchestrator to continue:
 
-> "Read the game plan at `plans/star_catcher_plan.md` and generate technical prompts for implementation."
+> "Continue building the star catcher game."
 
-The agent will use the **Technical Prompter** skill to break the plan into ordered, self-contained prompts that code agents execute sequentially.
+The orchestrator re-runs stage detection against `plans/`, `assets/`, and `context/<game>_context.json` and resumes from the first incomplete stage. You never invoke the component skills directly — the orchestrator routes into them and checkpoints with you at every stage boundary and after every implemented prompt.
 
 ## 🧊 WowCube Platform Summary
 

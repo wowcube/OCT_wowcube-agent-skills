@@ -1,28 +1,31 @@
 ---
 name: cube_game-designer
 description: >-
-  Use when designing a new game for the WowCube platform, when a user provides
-  a game concept or idea that needs a structured game design document, or when
-  someone says "make a game", "design a game", or "create a game" for the WowCube.
+  Stage 1 component of the WowCube pipeline, invoked by cube_orchestrator — not a
+  standalone user entry point. Use only when the orchestrator routes to game design
+  because no GDD exists yet. Produces a non-technical Game Design Document from a
+  game idea via a discovery interview.
 ---
 
 # WowCube Game Designer
 
-Create a non-technical Game Design Document (GDD) from a user's game idea, accounting for WowCube hardware and interaction specifics. The GDD is consumed by `technical_prompter` (decomposition into prompts) and then `cube_orchestrator` (execution).
+> **This skill is Stage 1 of the `cube_orchestrator` pipeline.** The orchestrator invokes it (via the Skill tool) when stage detection finds no GDD. It is not a user-facing entry point — for any WowCube game request, the user enters through `cube_orchestrator`, which routes here.
+
+Create a non-technical Game Design Document (GDD) from a user's game idea, accounting for WowCube hardware and interaction specifics. The GDD is the Stage 1 artifact; `cube_orchestrator` checkpoints it with the user and then drives Stage 2 (`technical_prompter`).
 
 **Core principle:** To produce a high-quality GDD, the agent MUST first ask as many clarifying questions as needed to fully understand the user's vision. Never guess — always ask. The discovery conversation is not optional; it is the most important part of the process.
 
 ## When to Use
 
-- User describes a game idea or concept for the WowCube
-- User says "make a game," "design a game," or "create a game"
-- User provides a genre, theme, or mechanic and expects a full game design
-- An orchestrator needs a GDD before handing off to the technical prompter
+- `cube_orchestrator` routed here because stage detection found no `plans/<game>_gdd.md`
+- The orchestrator needs a GDD before it can drive Stage 2 (prompts)
+
+Do not trigger this skill directly for "make a game" / "design a game" requests — those are owned by `cube_orchestrator`, which routes here as Stage 1.
 
 ## When NOT to Use
 
-- A GDD already exists and needs implementation prompts — use `technical_prompter` instead
-- User wants to modify existing code — this skill produces design documents, not code
+- A GDD already exists — the orchestrator will route to Stage 2 (`technical_prompter`) instead
+- The request is to modify existing code — this skill produces design documents, not code
 
 ## WowCube Device Essentials
 
@@ -291,7 +294,7 @@ After writing, provide a brief summary:
 - Which cube inputs are used
 - Any design assumptions made
 - Invite the user to review and request changes
-- Note: when ready, use `technical_prompter` to decompose this GDD into implementation prompts
+- Then **return control to `cube_orchestrator`** — do NOT invoke `technical_prompter` yourself. The orchestrator will run the Stage 1→2 boundary checkpoint with the user and route to Stage 2 when approved.
 
 ## Writing Guidelines
 
