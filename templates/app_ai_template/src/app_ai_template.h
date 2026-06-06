@@ -4,13 +4,8 @@
 
 #include "app_ai_template_ids.h"
 
-#ifdef _WIN32
-    #define APP_PNG "..\\..\\app_ai_template\\art\\packed"
-    #define APP_SND "..\\..\\app_ai_template\\art\\mp3"
-#else
-    #define APP_PNG "assets/packed"
-    #define APP_SND "assets/mp3"
-#endif
+#define APP_PNG "..\\..\\app_ai_template\\art\\packed"
+#define APP_SND "..\\..\\app_ai_template\\sound"
 
 #define OCT_PLANES_MAX 6 // max planes on the cube
 #define OCT_QUADS_AT_PLANE 4 // max quads per plane
@@ -18,6 +13,14 @@
 #define SPRITES_CAP 400 // scene capacity - maximum possible object count
 #define GAP 18 // width of the physical border between WowCube's displays in pixels
 #define SIM_SINGLE_THREAD
+
+// Print a float through OCT_text/OCT_trace without %f (double is poisoned on ARM).
+// Split into integer and 3-digit fractional parts, format as "%d.%03d":
+//   OCT_text(-1, "x=%d.%03d\n", OCT_F_INT(x), OCT_F_FRAC(x));
+// Note: for values in (-1, 0) the sign lives in the fractional part only,
+// so e.g. -0.5 prints as "0.500".
+#define OCT_F_INT(x)   ((int32_t)(x))
+#define OCT_F_FRAC(x)  ((int32_t)(((x) < 0.0f ? -(x) : (x)) * 1000.0f) % 1000)
 
 
 // --- INSTRUCTIONS FOR AI AGENT -----------------------
@@ -35,12 +38,6 @@
 // * ALWAYS copy the project header structure.
 // * ALWAYS copy all handler functions (on_init, on_tick,
 //   on_tap, on_twisted, on_pretwisted) into the output.
-// * If a handler body has no game logic, you MUST still
-//   reference every parameter as a statement to suppress
-//   unused-variable warnings. Example:
-//     WASM_EXPORT void on_tap(int32_t tapid) { tapid; }
-//     WASM_EXPORT void on_pretwisted(int32_t twid) { twid; }
-//     WASM_EXPORT void on_twisted(int32_t twid, uint32_t disconnected_ms) { twid; disconnected_ms; }
 // * Write modular, readable code: extract game state into
 //   structs, split logic into small focused functions,
 //   use named constants instead of magic numbers.
@@ -63,6 +60,7 @@ typedef enum {
     DEMO_6,
     DEMO_7,
     DEMO_8,
+    DEMO_9,
     DEMO_COUNT
 } demoId_t;
 
@@ -138,6 +136,9 @@ void processDemo7(void);
 
 void initDemo8(void);
 void twistDemo8(int32_t twid);
+
+void initDemo9(void);
+void processDemo9(void);
 
 
 ////////////////////////////////
@@ -250,7 +251,7 @@ void initDemo0(void) {
                     // Short: OCT_add adds a sprite to the scene; returns idx in gObjects.
                     // Declaration: int OCT_add(int layer, bool twistable, int plane, float x, float y, int a, bool loop, int bmpfrom, int bmpto, int framelen);
                     // Comment: twistable=false means the engine automatically resets the position after a twist.
-                    // Comment: parameter 'a' is the sprite angle in degrees; positive values rotate counter-clockwise (CCW), 0 degrees points right (+X).
+                    // Comment: parameter 'a' is the sprite angle in degrees (int16_t, not float); only right angles are supported (0, 90, 180, 270). Positive values rotate counter-clockwise (CCW), 0 degrees points right (+X).
                     // Comment: (loop, bmpfrom, bmpto, framelen) are used for animation; framelen is the number of global ticks per frame.
                     // Critical Comment: NO NEED to account for GAP in the x/y coordinates - the engine handles GAP offsets automatically!
                     OCT_add(1, true, (int32_t)plane, (float)x, (float)y, 0, false, BMP_001, BMP_001, 0);
@@ -272,7 +273,7 @@ void twistDemo0(void) {
         if ((size_t)gObjects[i].Idx != i) continue;
 
         gObjects[i].Tm.A = 0; // Reset angle (relative to Tm.Plane)
-        // Comment: Tm.A is the sprite angle in degrees; positive values rotate counter-clockwise (CCW), 0 degrees points right (+X).
+        // Comment: Tm.A is the sprite angle in degrees (int16_t, not float); only right angles are supported (0, 90, 180, 270). Positive values rotate counter-clockwise (CCW), 0 degrees points right (+X).
     }
 }
 
@@ -423,6 +424,7 @@ void initDemo4(void) {
 
     // Short: OCT_add_label adds a text label to the scene; returns idx in gObjects.
     // Declaration: int OCT_add_label(int layer, bool twistable, int side, float x, float y, int a, int font_idx, int align);
+    // Comment: parameter 'a' is int16_t (not float); only right angles are supported (0, 90, 180, 270).
     // Comment: font_idx selects the font [1..3] (FONT_1, FONT_2, FONT_3); align sets text alignment (ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT).
     // Comment: Each glyph is a separate child sprite with Parent set to the label's Idx.
     // Comment: Use OCT_label_set to assign text after creation; use showLabel to toggle visibility of the label and its glyphs.
@@ -502,8 +504,12 @@ void initDemo5(void) {
     octBmpInfo_t info;
     OCT_BMP_info((uint32_t)BMP_001, &info);
 
-    OCT_trace(0, "Demo5 init BMP_001: name=%s W=%d H=%d pivotX=%f pivotY=%f numPixels=%d\n",
-        info.Name, (int32_t)info.W, (int32_t)info.H, info.PivotX, info.PivotY, info.NumPixels);
+    // Short: OCT_text prints a printf-style debug line shown on screen when OCT_dev_mode(OCT_DEV_TEXT) is on.
+    // Declaration: void OCT_text(int string_index, const char* format, ...);
+    // Comment: string_index is a slot in a fixed array of DEBUG_STRINGS (10) lines. An in-range index [0; 10) overwrites that slot directly (use for a stable line refreshed each tick); any out-of-range index (e.g. -1) appends in log mode, scrolling older lines toward higher slots.
+    // Comment: lines whose text starts with '.' are pinned and do not scroll. Same no-%f rule as OCT_trace (variadic, double poisoned on ARM) - print floats via OCT_F_INT/OCT_F_FRAC.
+    OCT_text(-1, "Demo5 init BMP_001: name=%s W=%d H=%d pivotX=%d.%03d pivotY=%d.%03d numPixels=%d\n",
+        info.Name, (int32_t)info.W, (int32_t)info.H, OCT_F_INT(info.PivotX), OCT_F_FRAC(info.PivotX), OCT_F_INT(info.PivotY), OCT_F_FRAC(info.PivotY), info.NumPixels);
 }
 
 // Demo: do not copy-paste this code
@@ -515,8 +521,8 @@ void processDemo5(void) {
         octBmpInfo_t info;
         OCT_BMP_info((uint32_t)BMP_000, &info);
 
-        OCT_trace(0, "Demo5 tick0 BMP_000: name=%s W=%d H=%d pivotX=%f pivotY=%f\n",
-            info.Name, (int32_t)info.W, (int32_t)info.H, info.PivotX, info.PivotY);
+        OCT_text(-1, "Demo5 tick0 BMP_000: name=%s W=%d H=%d pivotX=%d.%03d pivotY=%d.%03d\n",
+            info.Name, (int32_t)info.W, (int32_t)info.H, OCT_F_INT(info.PivotX), OCT_F_FRAC(info.PivotX), OCT_F_INT(info.PivotY), OCT_F_FRAC(info.PivotY));
     }
 }
 
@@ -532,8 +538,8 @@ void tapDemo5(size_t plane) {
         octBmpInfo_t info;
         OCT_BMP_info((uint32_t)obj->Frame, &info);
 
-        OCT_trace(0, "Demo5 tap sprite[%lu]: name=%s W=%d H=%d Bx=%f By=%f Bw=%f Bh=%f\n",
-            i, info.Name, (int32_t)info.W, (int32_t)info.H, info.Bx, info.By, info.Bw, info.Bh);
+        OCT_text(-1, "Demo5 tap sprite[%lu]: name=%s W=%d H=%d Bx=%d.%03d By=%d.%03d Bw=%d.%03d Bh=%d.%03d\n",
+            i, info.Name, (int32_t)info.W, (int32_t)info.H, OCT_F_INT(info.Bx), OCT_F_FRAC(info.Bx), OCT_F_INT(info.By), OCT_F_FRAC(info.By), OCT_F_INT(info.Bw), OCT_F_FRAC(info.Bw), OCT_F_INT(info.Bh), OCT_F_FRAC(info.Bh));
     }
 }
 
@@ -571,6 +577,7 @@ void processDemo6(void) {
             // Short: OCT_TM_set sets a transform's position, angle, and plane directly (teleport).
             // Declaration: void OCT_TM_set(octTm_t* tm, float x, float y, int a, int plane);
             // Comment: Unlike OCT_TM_walk, this does not animate or handle transitions - it overwrites all fields at once.
+            // Comment: parameter 'a' is int16_t (not float); only right angles are supported (0, 90, 180, 270).
             OCT_TM_set(&vars.demo6.obj->Tm, x, y, 0, q / OCT_QUADS_AT_PLANE);
         }
     }
@@ -623,16 +630,59 @@ void twistDemo8(int32_t twid) {
     // Comment: Index OCT_TWISTS with twid [0..11]. For half-twists (twid >= 12), subtract OCT_TWIST_HALF to get the base index.
     const octTwist_t* tw = &OCT_TWISTS[twid];
 
-    OCT_trace(0, "Demo8 twist %d: disk=[%d,%d,%d,%d] ring1=[%d,%d,%d,%d] ring2=[%d,%d,%d,%d]\n",
+    OCT_text(-1, "Demo8 twist %d: disk=[%d,%d,%d,%d] ring1=[%d,%d,%d,%d] ring2=[%d,%d,%d,%d]\n",
         twid,
         tw->QuadsDisk[0], tw->QuadsDisk[1], tw->QuadsDisk[2], tw->QuadsDisk[3],
         tw->QuadsRing1[0], tw->QuadsRing1[1], tw->QuadsRing1[2], tw->QuadsRing1[3],
         tw->QuadsRing2[0], tw->QuadsRing2[1], tw->QuadsRing2[2], tw->QuadsRing2[3]);
 
-    OCT_trace(0, "Demo8 impulse=[%d,%d,%d,%d,%d,%d] ringsMask=0x%08lx\n",
+    OCT_text(-1, "Demo8 impulse=[%d,%d,%d,%d,%d,%d] ringsMask=0x%08lx\n",
         tw->Impulse[0], tw->Impulse[1], tw->Impulse[2],
         tw->Impulse[3], tw->Impulse[4], tw->Impulse[5],
         (uint32_t)tw->RingsMask);
+}
+
+// Demo: do not copy-paste this code
+void initDemo9(void) {
+    // API info + demo
+    // Demo 9: parent-child sprite relationship.
+    // Child sprite uses local coordinates relative to its parent.
+    // When parent moves or rotates, the child follows automatically
+    // (the engine composes transforms via OCT_TM_combine at render time).
+
+    // create parent sprite at center of TOP plane, quad 0
+    int32_t parentId = OCT_add(0, false, OCT_PLANE_TOP, 120.f, 120.f, 0, false, BMP_001, BMP_001, 0);
+    vars.demoObj = &gObjects[parentId];
+
+    // create child sprite - world coords first, then convert to local
+    int32_t childId = OCT_add(0, false, OCT_PLANE_TOP, 120.f + 60.f, 120.f, 0, false, BMP_002, BMP_002, 0);
+    appObject_t* child = &gObjects[childId];
+
+    // Short: Setting Parent to the parent's Idx makes the child's Tm local (relative to parent).
+    // Comment: The engine applies OCT_TM_combine at render time: rotates child's local (X,Y) by parent's angle, adds parent's position, and inherits parent's plane.
+    // Comment: After setting Parent, child coordinates MUST be converted to parent-local space by subtracting the parent's world position.
+    child->Parent = vars.demoObj->Idx;
+    child->Tm.X = child->Tm.X - vars.demoObj->Tm.X; // convert to local X (= 60)
+    child->Tm.Y = child->Tm.Y - vars.demoObj->Tm.Y; // convert to local Y (= 0)
+}
+
+// Demo: do not copy-paste this code
+void processDemo9(void) {
+    // API info + demo
+    // Demo 9: parent orbits around the quad center; child follows automatically.
+
+    // Short: OCT_TM_sin/cos return sin/cos for an integer angle in degrees; backed by a 360-entry lookup table.
+    // Declaration: float OCT_TM_sin(int deg);
+    // Declaration: float OCT_TM_cos(int deg);
+
+    float radius = 120.f;
+    int32_t angle = (int32_t)(vars.tick * 6) % 360; // 6 deg/tick → full circle in 3 seconds
+    float cx = 0.f; // plane center X
+    float cy = 0.f; // plane center Y
+
+    float x = cx + radius * OCT_TM_cos(angle);
+    float y = cy + radius * OCT_TM_sin(angle);
+    OCT_TM_set(&vars.demoObj->Tm, x, y, 0, (int32_t)vars.demoObj->Tm.Plane);
 }
 
 
@@ -641,7 +691,7 @@ void twistDemo8(int32_t twid) {
 void switchDemo(demoId_t demo) {
     // Short: OCT_restart reinitializes the sprite engine, clearing all objects.
     // Declaration: void OCT_restart(int* objects, int capacity, int objectSize);
-    OCT_restart((int32_t*)gObjects, SPRITES_CAP, (int32_t)sizeof(appObject_t));
+    OCT_restart((int*)gObjects, SPRITES_CAP, (int32_t)sizeof(appObject_t));
 
     // Short: OCT_background sets the background color for the entire cube (all planes and quads).
     // Declaration: void OCT_background(int color);
@@ -652,23 +702,24 @@ void switchDemo(demoId_t demo) {
     vars.tick = 0;
 
     switch (demo) {
-        case DEMO_0:      initDemo0(); break;
-        case DEMO_1:      initDemo1(); break;
-        case DEMO_2:      initDemo2(); break;
+        case DEMO_0: initDemo0(); break;
+        case DEMO_1: initDemo1(); break;
+        case DEMO_2: initDemo2(); break;
         case DEMO_2_LERP: initDemo2(); break;
-        case DEMO_3:      initDemo3(); break;
-        case DEMO_4:      initDemo4(); break;
-        case DEMO_5:      initDemo5(); break;
-        case DEMO_6:      initDemo6(); break;
-        case DEMO_7:      initDemo7(); break;
-        case DEMO_8:      initDemo8(); break;
+        case DEMO_3: initDemo3(); break;
+        case DEMO_4: initDemo4(); break;
+        case DEMO_5: initDemo5(); break;
+        case DEMO_6: initDemo6(); break;
+        case DEMO_7: initDemo7(); break;
+        case DEMO_8: initDemo8(); break;
+        case DEMO_9: initDemo9(); break;
         default: break;
     }
 }
 
 
 // Handlers
-WASM_EXPORT void on_init() {
+OCT_CALLBACK void on_init() {
     // API info
     // on_init is called once when the application starts.
     // Use it to initialize the engine, set up the scene, and load resources.
@@ -676,17 +727,16 @@ WASM_EXPORT void on_init() {
     OCT_viewports_layout(SCHEME_CUBE, GAP, GAP); // Set default viewport layout with gap between quads = GAP
     OCT_dev_mode(OCT_DEV_TEXT);
 
-    switchDemo(DEMO_8);
+    switchDemo(DEMO_9);
 }
 
-WASM_EXPORT void on_pretwisted(int32_t twid) {
+OCT_CALLBACK void on_pretwisted(int32_t twid) {
     // API info
     // on_pretwisted is called when a twist action begins.
     // Use it to prepare the game state for the twist, e.g., pause animations.
-    twid;
 }
 
-WASM_EXPORT void on_twisted(int32_t twid, uint32_t disconnected_ms) {
+OCT_CALLBACK void on_twisted(int32_t twid, uint32_t disconnected_ms) {
     // API info
     // on_twisted is called when a twist action is completed.
     // Use it to update the game state after the twist, e.g., check for matches or update positions.
@@ -719,7 +769,7 @@ WASM_EXPORT void on_twisted(int32_t twid, uint32_t disconnected_ms) {
         };
 
         // Logging
-        OCT_trace(0, "twist: %s; %lu ms.\n", twid >= OCT_TWIST_HALF ? HALF[twid - OCT_TWIST_HALF] : TWISTS[twid], disconnected_ms);
+        OCT_text(-1, "twist: %s; %lu ms.\n", twid >= OCT_TWIST_HALF ? HALF[twid - OCT_TWIST_HALF] : TWISTS[twid], disconnected_ms);
     }
 
     switch (vars.currentDemo) {
@@ -730,7 +780,7 @@ WASM_EXPORT void on_twisted(int32_t twid, uint32_t disconnected_ms) {
 }
 
 
-WASM_EXPORT void on_tap(int32_t tapid) {
+OCT_CALLBACK void on_tap(int32_t tapid) {
     // API info
     // on_tap is called when the user taps on a plane.
     // Use it to handle user interactions, e.g., select objects or trigger actions.
@@ -741,7 +791,7 @@ WASM_EXPORT void on_tap(int32_t tapid) {
         const char* TAPS[OCT_PLANES_MAX] = {"TOP", "FRONT", "RIGHT", "BACK", "LEFT", "BOTTOM"};
 
         // Logging
-        OCT_trace(0, "tap: %s\n", TAPS[tapid]);
+        OCT_text(-1, "tap: %s\n", TAPS[tapid]);
     }
     // State machine: tap switches to next demo
     demoId_t next = (demoId_t)((int32_t)vars.currentDemo + 1);
@@ -757,7 +807,7 @@ WASM_EXPORT void on_tap(int32_t tapid) {
 }
 
 
-WASM_EXPORT void on_tick() {
+OCT_CALLBACK void on_tick() {
     // API info
     // on_tick is called every frame (tick) of the game loop.
     // Use it to update game logic, animations, and physics.
@@ -777,25 +827,29 @@ WASM_EXPORT void on_tick() {
         float gY = OCT_TM_gravity_y(OCT_PLANE_TOP);
         float gN = OCT_TM_gravity_n(OCT_PLANE_TOP);
 
-        // Short: OCT_TM_top_plane/bottom_plane returns the current top/bottom plane ID based on the accelerometer.
-        // Declaration: int OCT_TM_top_plane();
-        // Declaration: int OCT_TM_bottom_plane();
-        size_t topPlane = (size_t)OCT_TM_top_plane();
-        size_t bottomPlane = (size_t)OCT_TM_bottom_plane();
+        // Short: OCT_TM_top_side/bottom_plane returns the current top/bottom plane ID based on the accelerometer.
+        // Declaration: int OCT_TM_top_side();
+        // Declaration: int OCT_TM_bottom_side();
+        size_t topPlane = (size_t)OCT_TM_top_side();
+        size_t bottomPlane = (size_t)OCT_TM_bottom_side();
 
         // Logging
-        OCT_trace(0, "gX: %f; gY: %f; gN: %f; top: %s; bottom: %s\n", gX, gY, gN, planes[topPlane], planes[bottomPlane]);
+        OCT_text(-1, "gX: %d.%03d; gY: %d.%03d; gN: %d.%03d; top: %s; bottom: %s\n", OCT_F_INT(gX), OCT_F_FRAC(gX), OCT_F_INT(gY), OCT_F_FRAC(gY), OCT_F_INT(gN), OCT_F_FRAC(gN), planes[topPlane], planes[bottomPlane]);
     }
 
+    if (vars.tick % OCT_1SEC_TICKS == 0)
+        OCT_text(-1, "demo:%d tick:%lu\n", (int32_t)vars.currentDemo, vars.tick);
+
     switch (vars.currentDemo) {
-        case DEMO_0:      processDemo0(); break;
-        case DEMO_2:      processDemo2(); break;
+        case DEMO_0: processDemo0(); break;
+        case DEMO_2: processDemo2(); break;
         case DEMO_2_LERP: processDemo2Lerp(); break;
-        case DEMO_3:      processDemo3(); break;
-        case DEMO_4:      processDemo4(); break;
-        case DEMO_5:      processDemo5(); break;
-        case DEMO_6:      processDemo6(); break;
-        case DEMO_7:      processDemo7(); break;
+        case DEMO_3: processDemo3(); break;
+        case DEMO_4: processDemo4(); break;
+        case DEMO_5: processDemo5(); break;
+        case DEMO_6: processDemo6(); break;
+        case DEMO_7: processDemo7(); break;
+        case DEMO_9: processDemo9(); break;
         default: break;
     }
 

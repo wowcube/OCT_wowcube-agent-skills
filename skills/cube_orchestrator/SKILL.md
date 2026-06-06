@@ -85,8 +85,17 @@ These files must exist before the **implementation workflow (Stage 4)** runs. Th
 | `src/app_<game>_ids.h` | Stage 3 (`cube_asset-builder`) | Yes |
 | `assets/packed/pal.png` | Stage 3 (`cube_asset-builder`) | Yes |
 | `OCT_wowcube-agent-skills/templates/app_ai_template.h` | Project template | Yes |
+| `app_<game>/` scaffolded, assets packed, **simulator builds and launches** | `wowcube-boilerplate` skill | Yes |
 
 If any Stage 4 prerequisite is missing when implementation is expected, do NOT proceed — re-run **Stage Detection & Routing** above and drive the missing stage's sub-skill yourself (Stage 1 → `cube_game-designer`, Stage 2 → `technical_prompter`, Stage 3 → `cube_asset-builder`), checkpointing at each boundary.
+
+**Infrastructure gate (do this before Step 1):** Verify the build environment is
+ready — `app_<game>/` exists with its `.target` marker, `art/packed/*.raw` are
+present, and `app_<game>/bin/app_<game>.exe` builds and launches. If any of these
+is missing, **delegate to the `wowcube-boilerplate` skill** to scaffold and verify
+the infra, then return here. Never dispatch the first coder agent against an
+unverified or non-existent project — a broken toolchain discovered mid-implementation
+is far more expensive to untangle than one caught before any code is written.
 
 ## Constraints
 
@@ -200,24 +209,42 @@ All data between orchestrator and agents is JSON.
 }
 ```
 
-### Verifier Response JSON (verifier agent → orchestrator)
+### Requirements Verifier Response JSON (requirements agent → orchestrator)
 
 ```json
 {
-  "status": "pass|fail",
+  "agent": "requirements",
   "prompt": N,
   "scores": {
-    "completeness": 25,
-    "api_correctness": 20,
-    "platform_constraints": 15,
-    "gdd_alignment": 15,
-    "no_regressions": 10,
-    "code_quality": 10,
-    "verification_criteria": 5
+    "completeness": 45,
+    "gdd_alignment": 25,
+    "no_regressions": 20,
+    "verification_criteria": 10
   },
-  "total_score": 100,
+  "total": 100,
+  "status": "pass|fail",
   "issues": [
-    {"severity": "critical|major|minor", "category": "completeness|api_correctness|platform_constraints|gdd_alignment|no_regressions|code_quality|verification_criteria", "description": "...", "location": "...", "deduction": N}
+    {"severity": "critical|major|minor", "category": "completeness|gdd_alignment|no_regressions|verification_criteria", "description": "...", "location": "...", "deduction": N}
+  ],
+  "summary": "one sentence assessment"
+}
+```
+
+### Template Verifier Response JSON (template agent → orchestrator)
+
+```json
+{
+  "agent": "template",
+  "prompt": N,
+  "scores": {
+    "api_correctness": 45,
+    "platform_constraints": 35,
+    "code_quality": 20
+  },
+  "total": 100,
+  "status": "pass|fail",
+  "issues": [
+    {"severity": "critical|major|minor", "category": "api_correctness|platform_constraints|code_quality", "description": "...", "location": "...", "template_rule": "...", "deduction": N}
   ],
   "summary": "one sentence assessment"
 }
@@ -233,7 +260,11 @@ This is the implementation stage — reached only after Stages 1–3 are complet
 2. Read `plans/<game>_prompts.md` — parse all prompts (delimited by `## Prompt N:`)
 3. Read `plans/<game>_gdd.md` for game understanding
 4. Check if `context/<game>_context.json` exists — if yes, offer to resume
-5. If new game, copy `OCT_wowcube-agent-skills/src/app_structure_example.h` → `src/app_<game>.h` (project root)
+5. If new game, reset the game source to a clean skeleton: copy
+   `OCT_wowcube-agent-skills/src/app_structure_example.h` → `app_<game>/src/app_<game>.h`.
+   (`wowcube-boilerplate` left a working demo there to prove the build; overwriting
+   it with the skeleton is expected — the verified folder, marker, packed assets,
+   and toolchain are what carry forward.)
 6. Count total prompts, present execution plan to user
 
 ### Step 2: Validate Prompts
@@ -306,59 +337,17 @@ You are a WowCube game coder. Implement exactly what the task describes.
 Return ONLY the Coder Response JSON. No markdown, no explanation outside the JSON.
 ```
 
-#### 3c. Dispatch Verifier Agent
+#### 3c. Dispatch Verifier Agents
 
-After coder completes, deploy verifier.
+After coder completes, deploy two verifier agents **sequentially** using the `cube_verifier` skill. Pass the same Verification Task JSON to each.
 
-**Pipeline rule:** If the orchestrator is confident that prompt N+1 does NOT depend on N's verification outcome (see Pipeline Model table), it MAY begin preparing N+1's task JSON while the verifier runs. But it MUST NOT dispatch N+1's coder until N's verification passes.
+**Step 1 — Requirements Agent.** Deploy an agent with the Requirements Agent prompt template from the `cube_verifier` skill. Returns a JSON with scores for: completeness (25), gdd_alignment (15), no_regressions (10), verification_criteria (5). Max 55 points.
 
-##### Verifier Agent Prompt Template
+**Step 2 — Template Agent.** Deploy an agent with the Template Agent prompt template from the `cube_verifier` skill. Returns a JSON with scores for: api_correctness (20), platform_constraints (15), code_quality (10). Max 45 points.
 
-```
-You are a WowCube code verifier. Score the implementation against all project documentation.
+**Evaluate:** Each agent scores out of 100 independently. Both must score >= 90 to pass. If either fails, pass its issues to the fix agent.
 
-## Task
-<insert Verification Task JSON>
-
-## Weighted Scoring (100 points total)
-
-Each category has a maximum score. Start at max, deduct per issue found.
-
-| # | Category | Max | What to check |
-|---|----------|-----|---------------|
-| 1 | **Completeness** | 25 | Every instruction in the prompt is implemented |
-| 2 | **API correctness** | 20 | All API calls match `OCT_wowcube-agent-skills/templates/app_ai_template.h` |
-| 3 | **Platform constraints** | 15 | TL macro, gObjects[0] skipped, SPRITES_CAP respected, explicit type casts, fixed-width types only, all 5 handlers present with unused params suppressed, no GAP in OCT_add coords |
-| 4 | **GDD alignment** | 15 | Implementation matches game design document |
-| 5 | **No regressions** | 10 | Features from prior_context still intact |
-| 6 | **Code quality** | 10 | No copied demo code, no dead code, proper struct usage |
-| 7 | **Verification criteria** | 5 | Prompt's own verification requirements are met |
-
-### Deduction rules
-
-| Severity | Deduction | Definition |
-|----------|-----------|------------|
-| critical | **-10** from its category (min 0) | Won't compile, breaks existing features, data loss |
-| major | **-5** from its category (min 0) | Missing functionality, wrong API usage, logic error |
-| minor | **-2** from its category (min 0) | Style issue, non-functional concern, cosmetic |
-
-### How to score
-
-1. For each category, start at its max value
-2. Find all issues, assign each a severity AND a category
-3. Deduct from the category's score per the table above
-4. Category score cannot go below 0
-5. `total_score` = sum of all 7 category scores
-6. `status` = "pass" if total_score >= 90, "fail" otherwise
-
-### Example
-
-If Completeness (max 25) has 1 major issue (-5) and 1 minor issue (-2):
-→ completeness = 25 - 5 - 2 = 18
-
-## Response
-Return ONLY the Verifier Response JSON (see JSON protocol above). Each issue MUST have: severity, category, description, location, deduction. No markdown, no explanation outside the JSON.
-```
+**Pipeline rule:** If the orchestrator is confident that prompt N+1 does NOT depend on N's verification outcome (see Pipeline Model table), it MAY begin preparing N+1's task JSON while the verifiers run. But it MUST NOT dispatch N+1's coder until verification passes.
 
 #### 3d. Handle Verification Result
 
@@ -469,12 +458,25 @@ If actual source diverges from context JSON:
 
 After all prompts executed and final checkpoint passes:
 1. Summary: total prompts, fix cycles, average verification score
-2. Suggest next steps (testing, polish, features)
+2. **Point the user to the cube-loadable binary.** The file to flash onto the
+   physical WowCube is the `.oct` package at:
+
+   ```
+   app_<game>/app_<game>.oct
+   ```
+
+   This is **not** produced by the simulator build alone — it must contain the
+   ARM device code. Tell the user to produce it via the `wowcube-boilerplate`
+   skill's device build (`scripts/build_device.ps1 -AppDir <workspace>/app_<game>`),
+   which runs the ARM build (`out/app_<game>.bin`) and then has the simulator
+   pack assets + sounds + ARM code into `app_<game>/app_<game>.oct`. Report the
+   absolute path to that `.oct` once generated.
+3. Suggest next steps (testing on device, polish, features)
 
 ## Configuration
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Verification threshold | 90 | Minimum score to pass |
+| Verification threshold | 90 | Minimum score to pass (per agent, each scores out of 100) |
 | Max retry attempts | 5 | Max fix+re-verify cycles per prompt |
 | Start from | 1 | First prompt to execute (for resumption) |
