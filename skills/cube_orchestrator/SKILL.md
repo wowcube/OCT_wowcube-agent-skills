@@ -24,9 +24,10 @@ The orchestrator owns a four-stage pipeline. It is the only skill the user invok
 | 2. Prompts | `plans/<game>_prompts.md` + `plans/<game>_assets.json` | `technical_prompter` | Skill tool (main context) |
 | 3. Assets | `assets/packed/*.png`, `assets/mp3/*.mp3`, `src/app_<game>_ids.h` | `cube_asset-builder` | Skill tool (runs Python pipeline + user review) |
 | 4. Implement | `src/app_<game>.h` (per-prompt) | coder / verifier / fixer | Agent tool (subagents) |
+| 5. Package | `app_<game>/app_<game>.oct` (ARM code embedded, verified) | `wowcube-boilerplate` | Skill tool (runs `build_device.ps1`) |
 
 **Invocation mechanism:**
-- **Stages 1–3 run in the main context via the Skill tool**, because each requires user interaction (the designer's discovery interview, the asset-review checkpoint). The orchestrator invokes the sub-skill, lets it run to completion with its own internal interactions, then returns here.
+- **Stages 1–3 and Stage 5 run in the main context via the Skill tool.** Stages 1–3 each require user interaction (the designer's discovery interview, the asset-review checkpoint); Stage 5 invokes `wowcube-boilerplate` to run the device build. In each case the orchestrator invokes the sub-skill, lets it run to completion, then returns here.
 - **Stage 4 dispatches subagents via the Agent tool**, exactly as described in the implementation workflow below.
 
 ## Stage Detection & Routing (do this FIRST on every entry)
@@ -38,7 +39,8 @@ On entry — including resumption — determine the active `<game>` (ask the use
 | No `plans/<game>_gdd.md` | **Stage 1** | Invoke `cube_game-designer` via the Skill tool |
 | GDD exists, but no `plans/<game>_prompts.md` or no `plans/<game>_assets.json` | **Stage 2** | Invoke `technical_prompter` via the Skill tool |
 | Prompts + manifest exist, but `assets/packed/` or `src/app_<game>_ids.h` is missing | **Stage 3** | Invoke `cube_asset-builder` via the Skill tool |
-| All Stage 1–3 outputs present | **Stage 4** | Run the implementation workflow below |
+| All Stage 1–3 outputs present, but prompts remain unimplemented | **Stage 4** | Run the implementation workflow below |
+| All prompts implemented, but no verified device `.oct` exists (or it was last touched by a sim run) | **Stage 5** | Invoke `wowcube-boilerplate` via the Skill tool to run the device build (`build_device.ps1`) |
 
 After each stage completes, **re-run this detection** to find the next stage — do not assume the next stage; verify its inputs exist.
 
@@ -50,7 +52,7 @@ After a stage produces its artifact and BEFORE invoking the next stage, the orch
 3. Present the next stage and wait for explicit user approval ("ok", "continue", "next", etc.)
 4. Only after approval, route into the next stage
 
-This is the same non-negotiable discipline as the per-prompt checkpoint in Stage 4. Never auto-advance across a stage boundary. The user reviews each artifact (design, prompts, assets) before the pipeline proceeds.
+This is the same non-negotiable discipline as the per-prompt checkpoint in Stage 4. Never auto-advance across a stage boundary. The user reviews each artifact (design, prompts, assets, device package) before the pipeline proceeds.
 
 **MANDATORY RULE — CHECKPOINT AFTER EVERY PROMPT:**
 After each prompt cycle (coder → verifier → context save), you MUST:
@@ -59,7 +61,7 @@ After each prompt cycle (coder → verifier → context save), you MUST:
 3. Wait for the user's explicit approval ("ok", "continue", "next", etc.)
 4. Only after receiving approval, proceed to the next prompt
 
-This is NON-NEGOTIABLE. Never batch multiple prompts. Never skip the checkpoint. Never assume the user wants to continue. The user needs to test every build on the physical device before proceeding.
+This is NON-NEGOTIABLE. Never batch multiple prompts. Never skip the checkpoint. Never assume the user wants to continue. The user needs to test every build **in the simulator** before proceeding. (Per-prompt iteration uses the simulator; the authoritative physical-cube test happens once at **Stage 5**, when the device `.oct` is built and verified — see below for why it cannot be built per-prompt without being clobbered.)
 
 ## When to Use
 
@@ -92,8 +94,8 @@ If any Stage 4 prerequisite is missing when implementation is expected, do NOT p
 **Infrastructure gate (do this before Step 1):** Verify the build environment is
 ready — `app_<game>/` exists with its `.target` marker, `art/packed/*.raw` are
 present, and `app_<game>/bin/app_<game>.exe` builds and launches. If any of these
-is missing, **delegate to the `wowcube-boilerplate` skill** to scaffold and verify
-the infra, then return here. Never dispatch the first coder agent against an
+is missing, **invoke the `wowcube-boilerplate` skill (Skill tool)** to scaffold and
+verify the infra, then return here. Never dispatch the first coder agent against an
 unverified or non-existent project — a broken toolchain discovered mid-implementation
 is far more expensive to untangle than one caught before any code is written.
 
@@ -419,7 +421,7 @@ Do NOT proceed to the next prompt. Do NOT dispatch any more agents. WAIT for the
    - Features added, files modified
    - Fix cycles needed (if any)
 
-2. **Test instructions** — what to look for on the cube
+2. **Test instructions** — what to look for in the simulator
 
 3. **STOP and ask the user** (present these options):
    - "Everything works — continue"
@@ -458,38 +460,43 @@ If actual source diverges from context JSON:
 
 After all prompts executed and final checkpoint passes:
 1. Summary: total prompts, fix cycles, average verification score
-2. **Build the cube-loadable binary — this is mandatory, not optional.** A
-   passing simulator build is **not** a shippable result. The simulator runs its
-   own PC-compiled code, so a game can look perfect in the sim while the `.oct`
+2. **Run Stage 5 — Package & Verify (mandatory, not optional).** A passing
+   simulator build is **not** a shippable result. The simulator runs its own
+   PC-compiled code, so a game can look perfect in the sim while the `.oct`
    contains **no ARM code at all** and is completely dead on the physical cube.
    This is the single most common way to "finish" a game that doesn't actually
-   run on hardware — so the orchestrator must close this gap itself rather than
-   leaving it to the user.
+   run on hardware — so the orchestrator closes this gap itself (Stage 5) rather
+   than handing it to the user.
 
-   Run the device build via the `wowcube-boilerplate` skill as the **last** step:
+   Following the same mechanism as the other stages, **invoke the
+   `wowcube-boilerplate` skill via the Skill tool** as the final action; it runs
+   the device build:
 
    ```
    scripts/build_device.ps1 -AppDir <workspace>/app_<game>
    ```
 
-   It compiles the ARM target (`out/app_<game>.bin`), has the simulator pack
+   That compiles the ARM target (`out/app_<game>.bin`), has the simulator pack
    assets + sounds + ARM code into `app_<game>/app_<game>.oct`, and **verifies the
    ARM code is actually embedded** (it fails loudly on an asset-only pack). The
-   task is not complete until this script exits 0. If the ARM toolchain is
-   missing it will say so — that's a `wowcube-boilerplate` `check_env.ps1` /
-   `winget` problem to resolve, not a reason to ship the sim-only `.oct`.
+   task is not complete until this exits 0. If the ARM toolchain is missing, that
+   is a `wowcube-boilerplate` `check_env.ps1` / `winget` problem to resolve — not
+   a reason to ship the sim-only `.oct`.
 
-   Then report the absolute path to the verified package:
+   **Critical ordering:** the simulator rewrites `app_<game>.oct` as an
+   asset-only pack on *every* launch, so all per-prompt sim testing (Stage 4)
+   necessarily happens *before* Stage 5. This is exactly why the device `.oct` is
+   built once, here at the end, and never per-prompt — a per-prompt device build
+   would just be clobbered by the next sim run. Never hand the user a `.oct` that
+   was last touched by a plain sim run.
+
+   Then **checkpoint with the user (Stage 5 boundary):** report the absolute path
+   to the verified package and confirm it is ready to flash onto the cube:
 
    ```
    app_<game>/app_<game>.oct
    ```
-
-   **Critical ordering:** the simulator rewrites `app_<game>.oct` as an
-   asset-only pack on *every* launch, so any sim testing must happen *before* the
-   device build. Never hand the user a `.oct` that was last touched by a plain
-   sim run — always regenerate it with `build_device.ps1` as the final action.
-3. Suggest next steps (testing on device, polish, features)
+3. Suggest next steps (testing on the physical cube, polish, features)
 
 ## Configuration
 
