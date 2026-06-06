@@ -1,15 +1,14 @@
-"""Deterministic MP3 placeholder generator for cube_asset-builder.
+"""Deterministic WAV placeholder generator for cube_asset-builder.
 
-Synthesises short audio clips with numpy, encodes to MP3 via ffmpeg with
-bitexact flags so the same manifest produces the same bytes across runs.
+Synthesises short audio clips with numpy and writes them straight out as
+mono PCM16 WAV files. No external encoder is involved, so the same manifest
+deterministically produces byte-identical output across runs and platforms.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import io
-import shutil
-import subprocess
 import sys
 import wave
 from pathlib import Path
@@ -19,7 +18,6 @@ import numpy as np
 from manifest_schema import Manifest, Sound, load_manifest
 
 SAMPLE_RATE = 22050
-BITRATE = "96k"
 WAVEFORMS = ("sine", "square", "triangle", "sawtooth")
 
 EVENT_PRESETS = {
@@ -125,39 +123,18 @@ def render_wav_bytes(
     return buf.getvalue()
 
 
-def _encode_mp3(wav_bytes: bytes, out_path: Path) -> None:
-    """Invoke ffmpeg with bit-exact flags so the same input produces the same MP3 bytes."""
+def _write_wav(wav_bytes: bytes, out_path: Path) -> None:
+    """Write the synthesised WAV bytes straight to disk."""
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    cmd = [
-        "ffmpeg", "-y",
-        "-hide_banner", "-loglevel", "error",
-        "-f", "wav", "-i", "-",
-        "-b:a", BITRATE,
-        "-map_metadata", "-1",
-        "-fflags", "+bitexact",
-        "-flags", "+bitexact",
-        str(out_path),
-    ]
-    proc = subprocess.run(cmd, input=wav_bytes, capture_output=True, check=False)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"ffmpeg failed ({proc.returncode}): {proc.stderr.decode(errors='replace')}"
-        )
+    out_path.write_bytes(wav_bytes)
 
 
 def generate(manifest: Manifest, out_dir: Path, *, group: str | None = None) -> list[Path]:
-    """Generate MP3s for every sound in `manifest` to `out_dir`.
+    """Generate WAVs for every sound in `manifest` to `out_dir`.
 
     If `group` is given, only sounds whose derived/explicit group matches
     are regenerated.
     """
-    if not shutil.which("ffmpeg"):
-        raise RuntimeError(
-            "ffmpeg not found on PATH. Install it and retry. "
-            "On macOS: 'brew install ffmpeg'. On Ubuntu: 'apt install ffmpeg'. "
-            "On Windows: https://ffmpeg.org/download.html"
-        )
-
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     written: list[Path] = []
@@ -169,22 +146,22 @@ def generate(manifest: Manifest, out_dir: Path, *, group: str | None = None) -> 
             group=grp, name=snd.name, event_type=snd.event_type,
             duration_ms=snd.duration_ms,
         )
-        target = out_dir / f"{snd.name}.mp3"
-        _encode_mp3(wav_bytes, target)
+        target = out_dir / f"{snd.name}.wav"
+        _write_wav(wav_bytes, target)
         written.append(target)
     return written
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="Generate placeholder MP3s from an asset manifest.")
+    p = argparse.ArgumentParser(description="Generate placeholder WAVs from an asset manifest.")
     p.add_argument("manifest", help="Path to <game>_assets.json")
-    p.add_argument("--out", default="assets/mp3", help="Output directory (default: assets/mp3)")
+    p.add_argument("--out", default="assets/wav", help="Output directory (default: assets/wav)")
     p.add_argument("--group", default=None, help="Regenerate only this group")
     args = p.parse_args(argv)
 
     m = load_manifest(args.manifest)
     written = generate(m, Path(args.out), group=args.group)
-    print(f"gen_sounds: wrote {len(written)} MP3(s) to {args.out}")
+    print(f"gen_sounds: wrote {len(written)} WAV(s) to {args.out}")
     return 0
 
 

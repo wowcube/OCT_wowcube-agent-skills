@@ -4,7 +4,8 @@ description: >-
   Stage 2 component of the WowCube pipeline, invoked by cube_orchestrator — not a
   standalone user entry point. Use only when the orchestrator routes to prompt
   generation because a GDD exists but the prompts file and asset manifest do not.
-  Decomposes a GDD into implementation prompts plus the asset manifest.
+  Decomposes a GDD into implementation prompts plus the asset manifest, where every
+  sprite carries a ready-to-run AI generation prompt (gen_prompt).
 ---
 
 # WowCube Technical Prompter
@@ -94,6 +95,7 @@ Required format (see [cube_asset-builder spec](../cube_asset-builder/SKILL.md) f
   "schema_version": 1,
   "sprites": [
     {"name": "hero_idle_00", "size": [64, 64], "description": "...",
+     "gen_prompt": "Pixel-art sprite of a small round blue hero standing idle, ...",
      "group": "hero", "anim": "hero_idle", "frame": 0, "pivot": [32, 32]}
   ],
   "sounds": [
@@ -111,9 +113,37 @@ Naming rules — ENFORCED by `cube_asset-builder`'s validator:
 - Sound `duration_ms`: 1..2000 (default 500 if omitted).
 - Reserved names forbidden: `pal`, `0`, `icon`, `bmp_none`, `bmp_last`, `bmp_0`, `map_none`, `map_last`.
 - `description` is a short placeholder-generator hint (color, shape, mood).
+- `gen_prompt` (sprites only) is a full, ready-to-run AI image-generation prompt — see Step 4a. When present it must be a non-empty string; the validator rejects empty/blank values.
 - Prefer explicit `group` for visually or tonally related assets.
 
 Write the manifest to `plans/<game>_assets.json`. The `cube_asset-builder` skill will validate it on first run.
+
+### Step 4a: Write a `gen_prompt` for every sprite
+
+Each sprite manifest entry MUST carry a `gen_prompt` — a complete, standalone text prompt that an image generator (e.g. `cube_asset-builder/scripts/genimg.py`) can run as-is to produce that one sprite. This replaces the era of hand-drawn placeholders: the manifest becomes a full set of per-asset generation prompts, one per sprite, keyed by asset name.
+
+**Sounds do NOT get a `gen_prompt`.** This skill writes generation prompts for sprites only; sounds stay described by `description` (and are produced as deterministic placeholders downstream).
+
+**Derive each prompt from the GDD, not from imagination.** Pull the visual contract from:
+- GDD §1 *Style & References* → art style, genre, color palette, mood (apply this to EVERY sprite so the set is cohesive).
+- GDD §3 *Game Objects* and §7 *Assets* → what this specific object looks like and does.
+- The manifest entry's own `size`, `group`, `anim`/`frame`, and `flags`.
+
+**Every `gen_prompt` must specify, explicitly:**
+1. **Subject** — what the object is, from its GDD description (e.g. "a small round blue hero with two eyes").
+2. **Art style** — the GDD's global style verbatim (e.g. "flat pixel-art", "minimal vector", "soft cartoon"). Keep it identical across all sprites.
+3. **Palette & mood** — the GDD's colors/mood, narrowed to this object's colors.
+4. **Exact dimensions** — "exactly WxH pixels" from `size`. The cube's screens are tiny (240×240 quads), so add "single centered object, no padding, readable at small size, high contrast, bold simple shapes, no fine detail".
+5. **Background** — "transparent background" by default (alpha sprite). Only say "fills the whole frame" when `flags.bg` or `flags.fullsize` is set.
+6. **Framing** — "centered, object fills most of the frame, no cropping, no drop shadow beyond the sprite bounds".
+7. **Negative constraints** — "no text, no watermark, no border, no UI frame, no background scenery".
+
+**For animation frames** (`anim` set), write one `gen_prompt` per frame, and within an animation:
+- Keep style, palette, scale, framing, and dimensions byte-for-byte identical across all frames — only the pose/phase changes.
+- Describe the specific phase this frame represents ("frame 2 of 4: legs mid-stride, arms back") so the packed sequence reads as motion.
+- State the loop context ("part of a 4-frame walk-cycle loop; frame 0 and the last frame must connect seamlessly").
+
+Keep each prompt to a few tight sentences — concrete and unambiguous, no storytelling. The goal is that running every sprite's `gen_prompt` yields a visually consistent, cube-ready asset set with zero manual editing.
 
 ### Step 5: Write the Prompts
 
@@ -260,6 +290,11 @@ Before finalizing, verify:
     - No reserved names (see Step 4).
     - No sprite larger than 240×240.
     - No sound longer than 2000 ms.
+13. **Generation-prompt coverage** (see Step 4a):
+    - Every sprite has a non-empty `gen_prompt`.
+    - Each `gen_prompt` states the subject, the GDD's global art style, palette/mood, exact `WxH` dimensions, and background (transparent unless `flags.bg`/`flags.fullsize`).
+    - Across one animation, all frames share identical style/palette/scale/dimensions and differ only in the described pose/phase.
+    - The art style string is identical across all sprites (cohesive set).
 
 ## Prompt Writing Rules
 
@@ -287,10 +322,12 @@ The final output is TWO files:
 
 After writing, provide a summary:
 - Total number of prompts generated
-- Manifest totals: N sprites (K animations), M sounds
+- Manifest totals: N sprites (K animations), M sounds — confirm all N sprites carry a `gen_prompt`
 - Rough grouping (e.g., "Prompts 1-3: foundation, 4-7: core mechanic, 8-10: UI")
 - Dependency graph overview
 - Any GDD gaps or ambiguities resolved with assumptions
 - Estimated complexity (sprite count, function count)
 
 Then **return control to `cube_orchestrator`** — do NOT invoke `cube_asset-builder` yourself. The orchestrator will run the Stage 2→3 boundary checkpoint with the user and route to Stage 3 when approved.
+
+**Why `gen_prompt` quality is non-negotiable.** At Stage 3 the orchestrator gates on this manifest before generating: it refuses to proceed unless (a) every sprite carries a non-empty `gen_prompt` (a blank one makes `gen_sprites.py` fail) and (b) `OPENROUTER_API_KEY` is set. After the external image model renders the sprites, the orchestrator runs an **asset-consistency review subagent** that compares the rendered set against the GDD's global art style and each `gen_prompt`, and forces a `regen` of any group that drifts. The single canonical art-style sentence you reuse verbatim across every `gen_prompt` (validation rule 13) is exactly the cohesion contract that reviewer keys on — so keep it identical, concrete, and GDD-derived.

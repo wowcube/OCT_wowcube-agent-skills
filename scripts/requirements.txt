@@ -7,3 +7,6 @@ pytoshop>=1.2.1
 
 # PSD file reading (used by pack.py)
 psd-tools>=1.9.0
+
+# HTTP client for AI sprite generation (used by skills/cube_asset-builder/scripts/genimg.py)
+requests>=2.31.0
