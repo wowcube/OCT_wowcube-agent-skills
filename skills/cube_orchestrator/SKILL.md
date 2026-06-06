@@ -253,39 +253,58 @@ All data between orchestrator and agents is JSON.
 }
 ```
 
-## Stage 3: Asset Generation (AI)
+## Stage 3: Asset Generation
 
-Reached when the GDD, prompts, and manifest exist but `assets/packed/` or `src/app_<game>_ids.h` is missing. Sprites are now produced by an **external image model** (OpenRouter, called from `cube_asset-builder/scripts/genimg.py`) directly from each sprite's `gen_prompt` in the manifest — they are NOT hand-drawn or procedural placeholders. The orchestrator owns the gates around that generation: it checks readiness before generating, runs an automated consistency review after generating, and only then hands the set to the user.
+Reached when the GDD, prompts, and manifest exist but `assets/packed/` or `src/app_<game>_ids.h` is missing. Stage 3 produces the source art (`assets/art/*.png`, `assets/mp3/*.mp3`) and then packs it. The **source art can be produced two ways**, and the orchestrator MUST let the user choose before generating or packing anything. Both paths converge on the same pack step (Step 3.5).
 
-### Step 3.1: Pre-generation gates (do BEFORE invoking `cube_asset-builder`)
+### Step 3.0: Choose the asset source (ASK FIRST — before any generation or packing)
 
-Both gates must pass. If either fails, do NOT generate — fix the cause first.
+Before touching `cube_asset-builder`, present the choice with the **Agent tool's `AskUserQuestion`** (or a short bullet list + wait). Do NOT pick for the user.
 
-1. **`gen_prompt` coverage.** Load `plans/<game>_assets.json` and confirm **every sprite** has a non-empty `gen_prompt`. (Sounds do NOT need one — they stay deterministic placeholders.) A missing/blank `gen_prompt` makes `gen_sprites.py` fail with `ValueError`. If any sprite is missing it, **return to Stage 2 (`technical_prompter`)** to complete the manifest — do not patch the manifest yourself.
-2. **`OPENROUTER_API_KEY` present.** The generation step calls OpenRouter; without the key `genimg.py` raises `ImageGenError`. Confirm the key is set in the sandbox where `build_pipeline.py` runs. If it is missing, STOP and ask the user to export it (`export OPENROUTER_API_KEY=sk-or-...`) before proceeding — never hardcode it.
+- **Option 1 — AI generation.** The user provides an image-model API key (GPT Image 2 / OpenRouter); the orchestrator generates every sprite from its `gen_prompt`. → **Path A**.
+- **Option 2 — Self-supplied assets.** The user creates the assets themselves, following the manifest's exact specs (name, size, animation frames) and the GDD's art style. The orchestrator does NOT generate — it validates completeness, then packs. → **Path B**.
 
-### Step 3.2: Generate (AI sprites)
+Route to the chosen path below.
 
-Invoke `cube_asset-builder` via the Skill tool. It runs `build_pipeline.py generate`, which calls `gen_sprites.generate()` → `genimg.generate_image(gen_prompt, size)` per sprite (OpenRouter image model) and writes PNGs to `assets/art/`; sounds are synthesised as placeholders into `assets/mp3/`. Output is non-deterministic across runs.
+### Path A — AI generation (Option 1)
 
-### Step 3.3: Consistency review (automated, BEFORE the user review)
+**3.A1 Pre-generation gates** (both must pass; if either fails, do NOT generate):
+1. **`gen_prompt` coverage.** Load `plans/<game>_assets.json` and confirm **every sprite** has a non-empty `gen_prompt`. (Sounds do NOT need one.) A blank `gen_prompt` makes `gen_sprites.py` fail with `ValueError`. If any sprite is missing it, **return to Stage 2 (`technical_prompter`)** — do not patch the manifest yourself.
+2. **Image-model key present.** Generation calls OpenRouter; without the key `genimg.py` raises `ImageGenError`. If `OPENROUTER_API_KEY` is not set in the sandbox where `build_pipeline.py` runs, **this is the "add a key" step** — ask the user to export it (`export OPENROUTER_API_KEY=sk-or-...`) now, before proceeding. Never hardcode it; never commit it.
 
-After generation, dispatch one **read-only** asset-consistency reviewer via the Agent tool. It inspects the rendered `assets/art/*.png` against the GDD's global art style and each sprite's `gen_prompt`, and reports which **groups** (derived per `manifest_schema`) are stylistically off — wrong palette/mood, inconsistent line weight or scale, broken animation continuity, leaked text/watermark/background, or off-spec dimensions.
+**3.A2 Generate.** Invoke `cube_asset-builder` (Skill tool). It runs `build_pipeline.py generate` → `gen_sprites.generate()` → `genimg.generate_image(gen_prompt, size)` per sprite (OpenRouter image model) → PNGs in `assets/art/`; sounds synthesised as placeholders into `assets/mp3/`. Output is non-deterministic across runs.
 
-Pass it the Asset Consistency Task JSON; it returns the Asset Consistency Response JSON (both below).
+**3.A3 Consistency review** (automated, BEFORE the user review). Dispatch one **read-only** asset-consistency reviewer via the Agent tool. It inspects `assets/art/*.png` against the GDD's global art style and each `gen_prompt`, reporting which **groups** (derived per `manifest_schema`) drift — wrong palette/mood, inconsistent line weight or scale, broken animation continuity, leaked text/watermark/background, off-spec dimensions. Pass it the Asset Consistency Task JSON; it returns the Asset Consistency Response JSON (both below).
+- **`status: "pass"`** → go to Step 3.4 (user review).
+- **`status: "fail"`** → for each flagged group, re-run `cube_asset-builder`'s `regen <group>` (→ `build_pipeline.py generate --group <name>`), then re-run this review. **Max 3 review→regen cycles**, then hand the remaining issues to the user at Step 3.4.
 
-- **`status: "pass"`** → proceed to Step 3.4 (user review).
-- **`status: "fail"`** → for each flagged group, re-run generation for that group only via `cube_asset-builder`'s `regen <group>` (which calls `build_pipeline.py generate --group <name>`), then re-run this review. **Max 3 review→regen cycles.** After 3, present the remaining issues to the user and let them decide at Step 3.4.
+This is a quality gate, not a replacement for the human checkpoint. Path A then continues at **Step 3.4**.
 
-This is a quality gate, not a replacement for the human checkpoint — the user still reviews everything in Step 3.4.
+### Path B — Self-supplied assets (Option 2)
 
-### Step 3.4: User review checkpoint (MANDATORY — never skip)
+The user makes the art by hand (or with their own tools) from the GDD. The orchestrator's job is to make the spec unambiguous, then refuse to pack an incomplete set.
 
-This is `cube_asset-builder`'s own mandatory review. Present the generated set and the consistency reviewer's verdict, then STOP and wait for the user. Offer the verbatim options the asset-builder supports: `ok`/`continue`, `regen <group>`, `swap <name>`, `edit <name> size <WxH>`. Never auto-continue to pack.
+**3.B1 Hand the user the exact asset spec** (derive entirely from `plans/<game>_assets.json` + GDD §1 art style):
+- **Sprites** → drop into `assets/art/`. For each: filename **`<name>.png`** (verbatim, lowercase), exact size **`[w, h]`** in pixels, RGBA, transparent background (unless `flags.bg`/`flags.fullsize`), plus the `description` (and `gen_prompt` if present) as the visual brief. Animation frames must be the full contiguous `_00.._NN` set.
+- **Sounds** → drop into `assets/mp3/`. For each: **`<name>.mp3`**, ≤ `duration_ms`, 96 kbps.
+- The reserved **`0.png` is auto-created by the packer** — the user must NOT make it.
+- Stress that the **GDD's global art style applies to every file** so the set stays cohesive.
 
-### Step 3.5: Pack & boundary checkpoint
+**3.B2 Completeness check (MANDATORY — a partial set is an unplayable build).**
+Validate the files actually present against the manifest:
+- For every sprite in the manifest, confirm `assets/art/<name>.png` exists (optionally verify pixel dimensions match `size`).
+- For every sound, confirm `assets/mp3/<name>.mp3` exists.
+- **List EVERY missing file explicitly** (by `<name>` and expected size/duration). If anything is missing, **STOP**: tell the user exactly which sprites/sounds are absent and that the build will not be playable — every `BMP_<name>`/`"<name>.mp3"` referenced in the prompts must exist or the code fails to compile. Wait for the user to add the missing files, then re-run this check. **Never pack a partial set.**
 
-After the user replies `ok`, `cube_asset-builder` runs `build_pipeline.py pack` → `assets/packed/*.png` + `pal.png` + `src/app_<game>_ids.h`. Then run the normal **Stage 3→4 boundary checkpoint** (summarize asset counts + BMP_* constant count, wait for approval) before any Stage 4 work.
+**3.B3 When complete → pack.** Skip generation and the AI consistency review (the user authored and approved their own art). Go straight to **Step 3.5**.
+
+### Step 3.4: User review checkpoint (Path A only; MANDATORY — never skip)
+
+This is `cube_asset-builder`'s own mandatory review of the AI-generated set. Present the generated set and the consistency reviewer's verdict, then STOP and wait for the user. Offer the verbatim options the asset-builder supports: `ok`/`continue`, `regen <group>`, `swap <name>`, `edit <name> size <WxH>`. Never auto-continue to pack.
+
+### Step 3.5: Pack & boundary checkpoint (both paths)
+
+After approval (Path A: user replies `ok`; Path B: the completeness check passed), invoke `cube_asset-builder`'s pack stage → `build_pipeline.py pack`. It **assembles `assets/assets.psd`, fills `assets/exported/` and `assets/packed/` (+ `pal.png`), and writes `src/app_<game>_ids.h`** with the `BMP_*` enum. Then run the normal **Stage 3→4 boundary checkpoint** (summarize asset counts + `BMP_*` constant count, wait for approval) before any Stage 4 work.
 
 ### Asset Consistency Task JSON (orchestrator → reviewer agent)
 
