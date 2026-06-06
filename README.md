@@ -45,9 +45,10 @@ The entry point and master controller of the entire pipeline. On every entry it 
 1. No GDD → drives **Stage 1** (`cube_game-designer`)
 2. GDD but no prompts/manifest → drives **Stage 2** (`technical_prompter`)
 3. Prompts/manifest but no packed assets → drives **Stage 3** (`cube_asset-builder`)
-4. All inputs present → runs **Stage 4**: deploys coder, verifier, and fixer subagents for each prompt
+4. All inputs present, prompts unimplemented → runs **Stage 4**: deploys coder, verifier, and fixer subagents for each prompt
+5. All prompts implemented, no verified device `.oct` → drives **Stage 5** (`wowcube-boilerplate`): builds and verifies the cube-loadable package
 
-Stages 1–3 run in the main context via the Skill tool (they need user interaction); Stage 4 dispatches subagents via the Agent tool. All inter-agent communication uses JSON. Pipeline parallelism where safe (prepare next task while verifying current). Scores below 90 trigger automatic rework (up to 5 attempts). Context accumulates in `context/<game>_context.json`. The orchestrator checkpoints with the user at every stage boundary and after every prompt.
+Stages 1–3 and Stage 5 run in the main context via the Skill tool; Stage 4 dispatches subagents via the Agent tool. All inter-agent communication uses JSON. Pipeline parallelism where safe (prepare next task while verifying current). Scores below 90 trigger automatic rework (up to 5 attempts). Context accumulates in `context/<game>_context.json`. The orchestrator checkpoints with the user at every stage boundary and after every prompt.
 
 ### Stage 1 — Game Designer (`cube_game-designer`)
 
@@ -61,13 +62,17 @@ Component invoked by the orchestrator. Reads the GDD and decomposes it into the 
 
 Component invoked by the orchestrator. Turns the validated asset manifest into placeholder PNGs and MP3s, pauses for user review, then packs them into `assets/packed/`, `assets/mp3/`, and `src/app_<game>_ids.h`.
 
+### Stage 5 — Device Package (`wowcube-boilerplate`)
+
+Component invoked by the orchestrator. Also provides the **infrastructure gate** before Stage 4 (scaffolds `app_<game>/`, verifies the simulator builds and launches). At completion it runs the mandatory device build (`build_device.ps1`): compiles the ARM target and verifies the cube-loadable `app_<game>/app_<game>.oct` actually embeds the ARM code — a passing simulator build alone is **not** shippable.
+
 ## 🤖 How to Use
 
 **You only ever talk to the orchestrator.** Describe your game idea (or ask to continue an existing one) and the orchestrator figures out where you are in the pipeline and drives the right stage:
 
 > "I want to make a WowCube game where the player catches falling stars by twisting the cube. Stars appear on random faces and fall toward the bottom plane. The player twists to move a basket between faces to catch them."
 
-The **Cube Orchestrator** runs stage detection, sees there is no GDD yet, and drives **Stage 1** (Game Designer) to interview you and produce the GDD. After you approve it at the stage checkpoint, the orchestrator drives **Stage 2** (Technical Prompter) for prompts + asset manifest, then **Stage 3** (Asset Builder) for placeholder assets, then **Stage 4** (coder/verifier/fixer subagents) to implement the prompts one at a time.
+The **Cube Orchestrator** runs stage detection, sees there is no GDD yet, and drives **Stage 1** (Game Designer) to interview you and produce the GDD. After you approve it at the stage checkpoint, the orchestrator drives **Stage 2** (Technical Prompter) for prompts + asset manifest, then **Stage 3** (Asset Builder) for placeholder assets, then **Stage 4** (coder/verifier/fixer subagents) to implement the prompts one at a time (tested in the simulator), and finally **Stage 5** (Device Package) to build and verify the cube-loadable `.oct`.
 
 ### Resuming
 
