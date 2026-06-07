@@ -4,8 +4,12 @@ description: >-
   Use as the single entry point for ANY WowCube game work — when the user says
   "make a game", "design a game", "create a game", "build the game", "implement
   this", "start coding", "run the prompts", or wants to resume a WowCube project.
-  The master controller for the whole pipeline: it routes through design, prompts,
-  assets, and implementation, and manages every sub-skill and subagent.
+  ALSO the entry point for modding an existing, already-working game — when the
+  user wants to change, tweak, reskin, or extend one ("замодить", "swap this
+  sprite", "change the speed", "add a level"); it detects build-from-scratch vs
+  modding and routes accordingly. The master controller for the whole pipeline:
+  it routes through design, prompts, assets, and implementation, and manages
+  every sub-skill and subagent.
 ---
 
 # WowCube Cube Orchestrator
@@ -13,6 +17,21 @@ description: >-
 The orchestrator is the **single master controller** for all WowCube game work. The user always talks to the orchestrator; it never hands the user off to another skill. Instead, it detects which pipeline stage the project is in and drives the appropriate sub-skill or subagents itself.
 
 **Core principle:** The orchestrator never writes game code, never designs the game, never authors prompts, and never generates assets *itself*. It reads, plans, routes, dispatches, and coordinates. Every stage of work is done by a sub-skill (`cube_game-designer`, `technical_prompter`, `cube_asset-builder`, `wowcube-boilerplate`) or by a subagent (coder, verifier, fixer). Parallelism must never compromise correctness — when in doubt, wait.
+
+## Mode Detection (do this FIRST on every entry — before Stage Detection)
+
+Before routing into the pipeline, decide which of two modes the request is in. Run this on every entry, including resumption:
+
+- **Build mode** — create a game (from scratch or resume a partially-built one). This is the five-stage pipeline below; route via **Stage Detection & Routing**.
+- **Mod mode** — change an existing, already-working game. Route to **Mod Mode Workflow** (near the end of this skill).
+
+**Choose Mod mode when a signal OR the heuristic points to it:**
+- **Signal in the prompt:** the user asks to *change / tweak / add to / fix / reskin* an existing game ("замодить", "поменяй спрайт", "доработай готовую игру", "add a level to `<game>`"), or names a specific already-built game/folder.
+- **Heuristic:** the workspace already holds a *working* `app_<game>/` — a `.target` marker, a built `bin/app_<game>.exe` and/or `app_<game>.oct`, and a non-trivial `app_<game>/src/app_<game>.h` — and the request is about altering it, not starting something new.
+
+**When it's ambiguous** — e.g. a working project exists but the wording reads like a brand-new game — **ask the user which they mean.** Never guess between building fresh and modifying working code: picking wrong is expensive in both directions (clobbering a working game, or grafting a mod onto the wrong base).
+
+Default: if nothing indicates an existing project (greenfield workspace, "make a game"), it's **Build mode**.
 
 ## The Pipeline (what the orchestrator manages)
 
@@ -31,7 +50,7 @@ The orchestrator owns a five-stage pipeline. It is the only skill the user invok
 - **Stage 3 additionally dispatches one read-only subagent via the Agent tool** — the asset-consistency reviewer — after AI generation and before the user review. See [Stage 3: Asset Generation](#stage-3-asset-generation-ai).
 - **Stage 4 dispatches subagents via the Agent tool**, exactly as described in the implementation workflow below.
 
-## Stage Detection & Routing (do this FIRST on every entry)
+## Stage Detection & Routing (Build mode — runs after Mode Detection)
 
 On entry — including resumption — determine the active `<game>` (ask the user if ambiguous or multiple games exist; otherwise infer from `plans/` and `context/`). Then inspect the filesystem and route to the FIRST stage whose output is missing:
 
@@ -606,6 +625,55 @@ After all prompts executed and final checkpoint passes:
    app_<game>/app_<game>.oct
    ```
 3. Suggest next steps (testing on the physical cube, polish, features)
+
+## Mod Mode Workflow
+
+Reached when **Mode Detection** selects Mod mode: the user wants to change a game that already works. The whole mode is governed by one rule.
+
+### Prime directive — the working project is the source of truth
+
+**Make the smallest change that satisfies the request.** Do not rewrite, refactor, re-architect, or restructure code, assets, or data beyond what the change strictly needs. Structural or design-level changes are allowed **only when the user explicitly asks for them**; in every other case, solve it минимально — "малой кровью". A working game the user is happy with is far more valuable than a "cleaner" one that now behaves differently, so when a change *can* be done as a small local edit, it MUST be.
+
+This mode adds no new agents or sub-skills — it reuses `cube_asset-builder`, the coder/verifier/fixer subagents, and `wowcube-boilerplate`, routing them at the smallest scope that does the job.
+
+### M1 — Analyze the target project
+
+1. Locate the game to mod. It must already exist in the project folder as `app_<game>/`. If several games are present, **ask which one**. If the named project isn't there, stop and tell the user.
+2. Read the baseline — this is the source of truth: `app_<game>/src/app_<game>.h`, plus `plans/<game>_assets.json` and `app_<game>/src/app_<game>_ids.h` if present, and `plans/<game>_gdd.md` if present. A hand-dropped project may have none of the `plans/` files — that's fine; the code and ids header are enough to mod.
+3. Confirm the baseline currently builds/runs, so regressions are detectable later.
+
+### M2 — Analyze the request and classify it
+
+Map the change to the smallest applicable type. Pick the **cheapest type that fully covers the request** — never escalate higher than needed.
+
+| Type | What it is | Minimal path |
+|------|-----------|--------------|
+| **T1 — Logic / parameters** | speed, balance, timing, small behavior tweaks | one scoped coder task on `app_<game>/src/app_<game>.h` → verify → fix |
+| **T2 — Sprite** | replace/add an image (e.g. a friend's photo) | **user supplied the image** → asset-builder Path B (fit it to the manifest spec, resize, repack); **needs generating** → asset-builder Path A (OpenRouter key, `regen`/add for *that sprite only*) → repack → if a new `BMP_*` appears, one scoped coder edit to reference it |
+| **T3 — Sound** | replace/add a `.wav` | asset-builder for that one sound → repack |
+| **T4 — Structural** | new mechanic, refactor, architecture/design change | **only if the user explicitly asked.** Otherwise propose the smallest alternative that meets the intent and ask before doing it. |
+
+Asset work (T2/T3) needs a manifest entry for the affected asset. If `plans/<game>_assets.json` exists, edit just that one entry; if there is none, add a single minimal entry for the changed asset rather than regenerating the whole manifest.
+
+### M3 — Mini-plan + checkpoint (MANDATORY before any change)
+
+Present a short plan: the chosen type, exactly which files/assets change, and why this is the minimal path. If the optimal path needs a resource (e.g. an OpenRouter image key for T2 generation), request it here. **STOP and wait for explicit user approval before touching anything.** Never start editing or generating before the plan is approved.
+
+### M4 — Execute at minimal scope
+
+Run the chosen path through the existing components, scoped to the change:
+- **Code (T1, or the wiring step of T2):** dispatch one coder subagent (Stage 4 mechanism) whose task is *only* the requested edit. `files_to_write` stays `app_<game>/src/app_<game>.h`; `prior_context` describes the existing structures so the agent extends, never rewrites.
+- **Assets (T2, T3):** drive `cube_asset-builder` for the specific sprite/sound (Path A `regen`/add, or Path B user-supplied), then its pack stage to refresh `assets/packed/*`, `app_<game>/art/packed/*.raw`, and `src/app_<game>_ids.h`.
+
+### M5 — Verify, then sim checkpoint
+
+Run the same verifier (threshold 90/90), but frame the criteria for a mod: **(a)** the requested change is implemented, and **(b)** nothing else regressed versus the M1 baseline. `no_regressions` carries the most weight here; `gdd_alignment` is checked only if a GDD exists. On failure, deploy the fixer (max 5 attempts), exactly as in Stage 4.
+
+Then run the per-change checkpoint just like the Stage 4 per-prompt checkpoint: summarize what changed, give sim test instructions, **STOP**, and wait for the user. Several independent mods are handled one at a time, each with its own checkpoint — never batch.
+
+### M6 — Repackage for the device
+
+A mod isn't done until the cube package is rebuilt. Run **Stage 5** (`wowcube-boilerplate` → `build_device.ps1`) so `app_<game>/app_<game>.oct` re-embeds the ARM code — mandatory for the same reason as in Build mode: the simulator rewrites the `.oct` as asset-only on every launch, so the device build must be the last action. Then checkpoint with the absolute `.oct` path.
 
 ## Configuration
 
