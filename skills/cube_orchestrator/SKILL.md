@@ -4,26 +4,45 @@ description: >-
   Use as the single entry point for ANY WowCube game work — when the user says
   "make a game", "design a game", "create a game", "build the game", "implement
   this", "start coding", "run the prompts", or wants to resume a WowCube project.
-  The master controller for the whole pipeline: it routes through design, prompts,
-  assets, and implementation, and manages every sub-skill and subagent.
+  ALSO the entry point for modding an existing, already-working game — when the
+  user wants to change, tweak, reskin, or extend one ("замодить", "swap this
+  sprite", "change the speed", "add a level"); it detects build-from-scratch vs
+  modding and routes accordingly. The master controller for the whole pipeline:
+  it routes through design, prompts, assets, and implementation, and manages
+  every sub-skill and subagent.
 ---
 
 # WowCube Cube Orchestrator
 
 The orchestrator is the **single master controller** for all WowCube game work. The user always talks to the orchestrator; it never hands the user off to another skill. Instead, it detects which pipeline stage the project is in and drives the appropriate sub-skill or subagents itself.
 
-**Core principle:** The orchestrator never writes game code, never designs the game, never authors prompts, and never generates assets *itself*. It reads, plans, routes, dispatches, and coordinates. Every stage of work is done by a sub-skill (`cube_game-designer`, `technical_prompter`, `cube_asset-builder`) or by a subagent (coder, verifier, fixer). Parallelism must never compromise correctness — when in doubt, wait.
+**Core principle:** The orchestrator never writes game code, never designs the game, never authors prompts, and never generates assets *itself*. It reads, plans, routes, dispatches, and coordinates. Every stage of work is done by a sub-skill (`cube_game-designer`, `technical_prompter`, `cube_asset-builder`, `wowcube-boilerplate`) or by a subagent (coder, verifier, fixer). Parallelism must never compromise correctness — when in doubt, wait.
+
+## Mode Detection (do this FIRST on every entry — before Stage Detection)
+
+Before routing into the pipeline, decide which of two modes the request is in. Run this on every entry, including resumption:
+
+- **Build mode** — create a game (from scratch or resume a partially-built one). This is the five-stage pipeline below; route via **Stage Detection & Routing**.
+- **Mod mode** — change an existing, already-working game. Route to **Mod Mode Workflow** (near the end of this skill).
+
+**Choose Mod mode when a signal OR the heuristic points to it:**
+- **Signal in the prompt:** the user asks to *change / tweak / add to / fix / reskin* an existing game ("замодить", "поменяй спрайт", "доработай готовую игру", "add a level to `<game>`"), or names a specific already-built game/folder.
+- **Heuristic:** the workspace already holds a *working* `app_<game>/` — a `.target` marker, a built `bin/app_<game>.exe` and/or `app_<game>.oct`, and a non-trivial `app_<game>/src/app_<game>.h` — and the request is about altering it, not starting something new.
+
+**When it's ambiguous** — e.g. a working project exists but the wording reads like a brand-new game — **ask the user which they mean.** Never guess between building fresh and modifying working code: picking wrong is expensive in both directions (clobbering a working game, or grafting a mod onto the wrong base).
+
+Default: if nothing indicates an existing project (greenfield workspace, "make a game"), it's **Build mode**.
 
 ## The Pipeline (what the orchestrator manages)
 
-The orchestrator owns a four-stage pipeline. It is the only skill the user invokes; the other three skills are components the orchestrator drives.
+The orchestrator owns a five-stage pipeline. It is the only skill the user invokes; the other four skills are components the orchestrator drives.
 
 | Stage | Produces | Driven by | How |
 |-------|----------|-----------|-----|
 | 1. Design | `plans/<game>_gdd.md` | `cube_game-designer` | Skill tool (interactive, main context) |
 | 2. Prompts | `plans/<game>_prompts.md` + `plans/<game>_assets.json` | `technical_prompter` | Skill tool (main context) |
-| 3. Assets | `assets/packed/*.png`, `assets/mp3/*.mp3`, `src/app_<game>_ids.h` | `cube_asset-builder` + asset-consistency review subagent | Skill tool: AI sprite generation (OpenRouter image model from each sprite's `gen_prompt`), then an agent consistency review, then the mandatory user review — see [Stage 3: Asset Generation](#stage-3-asset-generation-ai) |
-| 4. Implement | `src/app_<game>.h` (per-prompt) | coder / verifier / fixer | Agent tool (subagents) |
+| 3. Assets | `assets/packed/*.png`, `assets/wav/*.wav`, `src/app_<game>_ids.h` | `cube_asset-builder` + asset-consistency review subagent | Skill tool: AI sprite generation (OpenRouter image model from each sprite's `gen_prompt`), then an agent consistency review, then the mandatory user review — see [Stage 3: Asset Generation](#stage-3-asset-generation-ai) |
+| 4. Implement | `app_<game>/src/app_<game>.h` (per-prompt) | coder / verifier / fixer | Agent tool (subagents) |
 | 5. Package | `app_<game>/app_<game>.oct` (ARM code embedded, verified) | `wowcube-boilerplate` | Skill tool (runs `build_device.ps1`) |
 
 **Invocation mechanism:**
@@ -31,7 +50,7 @@ The orchestrator owns a four-stage pipeline. It is the only skill the user invok
 - **Stage 3 additionally dispatches one read-only subagent via the Agent tool** — the asset-consistency reviewer — after AI generation and before the user review. See [Stage 3: Asset Generation](#stage-3-asset-generation-ai).
 - **Stage 4 dispatches subagents via the Agent tool**, exactly as described in the implementation workflow below.
 
-## Stage Detection & Routing (do this FIRST on every entry)
+## Stage Detection & Routing (Build mode — runs after Mode Detection)
 
 On entry — including resumption — determine the active `<game>` (ask the user if ambiguous or multiple games exist; otherwise infer from `plans/` and `context/`). Then inspect the filesystem and route to the FIRST stage whose output is missing:
 
@@ -39,7 +58,7 @@ On entry — including resumption — determine the active `<game>` (ask the use
 |----------------|----------|--------|
 | No `plans/<game>_gdd.md` | **Stage 1** | Invoke `cube_game-designer` via the Skill tool |
 | GDD exists, but no `plans/<game>_prompts.md` or no `plans/<game>_assets.json` | **Stage 2** | Invoke `technical_prompter` via the Skill tool |
-| Prompts + manifest exist, but `assets/packed/` or `src/app_<game>_ids.h` is missing | **Stage 3** | Run the [Stage 3: Asset Generation](#stage-3-asset-generation-ai) workflow (gate the manifest + key, drive `cube_asset-builder`, run the consistency review, then user review) |
+| Prompts + manifest exist, but `assets/packed/pal.png` is missing | **Stage 3** | Run the [Stage 3: Asset Generation](#stage-3-asset-generation-ai) workflow (gate the manifest + key, drive `cube_asset-builder`, run the consistency review, then user review) |
 | All Stage 1–3 outputs present, but prompts remain unimplemented | **Stage 4** | Run the implementation workflow below |
 | All prompts implemented, but no verified device `.oct` exists (or it was last touched by a sim run) | **Stage 5** | Invoke `wowcube-boilerplate` via the Skill tool to run the device build (`build_device.ps1`) |
 
@@ -85,7 +104,7 @@ These files must exist before the **implementation workflow (Stage 4)** runs. Th
 | `plans/<game>_prompts.md` | Stage 2 (`technical_prompter`) | Yes |
 | `plans/<game>_gdd.md` | Stage 1 (`cube_game-designer`) | Yes |
 | `plans/<game>_assets.json` | Stage 2 (`technical_prompter`) | Yes |
-| `src/app_<game>_ids.h` | Stage 3 (`cube_asset-builder`) | Yes |
+| `app_<game>/src/app_<game>_ids.h` | Stage 3 (`cube_asset-builder`) | Yes |
 | `assets/packed/pal.png` | Stage 3 (`cube_asset-builder`) | Yes |
 | `OCT_wowcube-agent-skills/templates/app_ai_template/src/app_ai_template.h` | Project template | Yes |
 | `app_<game>/` scaffolded, assets packed, **simulator builds and launches** | `wowcube-boilerplate` skill | Yes |
@@ -102,16 +121,16 @@ is far more expensive to untangle than one caught before any code is written.
 
 ## Constraints
 
-- **Assets (PNGs, MP3s) are prototyped by `cube_asset-builder`** BEFORE this skill runs. By the time this skill starts, the following are on disk and valid:
+- **Assets (PNGs, WAVs) are prototyped by `cube_asset-builder`** BEFORE this skill runs. By the time this skill starts, the following are on disk and valid:
   - `assets/packed/*.png` and `assets/packed/pal.png` (packed sprites)
-  - `assets/mp3/*.mp3` (sounds, ≤ 2 seconds, 96 kbps)
+  - `assets/wav/*.wav` (sounds, ≤ 2 seconds)
   - `src/app_<game>_ids.h` (BMP_* enum, generated by `pack.py`)
   Agents NEVER create sprite or sound files and NEVER edit `_ids.h`.
-- Code agents work only with `src/app_<game>.h` — they reference existing `BMP_<name>` constants from the ids file and `"<name>.mp3"` string literals from `plans/<game>_assets.json`. They do NOT create new asset names.
+- Code agents work only with `app_<game>/src/app_<game>.h` — they reference existing `BMP_<name>` constants from the ids file and `"<name>.wav"` string literals from `plans/<game>_assets.json`. They do NOT create new asset names.
 
 ## Architecture
 
-All game code lives in a single file (`src/app_<game>.h`). This means:
+All game code lives in a single file (`app_<game>/src/app_<game>.h`). This means:
 - **Coding is always sequential** — only one coder agent modifies the file at a time
 - **Verification can overlap with preparation** — while verifier checks prompt N, orchestrator can prepare the task JSON for prompt N+1
 - **Quality over speed** — if the next prompt depends on verification results (e.g., the verifier might find issues that change the code), WAIT for verification before dispatching the next coder
@@ -154,10 +173,10 @@ All data between orchestrator and agents is JSON.
   "verification_criteria": "<what the user should see/hear>",
   "files_to_read": [
     "OCT_wowcube-agent-skills/templates/app_ai_template/src/app_ai_template.h",
-    "src/app_<game>.h"
+    "app_<game>/src/app_<game>.h"
   ],
   "files_to_write": [
-    "src/app_<game>.h"
+    "app_<game>/src/app_<game>.h"
   ],
   "prior_context": [
     {
@@ -185,7 +204,7 @@ All data between orchestrator and agents is JSON.
   "instructions": "<original prompt instructions>",
   "verification_criteria": "<what the user should see/hear>",
   "files_to_read": [
-    "src/app_<game>.h",
+    "app_<game>/src/app_<game>.h",
     "plans/<game>_gdd.md",
     "OCT_wowcube-agent-skills/templates/app_ai_template/src/app_ai_template.h"
   ],
@@ -199,7 +218,7 @@ All data between orchestrator and agents is JSON.
 {
   "status": "done|error",
   "prompt": N,
-  "files_modified": ["src/app_<game>.h"],
+  "files_modified": ["app_<game>/src/app_<game>.h"],
   "summary": {
     "structs_added": [],
     "fields_added": {},
@@ -240,9 +259,9 @@ All data between orchestrator and agents is JSON.
   "agent": "template",
   "prompt": N,
   "scores": {
-    "api_correctness": 45,
-    "platform_constraints": 35,
-    "code_quality": 20
+    "api_correctness": 40,
+    "platform_constraints": 30,
+    "code_quality": 30
   },
   "total": 100,
   "status": "pass|fail",
@@ -255,7 +274,7 @@ All data between orchestrator and agents is JSON.
 
 ## Stage 3: Asset Generation
 
-Reached when the GDD, prompts, and manifest exist but `assets/packed/` or `src/app_<game>_ids.h` is missing. Stage 3 produces the source art (`assets/art/*.png`, `assets/mp3/*.mp3`) and then packs it. The **source art can be produced two ways**, and the orchestrator MUST let the user choose before generating or packing anything. Both paths converge on the same pack step (Step 3.5).
+Reached when the GDD, prompts, and manifest exist but `assets/packed/` or `src/app_<game>_ids.h` is missing. Stage 3 produces the source art (`assets/art/*.png`, `assets/wav/*.wav`) and then packs it. The **source art can be produced two ways**, and the orchestrator MUST let the user choose before generating or packing anything. Both paths converge on the same pack step (Step 3.5).
 
 ### Step 3.0: Choose the asset source (ASK FIRST — before any generation or packing)
 
@@ -272,7 +291,7 @@ Route to the chosen path below.
 1. **`gen_prompt` coverage.** Load `plans/<game>_assets.json` and confirm **every sprite** has a non-empty `gen_prompt`. (Sounds do NOT need one.) A blank `gen_prompt` makes `gen_sprites.py` fail with `ValueError`. If any sprite is missing it, **return to Stage 2 (`technical_prompter`)** — do not patch the manifest yourself.
 2. **Image-model key present.** Generation calls OpenRouter; without the key `genimg.py` raises `ImageGenError`. If `OPENROUTER_API_KEY` is not set in the sandbox where `build_pipeline.py` runs, **this is the "add a key" step** — ask the user to export it (`export OPENROUTER_API_KEY=sk-or-...`) now, before proceeding. Never hardcode it; never commit it.
 
-**3.A2 Generate.** Invoke `cube_asset-builder` (Skill tool). It runs `build_pipeline.py generate` → `gen_sprites.generate()` → `genimg.generate_image(gen_prompt, size)` per sprite (OpenRouter image model) → PNGs in `assets/art/`; sounds synthesised as placeholders into `assets/mp3/`. Output is non-deterministic across runs.
+**3.A2 Generate.** Invoke `cube_asset-builder` (Skill tool). It runs `build_pipeline.py generate` → `gen_sprites.generate()` → `genimg.generate_image(gen_prompt, size)` per sprite (OpenRouter image model) → PNGs in `assets/art/`; sounds synthesised as placeholders into `assets/wav/`. Output is non-deterministic across runs.
 
 **3.A3 Consistency review** (automated, BEFORE the user review). Dispatch one **read-only** asset-consistency reviewer via the Agent tool. It inspects `assets/art/*.png` against the GDD's global art style and each `gen_prompt`, reporting which **groups** (derived per `manifest_schema`) drift — wrong palette/mood, inconsistent line weight or scale, broken animation continuity, leaked text/watermark/background, off-spec dimensions. Pass it the Asset Consistency Task JSON; it returns the Asset Consistency Response JSON (both below).
 - **`status: "pass"`** → go to Step 3.4 (user review).
@@ -286,15 +305,15 @@ The user makes the art by hand (or with their own tools) from the GDD. The orche
 
 **3.B1 Hand the user the exact asset spec** (derive entirely from `plans/<game>_assets.json` + GDD §1 art style):
 - **Sprites** → drop into `assets/art/`. For each: filename **`<name>.png`** (verbatim, lowercase), exact size **`[w, h]`** in pixels, RGBA, transparent background (unless `flags.bg`/`flags.fullsize`), plus the `description` (and `gen_prompt` if present) as the visual brief. Animation frames must be the full contiguous `_00.._NN` set.
-- **Sounds** → drop into `assets/mp3/`. For each: **`<name>.mp3`**, ≤ `duration_ms`, 96 kbps.
+- **Sounds** → drop into `assets/wav/`. For each: **`<name>.wav`**, ≤ `duration_ms`.
 - The reserved **`0.png` is auto-created by the packer** — the user must NOT make it.
 - Stress that the **GDD's global art style applies to every file** so the set stays cohesive.
 
 **3.B2 Completeness check (MANDATORY — a partial set is an unplayable build).**
 Validate the files actually present against the manifest:
 - For every sprite in the manifest, confirm `assets/art/<name>.png` exists (optionally verify pixel dimensions match `size`).
-- For every sound, confirm `assets/mp3/<name>.mp3` exists.
-- **List EVERY missing file explicitly** (by `<name>` and expected size/duration). If anything is missing, **STOP**: tell the user exactly which sprites/sounds are absent and that the build will not be playable — every `BMP_<name>`/`"<name>.mp3"` referenced in the prompts must exist or the code fails to compile. Wait for the user to add the missing files, then re-run this check. **Never pack a partial set.**
+- For every sound, confirm `assets/wav/<name>.wav` exists.
+- **List EVERY missing file explicitly** (by `<name>` and expected size/duration). If anything is missing, **STOP**: tell the user exactly which sprites/sounds are absent and that the build will not be playable — every `BMP_<name>`/`"<name>.wav"` referenced in the prompts must exist or the code fails to compile. Wait for the user to add the missing files, then re-run this check. **Never pack a partial set.**
 
 **3.B3 When complete → pack.** Skip generation and the AI consistency review (the user authored and approved their own art). Go straight to **Step 3.5**.
 
@@ -393,7 +412,7 @@ For each prompt, repeat this cycle:
 
 #### 3a. Build Coding Task JSON
 
-1. Read current `src/app_<game>.h`
+1. Read current `app_<game>/src/app_<game>.h`
 2. Read `context/<game>_context.json` for prior context
 3. Construct the Coding Task JSON
 4. Select relevant platform reminders:
@@ -452,9 +471,9 @@ Return ONLY the Coder Response JSON. No markdown, no explanation outside the JSO
 
 After coder completes, deploy two verifier agents **sequentially** using the `cube_verifier` skill. Pass the same Verification Task JSON to each.
 
-**Step 1 — Requirements Agent.** Deploy an agent with the Requirements Agent prompt template from the `cube_verifier` skill. Returns a JSON with scores for: completeness (25), gdd_alignment (15), no_regressions (10), verification_criteria (5). Max 55 points.
+**Step 1 — Requirements Agent.** Deploy an agent with the Requirements Agent prompt template from the `cube_verifier` skill. Returns a JSON with scores for: completeness (45), gdd_alignment (25), no_regressions (20), verification_criteria (10). Max 100 points.
 
-**Step 2 — Template Agent.** Deploy an agent with the Template Agent prompt template from the `cube_verifier` skill. Returns a JSON with scores for: api_correctness (20), platform_constraints (15), code_quality (10). Max 45 points.
+**Step 2 — Template Agent.** Deploy an agent with the Template Agent prompt template from the `cube_verifier` skill. Returns a JSON with scores for: api_correctness (40), platform_constraints (30), code_quality (30). Max 100 points.
 
 **Evaluate:** Each agent scores out of 100 independently. Both must score >= 90 to pass. If either fails, pass its issues to the fix agent.
 
@@ -477,8 +496,8 @@ You are a WowCube code fixer. Fix the issues found by the verifier.
   "prompt_number": N,
   "original_instructions": "<original prompt instructions>",
   "issues": <issues array from verifier>,
-  "files_to_read": ["src/app_<game>.h", "OCT_wowcube-agent-skills/templates/app_ai_template/src/app_ai_template.h"],
-  "files_to_write": ["src/app_<game>.h"]
+  "files_to_read": ["app_<game>/src/app_<game>.h", "OCT_wowcube-agent-skills/templates/app_ai_template/src/app_ai_template.h"],
+  "files_to_write": ["app_<game>/src/app_<game>.h"]
 }
 
 ## Rules
@@ -606,6 +625,55 @@ After all prompts executed and final checkpoint passes:
    app_<game>/app_<game>.oct
    ```
 3. Suggest next steps (testing on the physical cube, polish, features)
+
+## Mod Mode Workflow
+
+Reached when **Mode Detection** selects Mod mode: the user wants to change a game that already works. The whole mode is governed by one rule.
+
+### Prime directive — the working project is the source of truth
+
+**Make the smallest change that satisfies the request.** Do not rewrite, refactor, re-architect, or restructure code, assets, or data beyond what the change strictly needs. Structural or design-level changes are allowed **only when the user explicitly asks for them**; in every other case, solve it минимально — "малой кровью". A working game the user is happy with is far more valuable than a "cleaner" one that now behaves differently, so when a change *can* be done as a small local edit, it MUST be.
+
+This mode adds no new agents or sub-skills — it reuses `cube_asset-builder`, the coder/verifier/fixer subagents, and `wowcube-boilerplate`, routing them at the smallest scope that does the job.
+
+### M1 — Analyze the target project
+
+1. Locate the game to mod. It must already exist in the project folder as `app_<game>/`. If several games are present, **ask which one**. If the named project isn't there, stop and tell the user.
+2. Read the baseline — this is the source of truth: `app_<game>/src/app_<game>.h`, plus `plans/<game>_assets.json` and `app_<game>/src/app_<game>_ids.h` if present, and `plans/<game>_gdd.md` if present. A hand-dropped project may have none of the `plans/` files — that's fine; the code and ids header are enough to mod.
+3. Confirm the baseline currently builds/runs, so regressions are detectable later.
+
+### M2 — Analyze the request and classify it
+
+Map the change to the smallest applicable type. Pick the **cheapest type that fully covers the request** — never escalate higher than needed.
+
+| Type | What it is | Minimal path |
+|------|-----------|--------------|
+| **T1 — Logic / parameters** | speed, balance, timing, small behavior tweaks | one scoped coder task on `app_<game>/src/app_<game>.h` → verify → fix |
+| **T2 — Sprite** | replace/add an image (e.g. a friend's photo) | **user supplied the image** → asset-builder Path B (fit it to the manifest spec, resize, repack); **needs generating** → asset-builder Path A (OpenRouter key, `regen`/add for *that sprite only*) → repack → if a new `BMP_*` appears, one scoped coder edit to reference it |
+| **T3 — Sound** | replace/add a `.wav` | asset-builder for that one sound → repack |
+| **T4 — Structural** | new mechanic, refactor, architecture/design change | **only if the user explicitly asked.** Otherwise propose the smallest alternative that meets the intent and ask before doing it. |
+
+Asset work (T2/T3) needs a manifest entry for the affected asset. If `plans/<game>_assets.json` exists, edit just that one entry; if there is none, add a single minimal entry for the changed asset rather than regenerating the whole manifest.
+
+### M3 — Mini-plan + checkpoint (MANDATORY before any change)
+
+Present a short plan: the chosen type, exactly which files/assets change, and why this is the minimal path. If the optimal path needs a resource (e.g. an OpenRouter image key for T2 generation), request it here. **STOP and wait for explicit user approval before touching anything.** Never start editing or generating before the plan is approved.
+
+### M4 — Execute at minimal scope
+
+Run the chosen path through the existing components, scoped to the change:
+- **Code (T1, or the wiring step of T2):** dispatch one coder subagent (Stage 4 mechanism) whose task is *only* the requested edit. `files_to_write` stays `app_<game>/src/app_<game>.h`; `prior_context` describes the existing structures so the agent extends, never rewrites.
+- **Assets (T2, T3):** drive `cube_asset-builder` for the specific sprite/sound (Path A `regen`/add, or Path B user-supplied), then its pack stage to refresh `assets/packed/*`, `app_<game>/art/packed/*.raw`, and `src/app_<game>_ids.h`.
+
+### M5 — Verify, then sim checkpoint
+
+Run the same verifier (threshold 90/90), but frame the criteria for a mod: **(a)** the requested change is implemented, and **(b)** nothing else regressed versus the M1 baseline. `no_regressions` carries the most weight here; `gdd_alignment` is checked only if a GDD exists. On failure, deploy the fixer (max 5 attempts), exactly as in Stage 4.
+
+Then run the per-change checkpoint just like the Stage 4 per-prompt checkpoint: summarize what changed, give sim test instructions, **STOP**, and wait for the user. Several independent mods are handled one at a time, each with its own checkpoint — never batch.
+
+### M6 — Repackage for the device
+
+A mod isn't done until the cube package is rebuilt. Run **Stage 5** (`wowcube-boilerplate` → `build_device.ps1`) so `app_<game>/app_<game>.oct` re-embeds the ARM code — mandatory for the same reason as in Build mode: the simulator rewrites the `.oct` as asset-only on every launch, so the device build must be the last action. Then checkpoint with the absolute `.oct` path.
 
 ## Configuration
 
