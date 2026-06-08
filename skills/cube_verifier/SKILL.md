@@ -160,7 +160,7 @@ Reads `app_ai_template.h` and verifies the game code against **everything** docu
 | Category | Max | What to check |
 |----------|-----|---------------|
 | **api_correctness** | 40 | Every API call matches the template's Declaration, Comment, Critical Comment, and Warn annotations |
-| **platform_constraints** | 30 | All rules from the template's INSTRUCTIONS block and platform-specific comments: TL macro, gObjects[0] reserved, SPRITES_CAP, explicit casts, fixed-width types, all 5 handlers, no GAP in OCT_add |
+| **platform_constraints** | 30 | All rules from the template's INSTRUCTIONS block and platform-specific comments: TL macro, gObjects[0] reserved, SPRITES_CAP, explicit casts, fixed-width types, all 5 handlers, no GAP in OCT_add. **Upscale-aware coordinates:** sprites are authored at HALF resolution and the engine upscales them x2 at draw time, so all layout/collision math (positioning, centering, edge/screen-fit, movement bounds, hitboxes, spacing, grid steps) MUST use each sprite's on-screen extent = 2x its authored size in the 240x240 space. Flag any code that uses the authored (half) sprite size for coordinates or collision — that makes objects half the drawn size and breaks gameplay |
 | **code_quality** | 30 | No copied demo code or internal comments; modular struct organization (related state grouped into sub-structs, not flat); sprite references as `appObject_t*` pointers not raw indices; small focused functions; named constants |
 
 ### Prompt Template

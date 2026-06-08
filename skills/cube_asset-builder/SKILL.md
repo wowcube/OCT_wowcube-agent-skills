@@ -27,6 +27,15 @@ deterministic synthesised placeholders written as mono PCM16 **WAV** (no
 external encoder). AI sprite output is **not** reproducible across runs; sounds
 are byte-identical across runs.
 
+> **Sizes are authored (pre-upscale) pixels — ≤ 120×120.** The engine upscales
+> every sprite ×2 at draw time, so the manifest `size` is HALF the on-screen
+> size (full screen = `[120, 120]`, never `[240, 240]`). This skill generates and
+> resizes to whatever `size` the manifest carries — it does not invent sizes — so
+> a correct manifest from `technical_prompter` already encodes this. If you ever
+> see a sprite `size` > 120 (or a size that reads like on-screen pixels), it is a
+> manifest sizing error: delegate it back to `technical_prompter` rather than
+> packing it.
+
 **Core principle:** every asset name that appears in a prompt must exist as a
 file after this skill runs. The manifest is the contract. No placeholder text
 like "requires asset: X" is ever produced here; either the asset is in the
@@ -115,7 +124,8 @@ user input. Offer these options verbatim:
 > - `edit <name> prompt <text>` — edit the sprite's `gen_prompt` in the
 >   manifest, then I'll regenerate that sprite.
 > - `edit <name> size <WxH>` — edit the manifest, then I'll regenerate
->   that sprite.
+>   that sprite. (Sizes are authored, pre-upscale pixels — keep `W` and `H`
+>   ≤ 120; full screen is `120x120`, since the engine upscales ×2 on draw.)
 
 Wait for an explicit reply. Never auto-continue.
 
