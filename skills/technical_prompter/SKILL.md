@@ -109,7 +109,7 @@ Naming rules — ENFORCED by `cube_asset-builder`'s validator:
 
 - Names match `[a-z0-9_]+`. No uppercase, no `-`, space, or `% & = # $ !`.
 - Animation frames: zero-padded 2-digit suffix starting at `_00` (e.g. `hero_idle_00`, `hero_idle_01`). Set `anim: "<base>"` and `frame: <N>` (0-based).
-- Sprite `size`: both dimensions 1..240.
+- Sprite `size`: **authored (pre-upscale) pixels, both dimensions 1..120.** The engine upscales every sprite ×2 at draw time, so `size` is HALF the on-screen size: **authored size = intended on-screen size ÷ 2**, with a hard max of **120×120** (a full-screen sprite). Examples: full screen → `[120, 120]`; half the screen each side → `[60, 60]`; a quarter of the screen each side → `[30, 30]`. Never write the on-screen size (e.g. a quarter-screen sprite as `[60, 60]`) — halve it. A `flags.bg`/`flags.fullsize` background is `[120, 120]`, NOT `[240, 240]`.
 - Sound `duration_ms`: 1..2000 (default 500 if omitted).
 - Reserved names forbidden: `pal`, `0`, `icon`, `bmp_none`, `bmp_last`, `bmp_0`, `map_none`, `map_last`.
 - `description` is a short placeholder-generator hint (color, shape, mood).
@@ -133,7 +133,7 @@ Each sprite manifest entry MUST carry a `gen_prompt` — a complete, standalone 
 1. **Subject** — what the object is, from its GDD description (e.g. "a small round blue hero with two eyes").
 2. **Art style** — the GDD's global style verbatim (e.g. "flat pixel-art", "minimal vector", "soft cartoon"). Keep it identical across all sprites.
 3. **Palette & mood** — the GDD's colors/mood, narrowed to this object's colors.
-4. **Exact dimensions** — "exactly WxH pixels" from `size`. The cube's screens are tiny (240×240 quads), so add "single centered object, no padding, readable at small size, high contrast, bold simple shapes, no fine detail".
+4. **Exact dimensions** — "exactly WxH pixels" from `size` (the authored, pre-upscale size — the engine upscales ×2 at draw time, so a full-screen sprite is generated at 120×120, never 240×240). The cube's screens are tiny and sprites are authored at half resolution, so add "single centered object, no padding, readable at small size, high contrast, bold simple shapes, no fine detail".
 5. **Background** — "transparent background" by default (alpha sprite). Only say "fills the whole frame" when `flags.bg` or `flags.fullsize` is set.
 6. **Framing** — "centered, object fills most of the frame, no cropping, no drop shadow beyond the sprite bounds".
 7. **Negative constraints** — "no text, no watermark, no border, no UI frame, no background scenery".
@@ -288,7 +288,7 @@ Before finalizing, verify:
     - Animation frames are zero-padded and contiguous from `_00`.
     - No duplicate names within sprites or within sounds.
     - No reserved names (see Step 4).
-    - No sprite larger than 240×240.
+    - **No sprite larger than 120×120** (authored sizes; the engine upscales ×2 at draw time). A full-screen/`bg`/`fullsize` sprite is `[120, 120]`. Any size > 120, or a size that looks like on-screen pixels (e.g. a quarter-screen sprite at `[60, 60]` instead of `[30, 30]`), is a sizing error — halve it.
     - No sound longer than 2000 ms.
 13. **Generation-prompt coverage** (see Step 4a):
     - Every sprite has a non-empty `gen_prompt`.

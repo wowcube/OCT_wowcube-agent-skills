@@ -90,7 +90,9 @@ def test_reserved_name_rejected(tmp_manifest, reserved):
 
 # ── Size limits ────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("bad_size", [[0, 32], [32, 0], [241, 32], [32, 241]])
+# Sprites are authored at half resolution (engine upscales x2), so the max
+# authored side is 120; 121+ must be rejected, and 120 (full screen) accepted.
+@pytest.mark.parametrize("bad_size", [[0, 32], [32, 0], [121, 32], [32, 121]])
 def test_sprite_size_out_of_range(tmp_manifest, bad_size):
     data = {
         "game": "demo", "schema_version": 1,
@@ -99,6 +101,17 @@ def test_sprite_size_out_of_range(tmp_manifest, bad_size):
     }
     errors = validate(load_manifest(tmp_manifest(data)))
     assert any("size" in e.lower() for e in errors)
+
+
+def test_sprite_size_full_screen_ok(tmp_manifest):
+    """A full-screen sprite authored at 120x120 (the max) is valid."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [120, 120], "description": "d"}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert not any("size" in e.lower() for e in errors)
 
 
 # ── Duplicates ─────────────────────────────────────────────────────────

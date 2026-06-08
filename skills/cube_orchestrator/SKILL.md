@@ -369,6 +369,27 @@ All data between orchestrator and agents is JSON.
 
 Reached when the GDD, prompts, and manifest exist but `assets/packed/` or `src/app_<game>_ids.h` is missing. Stage 3 produces the source art (`assets/art/*.png`, `assets/wav/*.wav`) and then packs it. The **source art can be produced two ways**, and the orchestrator MUST let the user choose before generating or packing anything. Both paths converge on the same pack step (Step 3.5).
 
+### Display & sprite sizing (CRITICAL — applies to every sprite, both paths)
+
+The two facts below are the authoritative sizing rule for all WowCube assets. Honor them whenever gating the manifest (Step 3.A1), generating (Path A), validating self-supplied art (Path B), or reviewing sizes — and surface them to the user whenever sprite dimensions come up.
+
+1. **The physical screen (quadrant) is 240×240 px.** That is the hardware resolution of one of the cube's 24 displays.
+2. **But every sprite is authored/generated at HALF resolution, because the engine applies a software ×2 upscale at draw time.** The governing formula for **all** assets (not just backgrounds) is:
+
+   > **authored size = intended on-screen size ÷ 2**
+
+   The engine multiplies the authored sprite by 2 when drawing it. So a full-screen sprite is authored at **120×120** (→ 240×240 on screen), making **120×120 the hard maximum** — no sprite is ever larger than that.
+
+This applies to **every** asset, sized proportionally to how much of the screen it should cover:
+- **Full screen** → on-screen 240×240 → authored **120×120** (the ceiling).
+- **Character/object covering a quarter of the screen** → on-screen 60×60 → authored **30×30** — **not 60×60**. (Thinking "a quarter of 240 = 60, so 60×60" is the classic mistake: that 60 is the *on-screen* size, which must still be halved to 30 for authoring.)
+- **Any other sprite** → take its target footprint on the 240×240 screen and halve both dimensions.
+
+Practical consequences:
+- **Never generate or request a sprite larger than 120×120**, and for every smaller asset compute its authored size as (intended on-screen px ÷ 2) — apply this to characters, items, UI elements, effects, everything, not only fullsize/`bg` sprites.
+- Manifest `size` values (`plans/<game>_assets.json`) are in **authored (pre-upscale) pixels**: full-screen = `[120, 120]`, quarter-screen character = `[30, 30]`, etc.
+- If a manifest sprite's `size` looks like it was set in on-screen pixels (e.g. a quarter-screen sprite at `[60, 60]`, or anything > 120), treat it as a sizing error: return to Stage 2 (`technical_prompter`) to halve it rather than generating it.
+
 ### Step 3.0: Choose the asset source (ASK FIRST — before any generation or packing)
 
 Before touching `cube_asset-builder`, present the choice with the **Agent tool's `AskUserQuestion`** (or a short bullet list + wait). Do NOT pick for the user.
@@ -520,6 +541,8 @@ For each prompt, repeat this cycle:
 | iterate, loop, gObjects, for | `"gObjects[0] is reserved — start from index 1, validate with obj->Idx == i"` |
 | label, text, OCT_label, glyph | `"Label visibility: must also toggle all child glyphs where obj->Parent == label->Idx"` |
 | OCT_add, sprite, layer | `"SPRITES_CAP = 400 max. Verify total count. NO NEED to account for GAP in x/y coordinates — the engine handles GAP offsets automatically."` |
+| position, coordinate, x/y, center, place, fit, bounds, edge | `"Coordinates live in the 240x240 on-screen space (screen center = 120,120). Sprites are authored at HALF size and the engine upscales them x2 at draw time, so a sprite's ON-SCREEN extent = 2x its authored size. Do ALL position/centering/edge-fit math in on-screen pixels using the upscaled extent (2x authored), NEVER the authored sprite size."` |
+| collision, overlap, hit, distance, spacing, grid, snap | `"Compute collision boxes, overlap tests, spacing and grid steps from the UPSCALED on-screen sprite extent (2x authored size) in the 240x240 space — using the authored (half) size makes hitboxes and gaps half as big as what's drawn and breaks gameplay."` |
 | walk, move, cross, plane, wrap | `"Cross-display distance = 240.0f + 2.0f * GAP. Use OCT_TM_walk with wrap=true. OCT_TM_move is in-plane only — no cross-plane handling."` |
 | sound, SND, audio, mp3 | `"Pattern: int32_t id = SND_getAssetId(name); SND_play(id, volume);"` |
 | animation, sequence, frame | `"OCT_sequence restart: OCT_SEQ_RESTART, OCT_SEQ_REVERSE, OCT_SEQ_REFRESH"` |
@@ -535,6 +558,7 @@ For each prompt, repeat this cycle:
 - `"Use explicit type casts — never rely on implicit conversions between numeric types, pointers, or enums."`
 - `"Use only fixed-width types from <stdint.h> (int8_t, int16_t, int32_t, uint8_t, uint16_t, uint32_t, size_t). Never use plain int, short, long."`
 - `"All 5 handler functions must be present (on_init, on_tick, on_tap, on_twisted, on_pretwisted). If a handler has no game logic, reference every parameter to suppress warnings (e.g., twid; disconnected_ms;)."`
+- `"Sprites are authored at HALF resolution and the engine upscales them x2 at draw time. ALL coordinate math (positioning, centering, edge/screen-fit, movement bounds, collision boxes, spacing, grids) runs in the 240x240 on-screen space and MUST use each sprite's UPSCALED on-screen extent = 2x its authored size. Never use the authored (half) sprite dimensions for layout or collision — that makes everything half as big as drawn and breaks the game."`
 
 #### 3b. Dispatch Coder Agent
 
@@ -558,7 +582,8 @@ You are a WowCube game coder. Implement exactly what the task describes.
 7. Use only fixed-width types from `<stdint.h>` (int8_t, int16_t, int32_t, uint8_t, uint16_t, uint32_t, size_t). Never use plain `int`, `short`, `long`
 8. All 5 handler functions (on_init, on_tick, on_tap, on_twisted, on_pretwisted) must be present. If a handler has no game logic, reference every parameter as a statement to suppress unused-variable warnings
 9. Write modular, readable code: extract game state into structs, split logic into small focused functions, use named constants instead of magic numbers
-10. After implementing, respond with the Coder Response JSON
+10. Sprites are authored at HALF resolution; the engine upscales them x2 when drawing. The 240x240 quad is the on-screen coordinate space (center = 120,120). Do EVERY layout and collision computation — positioning, centering, screen/edge fitting, movement bounds, hitboxes, spacing, grid steps — in on-screen pixels using each sprite's UPSCALED extent (2x its authored size). NEVER use the authored (half) sprite size for coordinates or collision, or everything ends up half the size it's drawn and the game breaks
+11. After implementing, respond with the Coder Response JSON
 
 ## Response
 Return ONLY the Coder Response JSON. No markdown, no explanation outside the JSON.

@@ -12,7 +12,10 @@ RESERVED_NAMES = frozenset({
     "bmp_none", "bmp_last", "bmp_0",
     "map_none", "map_last",
 })
-SPRITE_MAX_SIDE = 240
+# Sprites are authored at HALF resolution; the engine upscales them x2 at draw
+# time, so the on-screen size is 2x the authored size. A full-screen sprite is
+# authored at 120x120 (-> 240x240 on screen), which is the hard maximum.
+SPRITE_MAX_SIDE = 120
 SOUND_MAX_DURATION_MS = 2000
 SOUND_DEFAULT_DURATION_MS = 500
 ALLOWED_EVENT_TYPES = frozenset({
