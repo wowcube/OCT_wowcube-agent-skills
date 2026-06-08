@@ -32,6 +32,27 @@ cube_orchestrator (master controller)
   └─ Stage 5: wowcube-boilerplate    → verified cube .oct       ← THIS SKILL
 ```
 
+## Cross-platform: one pack path, two build toolchains
+
+**Asset packing is pure Python on every OS.** The art pipeline runs through the
+canonical packer `scripts/pack.py` (PSD→PNG export,
+BMFont `.fnt` export, palette build, packed `.raw` emission, `_ids.h`
+generation) — it needs only `Pillow`, `numpy`,
+`pytoshop`, `psd-tools`. There is **no** `psd.exe`, `utils.exe`, `!pack.bat`, or
+Wine anywhere in this flow; those legacy Windows binaries are fully replaced.
+
+Only the **simulator/device build** differs by OS, and this skill ships both:
+
+| Step | Windows | Linux |
+|------|---------|-------|
+| Scaffold + pack + sim build | `scripts/new_app.ps1` | `scripts/new_app.sh` |
+| Toolchain check/install | `scripts/check_env.ps1` | `scripts/check_env.sh` |
+| Cube `.oct` device build | `scripts/build_device.ps1` | `scripts/build_device.sh` |
+| Simulator binary produced | `bin/app_<game>.exe` (MSVC) | `app_<game>/build-sim/octavios_sim` (CMake + SDL3) |
+
+Pick the script matching the host OS. The `.ps1` and `.sh` variants are
+behavioural mirrors; the steps below describe both.
+
 ## When to Use
 
 - `cube_orchestrator` routed here for the **infra gate** before Stage 4: prompts
@@ -62,12 +83,13 @@ repo, and each app are siblings under one root:
 
 ```
 <workspace>/
-├── octavios/                       # SDK: engine/, sim/, apps/build_sim.cmd, utils/
-├── OCT_wowcube-agent-skills/       # this skills repo (templates/, scripts/, skills/)
+├── octavios/                       # SDK: engine/, sim/, CMakeLists.txt (Linux), apps/build_sim.cmd (Windows), utils/
+├── OCT_wowcube-agent-skills/       # this skills repo (templates/, skills/)
+│   ├── scripts/pack.py   # the canonical pure-Python packer (all platforms)
 │   └── templates/app_ai_template/  # the template app cloned for each game
 └── app_<game>/                     # created BY this skill
     ├── app_<game>.target           # marker; build scripts derive the app name from it
-    ├── src/  art/  sound/  bin/
+    ├── src/  art/  sound/  bin/  build-sim/
 ```
 
 If your root differs, pass explicit paths to the script (below).
@@ -75,60 +97,77 @@ If your root differs, pass explicit paths to the script (below).
 ## Core Procedure
 
 The whole flow is bundled as a script — **prefer running it** over doing the
-steps by hand, because the manual path has three easy-to-miss gotchas (see
-Gotchas). Drive the script; only fall back to manual steps if the script can't
-run (e.g. you need to adapt a path it doesn't expose).
+steps by hand, because the manual path has easy-to-miss gotchas (see Gotchas).
+Drive the script (`.ps1` on Windows, `.sh` on Linux); only fall back to manual
+steps if the script can't run (e.g. you need to adapt a path it doesn't expose).
 
 ### Step 0: Verify the toolchain is installed
 
-Before scaffolding, confirm the machine has the tools the build needs. Two
-targets, two toolchains:
+Before scaffolding, confirm the machine has the tools the build needs. Packing
+is Python-only on both OSes; the two build targets need:
 
-- **Simulator build** (fast PC iteration) needs **MSVC** (Visual Studio C++ tools).
-- **Cube `.oct` deliverable** additionally needs the **ARM device toolchain**:
-  the ARM GNU embedded compiler, CMake, and Ninja — because the loadable `.oct`
-  embeds ARM machine code (see "Producing the cube `.oct`").
+- **Simulator build** — Windows: **MSVC** (Visual Studio C++ tools). Linux:
+  **CMake ≥ 3.13, gcc/g++ ≥ 12, SDL3** (and `bluez`/`libsystemd` for the BT
+  upload path).
+- **Cube `.oct` deliverable** additionally needs the **ARM device toolchain** on
+  both OSes: the ARM GNU embedded compiler (`arm-none-eabi-gcc`), CMake, and
+  Ninja — because the loadable `.oct` embeds ARM machine code (see "Producing
+  the cube `.oct`").
+- **Packer deps** (both OSes): `pip install Pillow numpy pytoshop psd-tools`.
 
-Run the bundled check, which installs every missing winget-available tool:
+Run the bundled check, which installs missing tools where it can:
 
 ```powershell
-powershell -File OCT_wowcube-agent-skills/skills/wowcube-boilerplate/scripts/check_env.ps1
+# Windows
+powershell -File OCT_wowcube-agent-skills/scripts/check_env.ps1
+```
+```bash
+# Linux
+bash OCT_wowcube-agent-skills/scripts/check_env.sh
 ```
 
-It verifies and, where missing, installs **all** of these — so the user is
-guaranteed the full toolchain at infra-setup time:
+On Windows the check installs the winget-available tools unattended:
 
 ```
-# Simulator build (MSVC C++ build tools + Windows 11 SDK), installed unattended:
+# Simulator build (MSVC C++ build tools + Windows 11 SDK):
 winget install --id Microsoft.VisualStudio.2022.BuildTools -e --override `
   "--passive --wait --add Microsoft.VisualStudio.Workload.VCTools `
    --add Microsoft.VisualStudio.Component.Windows11SDK.22621 --includeRecommended"
-
 # Cube .oct device toolchain:
 winget install ARM.GnuArmEmbeddedToolchain   # arm-none-eabi-gcc
 winget install Kitware.CMake                 # cmake
 winget install Ninja-build.Ninja             # ninja
 ```
 
-The MSVC install is a large download (several GB) but runs unattended
-(`--passive`). Pass `-SkipMsvc` if it's being installed separately. Note: a
-freshly installed tool may not appear on `PATH` until a **new shell** is opened —
-if a tool reads as missing right after install, re-check in a fresh terminal.
-`new_app.ps1` runs this check automatically as its first step (skip with
-`-SkipEnvCheck`).
+On Linux it checks for `cmake`, `gcc/g++`, `sdl3`, `bluez`, `libsystemd`,
+`arm-none-eabi-gcc`, `ninja`, and the Python packer deps, and prints the distro
+install line for whatever's missing (e.g. on Arch:
+`sudo pacman -S cmake gcc sdl3 bluez bluez-libs systemd-libs arm-none-eabi-gcc ninja`).
+
+The Windows MSVC install is a large download (several GB) but runs unattended
+(`--passive`); pass `-SkipMsvc` if it's being installed separately. Note: a
+freshly installed tool may not appear on `PATH` until a **new shell** is opened.
+`new_app.*` runs this check automatically as its first step (skip with
+`-SkipEnvCheck` / `--skip-env-check`).
 
 ### Step 1: Determine the app name
 
 The orchestrator and prompts use a `<game>` name (e.g. `tetris`). The app folder
 is always `app_<game>`. If the name isn't already established by the GDD/prompts
 filenames, **ask the user** — this name is baked into the marker file, headers,
-asset paths, and the output `.exe`, so getting it right now avoids a rename later.
+asset paths, and the output binary, so getting it right now avoids a rename later.
 
 ### Step 2: Run the scaffold-and-verify script
 
 ```powershell
-powershell -File OCT_wowcube-agent-skills/skills/wowcube-boilerplate/scripts/new_app.ps1 `
+# Windows
+powershell -File OCT_wowcube-agent-skills/scripts/new_app.ps1 `
     -Name <game> -Workspace <workspace_root> -Run
+```
+```bash
+# Linux
+bash OCT_wowcube-agent-skills/scripts/new_app.sh \
+    --name <game> --workspace <workspace_root> --run
 ```
 
 What it does, in order (this is the procedure distilled from real runs):
@@ -136,24 +175,27 @@ What it does, in order (this is the procedure distilled from real runs):
 1. **Clone** `templates/app_ai_template/` → `<workspace>/app_<game>/`
 2. **Rename** the `.target` marker and the `app_ai_template.h` / `app_ai_template_ids.h`
    headers to `app_<game>*`
-3. **Patch** every embedded reference to the template name in `src/app.h`,
-   `src/app_<game>.h`, and `art/!pack.bat` (the `#include`, `APP_DIR`, `APP_PNG`,
-   `APP_SND`, and the pack `set app=` line)
+3. **Patch** every embedded reference to the template name in `src/app.h` and
+   `src/app_<game>.h` (the `#include`, `APP_DIR`, `APP_PNG`, `APP_SND`)
 4. **Guarantee `APP_VERSION`** is defined in `src/app.h` (the template omits it —
    see Gotchas)
-5. **Pack** art assets via `art/!pack.bat` and **sync** the generated
-   `app_<game>_ids.h` into `src/` so compiled sprite indices match the packed `.raw` files
-6. **Build the simulator** via `octavios/apps/build_sim.cmd` — the MSVC/PC target,
-   **never** the ARM build
-7. With `-Run`: **launch** the `.exe` for a few seconds and confirm it stays alive
-   (a crash here usually means assets weren't packed)
+5. **Pack** art assets with the Python packer
+   (`scripts/pack.py … --emit-raw`) and **sync** the generated
+   `app_<game>_ids.h` into `src/` so compiled sprite
+   indices match the packed `art/packed/*.raw` files
+6. **Build the simulator** — Windows: `octavios/apps/build_sim.cmd` (MSVC/PC
+   target). Linux: `cmake -S <octavios> -B app_<game>/build-sim -DAPP_DIR=app_<game>`
+   then `cmake --build app_<game>/build-sim` → `build-sim/octavios_sim`. **Never**
+   the ARM build here.
+7. With `-Run` / `--run`: **launch** the simulator for a few seconds and confirm
+   it stays alive (a crash here usually means assets weren't packed)
 
 Exit code `0` means **infrastructure verified**. A non-zero exit names the failed
 step — fix it (or report it) before handing off to the orchestrator.
 
-Useful switches:
-- `-SkipBuild` — scaffold + pack only (e.g. MSVC isn't installed on this machine)
-- `-Template <path>` / `-BuildScript <path>` — override autodetected locations
+Useful switches (both variants): scaffold+pack only (`-SkipBuild` /
+`--skip-build`), override the template or build-script locations
+(`-Template`/`--template`, `-BuildScript`/`--build-script`).
 
 ### Step 3: Report readiness and hand off
 
@@ -162,7 +204,8 @@ On success, report to the user what was verified and where:
 - `app_<game>/app_<game>.target` (marker)
 - `app_<game>/src/app_<game>.h` — **the file the orchestrator will write game code into**
 - `app_<game>/art/packed/*.raw` + `pal.raw` (packed assets)
-- `app_<game>/bin/app_<game>.exe` (built, launches without crashing)
+- The built simulator that launches without crashing — `app_<game>/bin/app_<game>.exe`
+  (Windows) or `app_<game>/build-sim/octavios_sim` (Linux)
 
 Then **return control to `cube_orchestrator`**, which checkpoints with the user
 and runs its first Stage 4 prompt against the known-good project. The orchestrator
@@ -172,7 +215,7 @@ assets, toolchain) works, not to preserve the demo game.
 
 ## Producing the cube `.oct` (Stage 5)
 
-The simulator `.exe` is for PC testing. The file you actually load onto the
+The simulator binary is for PC testing. The file you actually load onto the
 physical WowCube is **`app_<game>/app_<game>.oct`**. It is assembled by the
 **simulator at launch**, which packs the art `.raw` assets + the sounds +
 (if present) the ARM device code from `app_<game>/out/app_<game>.bin`.
@@ -189,10 +232,15 @@ physical WowCube is **`app_<game>/app_<game>.oct`**. It is assembled by the
 
 The cube `.oct` therefore **must** be produced by the ARM build, and the device
 build **must be the last step** — after any simulator testing. Both steps are
-bundled in `scripts/build_device.ps1`:
+bundled in `build_device.ps1` (Windows) / `build_device.sh` (Linux):
 
 ```powershell
-powershell -File OCT_wowcube-agent-skills/skills/wowcube-boilerplate/scripts/build_device.ps1 -AppDir <workspace>/app_<game>
+# Windows
+powershell -File OCT_wowcube-agent-skills/scripts/build_device.ps1 -AppDir <workspace>/app_<game>
+```
+```bash
+# Linux
+bash OCT_wowcube-agent-skills/scripts/build_device.sh --app-dir <workspace>/app_<game>
 ```
 
 1. **ARM device build** → `app_<game>/out/app_<game>.bin`
@@ -212,8 +260,8 @@ checkpoints with the user and reports the absolute path to the verified `.oct`.
 
 ## Gotchas (why the script exists)
 
-These are the failures observed when doing this by hand. The script handles all
-three; if you ever scaffold manually, watch for them.
+These are the failures observed when doing this by hand. The scripts handle them;
+if you ever scaffold manually, watch for them.
 
 1. **`APP_VERSION` is missing from the template's `app.h`.** The simulator's
    `sim.h` only defines a fallback `APP_VERSION` when `SIM_APP_HEADER` is *not*
@@ -222,31 +270,37 @@ three; if you ever scaffold manually, watch for them.
    `error C2065: 'APP_VERSION': undeclared identifier`. Fix: ensure
    `#define APP_VERSION 100` sits in `src/app.h`.
 
-2. **`!pack.bat` won't launch as a bare name.** The leading `!` means
-   `cmd /c "!pack.bat"` fails with "not recognized". Invoke it with an explicit
-   path: `cmd /c 'call ".\!pack.bat"'` from inside the `art/` folder. Its legacy
-   `del`/`xcopy` lines also print harmless "file not found" noise and return a
-   non-zero code on a clean first run — judge success by the packed `.raw` files
-   it produces, not by its exit code.
+2. **Pack before you build.** The packer (`scripts/pack.py --emit-raw`) must run
+   first so `art/packed/*.raw` exist — the simulator loads those at launch and a
+   missing pack shows up as an early crash, not a compile error. Judge pack
+   success by the `art/packed/*.raw` files produced (and the `_ids.h` written),
+   not by console noise.
 
-3. **The generated `_ids.h` must be synced into `src/`.** `pack.bat` writes
-   `app_<game>_ids.h` next to the art and (via a legacy step) to a stale path,
-   but the build compiles against `src/app_<game>_ids.h`. If the packed asset
-   order changes and you don't copy the fresh ids header into `src/`, sprite
-   indices silently mismatch. Always sync `art/app_<game>_ids.h` → `src/`.
+3. **The generated `_ids.h` must be synced into `src/`.** The packer writes
+   `app_<game>_ids.h`, but the build compiles against `src/app_<game>_ids.h`. If
+   the packed asset order changes and the fresh ids header isn't copied into
+   `src/`, sprite indices silently mismatch. The scripts pass
+   `--ids-output src/app_<game>_ids.h` so it lands in the right place directly;
+   if you pack by hand, always sync it.
 
-Also remember: the infra **gate uses the simulator build only.**
-`octavios/apps/build_sim.cmd` is the PC/MSVC build — that's what proves the
-project is ready before coding starts. The ARM device build
-(`octavios/apps/CMakeLists.txt`, `arm-none-eabi-gcc`) is reserved for producing
-the final cube `.oct` (`build_device.ps1`) — don't run it as part of the
+Also remember: the infra **gate uses the simulator build only.** The ARM device
+build (`octavios/apps/CMakeLists.txt`, `arm-none-eabi-gcc`) is reserved for
+producing the final cube `.oct` (`build_device.*`) — don't run it as part of the
 pre-implementation gate, only at delivery.
 
-## Cross-platform note
+## Manual pack command (both platforms)
 
-The simulator build (`build_sim.cmd`, MSVC) and `!pack.bat` are Windows-only.
-On non-Windows machines you can still scaffold and pack using the pure-Python
-packer at `OCT_wowcube-agent-skills/scripts/pack.py` (`pip install -r
-scripts/requirements.txt`), but the simulator build/launch verification requires
-Windows + Visual Studio C++ tools. If you can't build, run with `-SkipBuild` and
-clearly tell the user the infra was scaffolded but **not** build-verified.
+If you must pack by hand, run from the app folder:
+
+```bash
+python <workspace>/OCT_wowcube-agent-skills/scripts/pack.py \
+    --export --build-palette --build-ids --emit-raw \
+    --art-dir art --exported-dir art/exported \
+    --packed-dir art/packed --output-dir art/packed --raw-dir art/packed \
+    --ids-output src/app_<game>_ids.h --assets assets
+```
+
+This exports `art/assets.psd` and the `*.fnt` fonts to PNGs, builds the palette,
+writes `art/packed/*.png`, emits the decoded `art/packed/*.raw` the sim/`.oct`
+load, and generates `src/app_<game>_ids.h`. Identical on Windows and Linux —
+Python only, no `.exe`/`.bat`/Wine.

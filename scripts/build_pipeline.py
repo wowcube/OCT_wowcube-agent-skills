@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -168,10 +169,12 @@ def do_pack(args: argparse.Namespace) -> int:
         "--export",
         "--build-palette",
         "--build-ids",
+        "--emit-raw",
         "--art-dir", str(workspace),
         "--exported-dir", str(exported_dir),
         "--packed-dir", str(packed_dir),
         "--output-dir", str(packed_dir),
+        "--raw-dir", str(packed_dir),
         "--ids-output", str(ids_path),
         "--assets", "assets",
     ])
@@ -193,8 +196,11 @@ def do_pack(args: argparse.Namespace) -> int:
     bmp_count = header.count("BMP_") - header.count("BMP_none") \
                 - header.count("BMP_last") - header.count("BMP_0")
 
+    raw_count = len(list(packed_dir.glob("*.raw")))
+
     print("=" * 60)
     print(f"  packed/pal.png       : ok")
+    print(f"  packed/*.raw         : {raw_count} file(s) (sim/.oct assets)")
     print(f"  {ids_path.name:<20}: {bmp_count} BMP_* constants")
     print(f"  {dest_ids}: copied")
     print("=" * 60)

@@ -120,7 +120,7 @@ Write the manifest to `plans/<game>_assets.json`. The `cube_asset-builder` skill
 
 ### Step 4a: Write a `gen_prompt` for every sprite
 
-Each sprite manifest entry MUST carry a `gen_prompt` — a complete, standalone text prompt that an image generator (e.g. `cube_asset-builder/scripts/genimg.py`) can run as-is to produce that one sprite. This replaces the era of hand-drawn placeholders: the manifest becomes a full set of per-asset generation prompts, one per sprite, keyed by asset name.
+Each sprite manifest entry MUST carry a `gen_prompt` — a complete, standalone text prompt that an image generator (e.g. `scripts/genimg.py`) can run as-is to produce that one sprite. This replaces the era of hand-drawn placeholders: the manifest becomes a full set of per-asset generation prompts, one per sprite, keyed by asset name.
 
 **Sounds do NOT get a `gen_prompt`.** This skill writes generation prompts for sprites only; sounds stay described by `description` (and are produced as deterministic placeholders downstream).
 

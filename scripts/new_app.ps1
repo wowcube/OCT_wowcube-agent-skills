@@ -8,9 +8,10 @@
     Mirrors the proven manual procedure:
       1. Copy templates/app_ai_template -> <workspace>/app_<name>
       2. Rename the .target marker and the game/ids headers to app_<name>*
-      3. Replace every name-bearing reference (app.h, app_<name>.h, !pack.bat)
+      3. Replace every name-bearing reference (app.h, app_<name>.h)
       4. Guarantee app.h defines APP_VERSION (the template omits it -> sim won't compile)
-      5. Pack art assets (art/!pack.bat) and sync the generated _ids.h into src/
+      5. Pack art assets with the pure-Python packer (scripts/pack.py --emit-raw),
+         which writes the generated _ids.h straight into src/
       6. Smoke-build the simulator (octavios/apps/build_sim.cmd) -- simulator ONLY,
          never the ARM/device target
       7. (optional) launch the .exe briefly to confirm it does not crash on start
@@ -25,8 +26,8 @@
     Root that contains octavios/ and where app_<name>/ is created. Default: CWD.
 
 .PARAMETER Template
-    Template app folder to clone. Default: the app_ai_template shipped next to
-    this skill (..\..\..\templates\app_ai_template).
+    Template app folder to clone. Default: the app_ai_template shipped in this
+    repo (..\templates\app_ai_template, relative to scripts/).
 
 .PARAMETER BuildScript
     Path to build_sim.cmd. Default: <Workspace>\octavios\apps\build_sim.cmd.
@@ -73,7 +74,7 @@ if ($app -notmatch '^app_[A-Za-z0-9_]+$') {
 }
 
 if (-not $Template) {
-    $Template = Join-Path $PSScriptRoot '..\..\..\templates\app_ai_template'
+    $Template = Join-Path $PSScriptRoot '..\templates\app_ai_template'
 }
 $resolvedTemplate = Resolve-Path $Template -ErrorAction SilentlyContinue
 if (-not $resolvedTemplate) { Fail "Template folder not found: $Template (pass -Template)" }
@@ -122,7 +123,7 @@ Get-ChildItem $AppDir -Recurse -File | Where-Object { $_.Name -like "*$TOKEN*" }
 
 # --- 3. Replace name references inside text files -------------------------
 Step "Patching name references ($TOKEN -> $app)"
-Get-ChildItem $AppDir -Recurse -File -Include *.h, *.bat, *.txt | ForEach-Object {
+Get-ChildItem $AppDir -Recurse -File -Include *.h, *.txt | ForEach-Object {
     $raw = Get-Content $_.FullName -Raw
     if ($raw -match [regex]::Escape($TOKEN)) {
         ($raw -replace [regex]::Escape($TOKEN), $app) |
@@ -144,36 +145,31 @@ if ($appHraw -notmatch 'APP_VERSION') {
     $out | Set-Content $appH -Encoding utf8
 }
 
-# --- 5. Pack assets -------------------------------------------------------
-$artDir  = Join-Path $AppDir 'art'
-$packBat = Join-Path $artDir '!pack.bat'
-if (Test-Path $packBat) {
-    Step "Packing assets (art/!pack.bat)"
-    Push-Location $artDir
-    # The leading '!' requires an explicit .\ ; pack.bat's legacy xcopy steps
-    # emit harmless 'file not found' noise and a non-zero code, so we judge
-    # success by the output it produces, not its exit code.
-    cmd /c 'call ".\!pack.bat"' | Out-Host
+# --- 5. Pack assets (pure-Python packer; same on Windows and Linux) -------
+# Replaces the legacy art/!pack.bat (psd.exe + utils.exe). The canonical packer
+# is scripts/pack.py; it
+# exports the PSD + fonts, builds the palette, writes art/packed/*.png and the
+# decoded art/packed/*.raw the simulator loads, and emits _ids.h straight into
+# src/ via --ids-output (no separate sync step needed).
+$artDir = Join-Path $AppDir 'art'
+$packPy = Join-Path $PSScriptRoot 'pack.py'
+if (Test-Path $packPy) {
+    Step "Packing assets (pack.py --emit-raw)"
+    Push-Location $AppDir
+    python $packPy --export --build-palette --build-ids --emit-raw `
+        --art-dir art --exported-dir art\exported `
+        --packed-dir art\packed --output-dir art\packed --raw-dir art\packed `
+        --ids-output "src\${app}_ids.h" --assets assets | Out-Host
+    $packCode = $LASTEXITCODE
     Pop-Location
+    if ($packCode -ne 0) { Fail "asset packing failed (pack.py exit $packCode)" }
 
     $packed = Join-Path $artDir 'packed'
     $rawCount = (Get-ChildItem $packed -Filter *.raw -ErrorAction SilentlyContinue | Measure-Object).Count
     if ($rawCount -eq 0) { Fail "packing produced no .raw assets in $packed" }
-    Write-Host "    packed $rawCount .raw assets"
-
-    # Sync the freshly generated ids header into src/ so compiled sprite
-    # indices match the packed assets (pack.bat copies it to a legacy path only).
-    $artIds = Join-Path $artDir "${app}_ids.h"
-    $srcIds = Join-Path $AppDir "src\${app}_ids.h"
-    if (Test-Path $artIds) {
-        if (-not (Test-Path $srcIds) -or
-            (Get-FileHash $artIds).Hash -ne (Get-FileHash $srcIds).Hash) {
-            Copy-Item $artIds $srcIds -Force
-            Write-Host "    synced ${app}_ids.h -> src/"
-        }
-    }
+    Write-Host "    packed $rawCount .raw assets; ids -> src/${app}_ids.h"
 } else {
-    Write-Host "    (no art/!pack.bat - skipping pack)" -ForegroundColor Yellow
+    Write-Host "    (scripts/pack.py not found at $packPy - skipping pack)" -ForegroundColor Yellow
 }
 
 # --- 6. Smoke-build the simulator (NOT arm) -------------------------------

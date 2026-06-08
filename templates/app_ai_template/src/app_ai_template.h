@@ -4,8 +4,8 @@
 
 #include "app_ai_template_ids.h"
 
-#define APP_PNG "..\\..\\app_ai_template\\art\\packed"
-#define APP_SND "..\\..\\app_ai_template\\sound"
+#define APP_PNG "..\\art\\packed"
+#define APP_SND "..\\sound"
 
 #define OCT_PLANES_MAX 6 // max planes on the cube
 #define OCT_QUADS_AT_PLANE 4 // max quads per plane
