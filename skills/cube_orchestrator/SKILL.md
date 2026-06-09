@@ -27,7 +27,7 @@ Before routing into the pipeline, decide which of two modes the request is in. R
 
 **Choose Mod mode when a signal OR the heuristic points to it:**
 - **Signal in the prompt:** the user asks to *change / tweak / add to / fix / reskin* an existing game ("замодить", "поменяй спрайт", "доработай готовую игру", "add a level to `<game>`"), or names a specific already-built game/folder.
-- **Heuristic:** the workspace already holds a *working* `app_<game>/` — a `.target` marker, a built `bin/app_<game>.exe` and/or `app_<game>.oct`, and a non-trivial `app_<game>/src/app_<game>.h` — and the request is about altering it, not starting something new.
+- **Heuristic:** the workspace already holds a *working* `app_<game>/` — a `.target` marker, a built simulator (`bin/app_<game>.exe` on Windows or `build-sim/octavios_sim` on Linux) and/or `app_<game>.oct`, and a non-trivial `app_<game>/src/app_<game>.h` — and the request is about altering it, not starting something new.
 
 **When it's ambiguous** — e.g. a working project exists but the wording reads like a brand-new game — **ask the user which they mean.** Never guess between building fresh and modifying working code: picking wrong is expensive in both directions (clobbering a working game, or grafting a mod onto the wrong base).
 
@@ -43,7 +43,7 @@ The orchestrator owns a five-stage pipeline. It is the only skill the user invok
 | 2. Prompts | `plans/<game>_prompts.md` + `plans/<game>_assets.json` | `technical_prompter` | Skill tool (main context) |
 | 3. Assets | `assets/packed/*.png`, `assets/wav/*.wav`, `src/app_<game>_ids.h` | `cube_asset-builder` + asset-consistency review subagent | Skill tool: AI sprite generation (OpenRouter image model from each sprite's `gen_prompt`), then an agent consistency review, then the mandatory user review — see [Stage 3: Asset Generation](#stage-3-asset-generation-ai) |
 | 4. Implement | `app_<game>/src/app_<game>.h` (per-prompt) | coder / verifier / fixer | Agent tool (subagents) |
-| 5. Package | `app_<game>/app_<game>.oct` (ARM code embedded, verified) | `wowcube-boilerplate` | Skill tool (runs `build_device.ps1`) |
+| 5. Package | `app_<game>/app_<game>.oct` (ARM code embedded, verified) | `wowcube-boilerplate` | Skill tool (runs `build_device.ps1` / `build_device.sh`) |
 
 **Invocation mechanism:**
 - **Stages 1–3 and Stage 5 run in the main context via the Skill tool.** Stages 1–3 each require user interaction (the designer's discovery interview, the asset-review checkpoint); Stage 5 invokes `wowcube-boilerplate` to run the device build. In each case the orchestrator invokes the sub-skill, lets it run to completion, then returns here.
@@ -60,7 +60,7 @@ On entry — including resumption — determine the active `<game>` (ask the use
 | GDD exists, but no `plans/<game>_prompts.md` or no `plans/<game>_assets.json` | **Stage 2** | Invoke `technical_prompter` via the Skill tool |
 | Prompts + manifest exist, but `assets/packed/pal.png` is missing | **Stage 3** | Run the [Stage 3: Asset Generation](#stage-3-asset-generation-ai) workflow (gate the manifest + key, drive `cube_asset-builder`, run the consistency review, then user review) |
 | All Stage 1–3 outputs present, but prompts remain unimplemented | **Stage 4** | Run the implementation workflow below |
-| All prompts implemented, but no verified device `.oct` exists (or it was last touched by a sim run) | **Stage 5** | Invoke `wowcube-boilerplate` via the Skill tool to run the device build (`build_device.ps1`) |
+| All prompts implemented, but no verified device `.oct` exists (or it was last touched by a sim run) | **Stage 5** | Invoke `wowcube-boilerplate` via the Skill tool to run the device build (`build_device.ps1` on Windows / `build_device.sh` on Linux) |
 
 After each stage completes, **re-run this detection** to find the next stage — do not assume the next stage; verify its inputs exist.
 
@@ -113,7 +113,8 @@ If any Stage 4 prerequisite is missing when implementation is expected, do NOT p
 
 **Infrastructure gate (do this before Step 1):** Verify the build environment is
 ready — `app_<game>/` exists with its `.target` marker, `art/packed/*.raw` are
-present, and `app_<game>/bin/app_<game>.exe` builds and launches. If any of these
+present, and the simulator builds and launches (`app_<game>/bin/app_<game>.exe` on
+Windows, `app_<game>/build-sim/octavios_sim` on Linux). If any of these
 is missing, **invoke the `wowcube-boilerplate` skill (Skill tool)** to scaffold and
 verify the infra, then return here. Never dispatch the first coder agent against an
 unverified or non-existent project — a broken toolchain discovered mid-implementation
@@ -601,15 +602,18 @@ After all prompts executed and final checkpoint passes:
    the device build:
 
    ```
+   # Windows
    scripts/build_device.ps1 -AppDir <workspace>/app_<game>
+   # Linux
+   scripts/build_device.sh --app-dir <workspace>/app_<game>
    ```
 
    That compiles the ARM target (`out/app_<game>.bin`), has the simulator pack
    assets + sounds + ARM code into `app_<game>/app_<game>.oct`, and **verifies the
    ARM code is actually embedded** (it fails loudly on an asset-only pack). The
    task is not complete until this exits 0. If the ARM toolchain is missing, that
-   is a `wowcube-boilerplate` `check_env.ps1` / `winget` problem to resolve — not
-   a reason to ship the sim-only `.oct`.
+   is a `wowcube-boilerplate` toolchain problem (`check_env.ps1` / `check_env.sh`)
+   to resolve — not a reason to ship the sim-only `.oct`.
 
    **Critical ordering:** the simulator rewrites `app_<game>.oct` as an
    asset-only pack on *every* launch, so all per-prompt sim testing (Stage 4)
@@ -673,7 +677,7 @@ Then run the per-change checkpoint just like the Stage 4 per-prompt checkpoint: 
 
 ### M6 — Repackage for the device
 
-A mod isn't done until the cube package is rebuilt. Run **Stage 5** (`wowcube-boilerplate` → `build_device.ps1`) so `app_<game>/app_<game>.oct` re-embeds the ARM code — mandatory for the same reason as in Build mode: the simulator rewrites the `.oct` as asset-only on every launch, so the device build must be the last action. Then checkpoint with the absolute `.oct` path.
+A mod isn't done until the cube package is rebuilt. Run **Stage 5** (`wowcube-boilerplate` → `build_device.ps1` / `build_device.sh`) so `app_<game>/app_<game>.oct` re-embeds the ARM code — mandatory for the same reason as in Build mode: the simulator rewrites the `.oct` as asset-only on every launch, so the device build must be the last action. Then checkpoint with the absolute `.oct` path.
 
 ## Configuration
 

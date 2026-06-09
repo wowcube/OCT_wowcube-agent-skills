@@ -19,6 +19,7 @@ to a new row when the current row exceeds the target width.
 import argparse
 import math
 import os
+import struct
 import sys
 from pathlib import Path
 
@@ -33,9 +34,30 @@ try:
     from pytoshop.user import nested_layers
     from pytoshop import enums
     from pytoshop.tagged_block import GenericTaggedBlock
+    from pytoshop import util as _pt_util
 except ImportError:
     print("Required: pip install pytoshop", file=sys.stderr)
     sys.exit(1)
+
+
+# --- pytoshop 1.2.1 NUL-terminator workaround -----------------------------
+# pytoshop.util.encode_unicode_string writes len(s)+1 as the length and
+# appends a trailing UTF-16 NULL terminator (\x00\x00). Photoshop's PSD spec
+# does NOT require a terminator for Unicode layer names, and psd-tools
+# faithfully includes the NUL in the decoded name ("layer_name\x00"), which
+# then breaks every downstream consumer that uses the name as a CSV cell
+# or filename (e.g. pack.py). Override the encoder before any PSD is built
+# so layer names round-trip cleanly through psd-tools.
+def _encode_unicode_string_no_nul(s):
+    """Re-implementation of pytoshop.util.encode_unicode_string without the
+    trailing NUL terminator. Keeps the 4-byte big-endian length prefix and
+    the UTF-16-BE string body; drops the two trailing 0x00 bytes."""
+    return struct.pack('>L', len(s)) + s.encode('utf_16_be')
+
+
+_pt_util.encode_unicode_string = _encode_unicode_string_no_nul
+# --------------------------------------------------------------------------
+
 
 # Protected Setting ('lspf') tagged block payload: uint32 big-endian.
 # Bits:  transparency(0x01) | composite(0x02) | position(0x04) | all-lock(0x80000000)
@@ -168,7 +190,10 @@ def lock_layer_records(psd, names_to_lock):
     """
     to_lock = set(names_to_lock)
     for lr in psd.layer_and_mask_info.layer_info.layer_records:
-        if lr.name in to_lock:
+        # Strip any residual NUL from legacy pascal name before matching,
+        # just in case the monkey-patch above has not yet run (paranoia).
+        nm = lr.name.rstrip('\x00')
+        if nm in to_lock:
             lr.blocks.append(GenericTaggedBlock(
                 code=b'lspf', data=LOCK_ALL_PAYLOAD,
             ))
@@ -198,7 +223,7 @@ def build_psd(images_dir, output_psd, padding=2, target_width=None,
         print(f"No PNG files found in {images_dir}", file=sys.stderr)
         return 1
 
-    # Choose canvas width ≈ √(total_area * 1.3) so the result is roughly
+    # Choose canvas width ~ sqrt(total_area * 1.3) so the result is roughly
     # square with a little slack for shelf packing inefficiency.
     if target_width is None:
         total_area = sum((w + padding) * (h + padding) for _, w, h, _ in images)
@@ -232,7 +257,7 @@ def build_psd(images_dir, output_psd, padding=2, target_width=None,
     # Order: [~pivot (bottom) ... sprites ... ~background (top)]
     psd_layers = [pivot_layer] + sprite_layers + [background_layer]
 
-    # Write PSD — use raw compression because pytoshop 1.2.1 on Python 3.13
+    # Write PSD - use raw compression because pytoshop 1.2.1 on Python 3.13
     # ships without a compiled packbits module, so the default RLE path fails.
     psd = nested_layers.nested_layers_to_psd(
         psd_layers,
@@ -244,6 +269,9 @@ def build_psd(images_dir, output_psd, padding=2, target_width=None,
 
     # Lock the two helper layers (padlock icon in Photoshop).
     lock_layer_records(psd, ['~pivot', '~background'])
+
+    # Defensively ensure the parent directory exists before writing the PSD.
+    Path(output_psd).parent.mkdir(parents=True, exist_ok=True)
 
     with open(output_psd, 'wb') as f:
         psd.write(f)
@@ -260,13 +288,13 @@ def main():
                         help='Folder containing source PNGs (e.g. images)')
     parser.add_argument('output_psd',
                         help='Output PSD file path (e.g. assets.psd)')
-    parser.add_argument('--padding', type=int, default=2,
-                        help='Padding in px between layers (default: 2)')
-    parser.add_argument('--width', type=int, default=None,
-                        help='Target canvas width (default: auto ≈ sqrt(area))')
-    parser.add_argument('--bg-color', default='#FF00FF',
-                        help='Background layer color in hex '
-                             '(e.g. #FF00FF, FF00FF, #F0F) (default: magenta)')
+    parser.add_argument("--padding", type=int, default=2,
+                        help="Padding in px between layers (default: 2)")
+    parser.add_argument("--width", type=int, default=None,
+                        help="Target canvas width (default: auto ~ sqrt(area))")
+    parser.add_argument("--bg-color", default="#FF00FF",
+                        help="Background layer color in hex "
+                             "(e.g. #FF00FF, FF00FF, #F0F) (default: magenta)")
     args = parser.parse_args()
 
     try:
@@ -286,5 +314,5 @@ def main():
     ))
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

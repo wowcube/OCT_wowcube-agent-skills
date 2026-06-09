@@ -4,13 +4,8 @@
 
 #include "app_test_ids.h"
 
-#ifdef _WIN32
-    #define APP_PNG "..\\..\\app_ai_template\\art\\packed"
-    #define APP_SND "..\\..\\app_ai_template\\art\\mp3"
-#else
-    #define APP_PNG "assets/packed"
-    #define APP_SND "assets/mp3"
-#endif
+#define APP_PNG "..\\art\\packed"
+#define APP_SND "..\\sound"
 
 #define OCT_PLANES_MAX 6 // max planes on cube
 #define OCT_QUADS_AT_PLANE 4 // max quads at plane
@@ -56,24 +51,21 @@ TL static appvars_t vars;
 
 
 // handlers
-WASM_EXPORT void on_init() {
+OCT_CALLBACK void on_init() {
 
 }
 
-WASM_EXPORT void on_pretwisted(int32_t twid) {
-    twid;
+OCT_CALLBACK void on_pretwisted(int32_t twid) {
 }
 
-WASM_EXPORT void on_twisted(int32_t twid, uint32_t disconnected_ms) {
-    twid; disconnected_ms;
-}
-
-
-WASM_EXPORT void on_tap(int32_t tapid) {
-    tapid;
+OCT_CALLBACK void on_twisted(int32_t twid, uint32_t disconnected_ms) {
 }
 
 
-WASM_EXPORT void on_tick() {
+OCT_CALLBACK void on_tap(int32_t tapid) {
+}
+
+
+OCT_CALLBACK void on_tick() {
 
 }

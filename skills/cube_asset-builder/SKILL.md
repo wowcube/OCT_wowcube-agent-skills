@@ -79,7 +79,7 @@ If neither exists, stop and **return control to `cube_orchestrator`** — the ma
 Invoke the pipeline driver:
 
 ```
-python OCT_wowcube-agent-skills/skills/cube_asset-builder/scripts/build_pipeline.py \
+python OCT_wowcube-agent-skills/scripts/build_pipeline.py \
     generate --manifest <manifest-path> --workspace assets
 ```
 
@@ -133,12 +133,15 @@ For `edit <name> size <WxH>` or `edit <name> prompt <text>`:
 After the user replies `ok`:
 
 ```
-python OCT_wowcube-agent-skills/skills/cube_asset-builder/scripts/build_pipeline.py \
+python OCT_wowcube-agent-skills/scripts/build_pipeline.py \
     pack --game <game> --workspace assets --src-dir src
 ```
 
 On success the driver prints:
 - Path to `assets/packed/pal.png` and the packed PNGs.
+- Count of `assets/packed/*.raw` — the decoded-RGBA asset bitmaps the simulator
+  and the cube `.oct` load (emitted by `pack.py --emit-raw`; pure Python, no
+  `utils.exe`/`psd.exe`).
 - Path to `src/app_<game>_ids.h` with the BMP_* constant count.
 
 ### Step 5: Hand-off
@@ -148,6 +151,7 @@ Print:
 > Asset build complete.
 > - `src/app_<game>_ids.h` ready with N BMP_* constants.
 > - `assets/packed/*.png` + `pal.png` ready.
+> - `assets/packed/*.raw` ready (decoded-RGBA assets for the sim / `.oct`).
 > - `assets/wav/*.wav` ready.
 
 Then **return control to `cube_orchestrator`**. Do NOT start implementation
