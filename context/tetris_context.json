@@ -1,0 +1,24 @@
+{
+  "game": "tetris",
+  "last_completed_prompt": 11,
+  "total_prompts": 16,
+  "prompts": [
+    {"prompt": 1, "title": "Foundation", "verification_score": 100},
+    {"prompt": 2, "title": "Score Label", "functions_added": ["showLabel", "updateScoreLabel"], "verification_score": 100},
+    {"prompt": 3, "title": "Spawn Piece", "functions_added": ["getPiecePlane", "getCellCoords", "spawnPiece", "createPieceSprites", "deletePieceSprites", "updatePieceSprites"], "verification_score": 100},
+    {"prompt": 4, "title": "Piece Gravity", "verification_score": 100},
+    {"prompt": 5, "title": "Floor Collision + Landing", "functions_added": ["canPieceFit", "fixPiece"], "verification_score": 100},
+    {"prompt": 6, "title": "Horizontal Movement", "functions_added": ["movePiece"], "verification_score": 100},
+    {"prompt": 7, "title": "Piece Rotation", "functions_added": ["rotatePiece"], "verification_score": 99},
+    {"prompt": 8, "title": "Cell Collision / Stacking", "verification_score": 100},
+    {"prompt": 9, "title": "Line Detection + Clearing + Score", "functions_added": ["checkAndClearLines"], "verification_score": 96},
+    {"prompt": 10, "title": "Hard Drop — Double-Tap", "functions_added": ["hardDrop"], "verification_score": 100},
+    {
+      "prompt": 11,
+      "title": "Game Over Detection",
+      "functions_added": [],
+      "verification_score": 100,
+      "notes": "Game over logic already implemented in Prompt 8 (canPieceFit check in spawnPiece). Added OCT_trace for GAME OVER debugging. on_tick guards with STATE_FALLING. All input handlers guard with STATE_FALLING. Filled cells remain visible."
+    }
+  ]
+}

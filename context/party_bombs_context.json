@@ -1,0 +1,241 @@
+{
+  "game": "party_bombs",
+  "last_completed_prompt": 23,
+  "total_prompts": 23,
+  "prompts": [
+    {
+      "prompt": 1,
+      "title": "Foundation — Data Structures and Engine Init",
+      "structs_added": ["appObject_t (fields: bombType:int, anger:AngerLevel, quadIndex:int)", "appvars_t (fields: state, tick, timerSecs, lastTickSec, angerLevel, lastAngerTick, angerPending, roundNumber, penaltyBombType, board[24], boardAnger[24])"],
+      "fields_added": {
+        "appObject_t": ["bombType:int", "anger:AngerLevel", "quadIndex:int"],
+        "appvars_t": ["state:GameState", "tick:uint32_t", "timerSecs:int", "lastTickSec:uint32_t", "angerLevel:int", "lastAngerTick:uint32_t", "angerPending:bool", "roundNumber:int", "penaltyBombType:int", "board[24]:int", "boardAnger[24]:int"]
+      },
+      "functions_added": ["on_init (initializes engine, sets black background, zeros all vars and board arrays)"],
+      "globals_changed": ["TL static appObject_t gObjects[SPRITES_CAP]", "TL static appvars_t vars"],
+      "enums_added": ["GameState (STATE_TITLE, STATE_PLAYING, STATE_PASS_PROMPT, STATE_PASSING, STATE_NEXT_CONFIRM, STATE_WIN, STATE_LOSE, STATE_PAUSE)", "AngerLevel (ANGER_CALM=0, ANGER_ANGRY=1, ANGER_FURIOUS=2, ANGER_LOVED=3)"],
+      "constants_added": ["BOMB_TYPES=11", "BOMB_COUNT=22", "SERVICE_QUAD_TIMER=0", "SERVICE_QUAD_STATUS=1", "TIMER_START_SECS=180", "TWIST_FAST_MS=3000", "CALM_TICKS=(3*OCT_1SEC_TICKS)"],
+      "sprites_used": 0,
+      "verification_score": 96,
+      "notes": "Black background on all 24 screens. Engine initialized. All data structures in place."
+    },
+    {
+      "prompt": 2,
+      "title": "Title Screen — Static Layout",
+      "structs_added": [],
+      "fields_added": {
+        "appvars_t": ["titleLabel:int32_t", "startLabel:int32_t"]
+      },
+      "functions_added": ["showLabel(appObject_t* label, bool show) - toggles label+child glyph visibility", "initTitleScreen() - creates BOMBCUBE and TAP TO START labels on OCT_PLANE_FRONT", "startGame() - hides title labels, sets STATE_PLAYING, calls initBoard()"],
+      "globals_changed": [],
+      "enums_added": [],
+      "constants_added": [],
+      "sprites_used": 0,
+      "verification_score": 100,
+      "notes": "Title screen: BOMBCUBE at y=60 (FONT_1), TAP TO START at y=180 (FONT_2), both on FRONT face. Tap any face from STATE_TITLE calls startGame(). startGame() now also calls initBoard()."
+    },
+    {
+      "prompt": 3,
+      "title": "Bomb Placement — Static Board",
+      "structs_added": [],
+      "fields_added": {},
+      "functions_added": ["initBoard() - deletes existing bomb sprites, builds shuffled 22-type array (Fisher-Yates + OCT_random), resets board[24] and boardAnger[24], places 22 OCT_add sprites on quads 2..23 with twistable=true and BMP_001 placeholder"],
+      "globals_changed": [],
+      "enums_added": [],
+      "constants_added": [],
+      "sprites_used": 22,
+      "verification_score": 100,
+      "notes": "22 bomb sprites on quads 2..23. Service quads 0 and 1 remain empty. Each of 11 bomb types appears exactly twice. Fisher-Yates shuffle using OCT_random(0, i+1). XSIGN/YSIGN used as system globals (not redeclared). initBoard() called from startGame() after STATE_PLAYING is set."
+    }
+    ,
+    {
+      "prompt": 4,
+      "title": "Twist — Detect Row of 8 Quads",
+      "structs_added": [],
+      "fields_added": {
+        "appvars_t": ["lastTwistMs:uint32_t"]
+      },
+      "functions_added": ["getRowForTwist(int twid, int row[8]) - normalizes half-twists via OCT_TWIST_HALF, copies from TWIST_ROWS lookup table"],
+      "globals_changed": [],
+      "enums_added": [],
+      "constants_added": [],
+      "data_added": ["static const TWIST_ROWS[12][8] - 12 twist directions mapped to 8 quad IDs each. TOP↔FRONT, FRONT↔RIGHT, RIGHT↔BACK, BACK↔LEFT, LEFT↔BOTTOM, BOTTOM↔TOP pairs"],
+      "sprites_used": 22,
+      "verification_score": 100,
+      "notes": "on_twisted: early return if not STATE_PLAYING; stores disconnected_ms in lastTwistMs; calls getRowForTwist; logs 8 quad IDs via OCT_trace. TWIST_ROWS is static const NOT TL global. Half-twists (twid >= OCT_TWIST_HALF) use same row as full twist counterpart."
+    },
+    {
+      "prompt": 5,
+      "title": "Twist — Slide Bombs Along Row (2048 Style)",
+      "structs_added": [],
+      "fields_added": {},
+      "functions_added": [
+        "getBombAtQuad(int quadId) -> appObject_t* — iterates gObjects[1..], returns bomb at quadId or NULL",
+        "slideBombs(int row[8]) — 2048-style: reads slots[8]+angerSlots[8], compacts both toward index 7, deletes old sprites, recreates at new positions with correct bombType/anger/quadIndex, updates boardAnger[]"
+      ],
+      "globals_changed": [],
+      "enums_added": [],
+      "constants_added": [],
+      "sprites_used": 22,
+      "verification_score": 100,
+      "notes": "slideBombs called from on_twisted for full twists only (twid < OCT_TWIST_HALF). Fix applied: anger state (boardAnger[]) is now correctly carried with bombs to new positions using parallel angerSlots[]/angerResult[] arrays. Empty positions get ANGER_CALM. 1 fix cycle needed (boardAnger carry-forward was missing initially)."
+    },
+    {
+      "prompt": 6,
+      "title": "Twist — Half-Twist Partial Slide",
+      "structs_added": [],
+      "fields_added": {},
+      "functions_added": [],
+      "globals_changed": [],
+      "enums_added": [],
+      "constants_added": [],
+      "modified_functions": ["slideBombs(int row[8], int shiftAmount) — added shiftAmount param; shiftAmount==4: existing compaction; shiftAmount==2: cyclic shift (i+2)%8 with boardAnger carried"],
+      "sprites_used": 22,
+      "verification_score": 100,
+      "notes": "Forward declaration updated: slideBombs(int row[8], int shiftAmount). on_twisted: full twists call slideBombs(row,4); half-twists call slideBombs(row,2). Both paths update vars.boardAnger[] correctly."
+    },
+    {
+      "prompt": 7,
+      "title": "Merge Detection — Find Matching Adjacent Pairs",
+      "structs_added": [],
+      "fields_added": {
+        "appvars_t": ["lastMergedQuad:int (init -1)"]
+      },
+      "functions_added": ["checkMergeInRow(int row[8]) -> int — scans pairs from index 6 down to 0; on type match: sets ANGER_LOVED on keptQuad, OCT_del removedQuad sprite, checks win (22 quads merged=STATE_WIN else STATE_PASS_PROMPT), returns keptQuad; returns -1 if no match"],
+      "globals_changed": [],
+      "enums_added": [],
+      "constants_added": [],
+      "sprites_used": 22,
+      "verification_score": 97,
+      "notes": "on_twisted calls checkMergeInRow(row) after slideBombs(row,4) for full twists only. Win check: count quads 2..23 where board[q]==-1 OR boardAnger[q]==ANGER_LOVED; if 22 -> STATE_WIN. Minor: boardAnger[removedQuad] not explicitly reset to ANGER_CALM (non-functional — board[q]==-1 is sufficient for win check)."
+    },
+    {
+      "prompt": 8,
+      "title": "Bomb Visual States — Display Anger Per Bomb",
+      "structs_added": [],
+      "fields_added": {},
+      "functions_added": ["updateBombVisual(int quadId) — looks up BMP_BOMB[bombType][anger], calls OCT_sequence(obj, bmpId, bmpId, 0, OCT_SEQ_REFRESH)"],
+      "data_added": ["static const BMP_BOMB[11][4] — all 11 bomb types × 4 anger states → BMP_001..004 placeholders. Requires 44 real sprite assets."],
+      "globals_changed": [],
+      "sprites_used": 22,
+      "verification_score": 100,
+      "notes": "updateBombVisual() called from initBoard() after each bomb is placed, and from checkMergeInRow() after keptBomb gets ANGER_LOVED. Prompt 7 minor fix applied: boardAnger[removedQuad]=ANGER_CALM now added in checkMergeInRow()."
+    },
+    {
+      "prompt": 9,
+      "title": "Anger System — Fast Twist Detection",
+      "structs_added": [],
+      "fields_added": {},
+      "functions_added": [
+        "triggerExplosion() — stub: sets vars.state = STATE_LOSE (full implementation in Prompt 11)",
+        "triggerAngerEvent() — (a) checks if any bomb is FURIOUS → calls triggerExplosion(); (b) increments boardAnger for all non-LOVED non-empty quads 2..23, updates obj->anger and calls updateBombVisual(); (c) sets lastAngerTick=tick, angerPending=true"
+      ],
+      "globals_changed": [],
+      "sprites_used": 22,
+      "verification_score": 96,
+      "notes": "on_twisted: after slide/merge processing, if lastTwistMs < TWIST_FAST_MS call triggerAngerEvent() — applies to BOTH full and half twists. FURIOUS check happens BEFORE escalation loop. lastTwistMs is set from disconnected_ms before the check, so init value of 0 is overwritten before first use."
+  },
+  {
+    "prompt": 10,
+    "title": "Anger System — Accelerometer Shake During Pass",
+    "fields_added": {"appvars_t": ["prevGravMag:float (init 1.0f)"]},
+    "functions_added": [],
+    "verification_score": 97,
+    "notes": "on_tick() STATE_PASSING: reads OCT_TM_gravity x/y/n, Manhattan mag, delta>1.5f → triggerAngerEvent(). prevGravMag updated each tick."
+  },
+  {
+    "prompt": 11,
+    "title": "Explosion — Chain Reaction and State Transition",
+    "fields_added": {"appvars_t": ["explosionStep:int (init 0)", "explosionStartTick:uint32_t (init 0)"]},
+    "functions_added": ["triggerExplosion() — full: STATE_LOSE + explosionStep=0 + explosionStartTick=tick"],
+    "verification_score": 97,
+    "notes": "on_tick() STATE_LOSE: step=(tick-explosionStartTick)/2, step<22 → OCT_sequence on bomb at quad(step+2) with BMP_002..BMP_004 placeholder animation."
+  },
+  {
+    "prompt": 12,
+    "title": "Pass System — PASS_PROMPT State and Button",
+    "fields_added": {"appvars_t": ["passLabel:int32_t (init -1)", "passLabel2:int32_t (init -1, unused)"]},
+    "functions_added": ["showPassButton(bool visible) — creates/hides 'PASS!' label at OCT_PLANE_TOP quad 1"],
+    "verification_score": 97,
+    "notes": "checkMergeInRow() calls showPassButton(true) on STATE_PASS_PROMPT. on_tap() STATE_PASS_PROMPT+TOP → showPassButton(false)+STATE_PASSING+prevGravMag=1.0f."
+  },
+  {
+    "prompt": 13,
+    "title": "Pass System — Penalty Twist and Next Player Confirm",
+    "fields_added": {},
+    "functions_added": [],
+    "verification_score": 97,
+    "notes": "on_twisted(): STATE_PASS_PROMPT → triggerExplosion()+return; not STATE_PLAYING/PASSING → return; STATE_PASSING → return. on_tap(): STATE_PASSING+side face → STATE_PLAYING."
+  },
+ {
+   "prompt": 14,
+   "title": "Timer — Countdown Display",
+   "fields_added": {"appvars_t": ["timerLabel:int32_t (init -1)"]},
+   "functions_added": ["initTimer()", "updateTimerDisplay()"],
+   "verification_score": 94,
+   "notes": "timer countdown at OCT_PLANE_TOP quad 0. OCT_1SEC_TICKS decrement. triggerExplosion() at 0. Called from startGame()."
+ },
+ {
+   "prompt": 15,
+   "title": "Win Condition — Final Check and WIN State",
+   "functions_added": ["resetGame() — round=0, reinit board, STATE_PLAYING"],
+   "verification_score": 94,
+   "notes": "on_tap STATE_WIN → resetGame(). Win check already in checkMergeInRow()."
+ },
+ {
+   "prompt": 16,
+   "title": "Round System — Track Penalty Bomb Per Round",
+   "functions_added": ["startNewRound() — roundNumber++, penaltyBombType, applies ANGRY/FURIOUS to penalty bombs"],
+   "verification_score": 94,
+   "notes": "on_tap STATE_LOSE+explosionStep>=21 → startNewRound(). Round 2+ → penalty bomb ANGRY, Round 3+ → FURIOUS."
+ },
+ {
+   "prompt": 17,
+   "title": "Calm Down — Per-Bomb Anger Over Time",
+   "fields_added": {"appvars_t": ["angerTick[24]:uint32_t (init 0)"]},
+   "verification_score": 94,
+   "notes": "triggerAngerEvent() sets angerTick[quad]=tick. on_tick() STATE_PLAYING: if tick-angerTick>=CALM_TICKS: boardAnger--, updateBombVisual()."
+ },
+ {
+   "prompt": 18,
+   "title": "Calm Meter UI — Stress Indicator",
+   "fields_added": {"appvars_t": ["calmMeterLabel:int32_t (init -1)"]},
+   "functions_added": ["initCalmMeter()", "updateCalmMeter() — CALM/NERVOUS/DANGER!"],
+   "verification_score": 98,
+   "notes": "on_tick updates every OCT_1SEC_TICKS/2 during STATE_PLAYING. showPassButton toggles calm meter visibility."
+ },
+ {
+   "prompt": 19,
+   "title": "Game Over and Win Screens",
+   "fields_added": {"appvars_t": ["winLabel:int32_t", "winLabel2:int32_t", "loseLabel:int32_t", "loseLabel2:int32_t", "winShown:bool", "loseShown:bool"]},
+   "functions_added": ["showWinScreen() — DEFUSED!+CUBE SAFE! labels on FRONT", "showLoseScreen() — BOOM!+TAP RETRY labels on FRONT"],
+   "verification_score": 98,
+   "notes": "on_tick shows each once via winShown/loseShown flags. Fix applied: both labels tracked correctly. resetGame/startNewRound reset flags."
+ },
+ {
+   "prompt": 20,
+   "title": "Title and Pause Screens",
+   "fields_added": {"appvars_t": ["pauseLabel:int32_t (init -1)"]},
+   "verification_score": 98,
+   "notes": "BOTTOM tap from PLAYING/PASS_PROMPT → STATE_PAUSE + PAUSED label. Any tap from PAUSE → STATE_PLAYING. Fix: pause check moved before STATE_PASS_PROMPT handler."
+ },
+ {
+   "prompt": 21,
+   "title": "Audio — Core Sound Effects",
+   "verification_score": 98,
+   "notes": "SND_play in: checkMergeInRow (merge0), triggerAngerEvent (merge1), triggerExplosion (merge2). All using existing placeholder MP3s."
+ },
+ {
+   "prompt": 22,
+   "title": "Audio — Timer Tick and Win/Lose Jingles",
+   "verification_score": 98,
+   "notes": "timer<=10sec tick (merge1 placeholder), showWinScreen (merge0), showLoseScreen (merge2), showPassButton (merge1)."
+ },
+ {
+   "prompt": 23,
+   "title": "Polish — Merge Animation and Bomb Slide Smoothness",
+   "verification_score": 98,
+   "notes": "vars.tick++ confirmed at END of on_tick(). on_tick() order: gravity→explosion→win/lose show→timer→calm-down→updateCalmMeter→tick++. File: ~830 lines."
+ }
+]
+}

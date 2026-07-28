@@ -1,0 +1,9 @@
+{
+  "name": "wowcube-pipeline",
+  "description": "WowCube game development pipeline: orchestrator-driven design → prompts → assets → implementation → device package (.oct). Entry point: cube_orchestrator.",
+  "version": "1.0.0",
+  "author": {
+    "name": "WowCube",
+    "url": "https://github.com/wowcube"
+  }
+}
