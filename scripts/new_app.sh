@@ -10,7 +10,8 @@
 #   1. Copy templates/app_ai_template -> <workspace>/app_<name>
 #   2. Rename the .target marker and the game/ids headers to app_<name>*
 #   3. Replace every name-bearing reference (app.h, app_<name>.h)
-#   4. Guarantee app.h defines APP_VERSION (template omits it -> sim won't compile)
+#   4. Guarantee the full beta define set in app.h (APP_VERSION, APP_TITLE,
+#      APP_GUID1 randomized, APP_CATEGORIES, APP_COLORS)
 #   5. Pack art assets (the shared scripts/pack.py --emit-raw); _ids.h -> src/
 #   6. Configure + build the simulator via CMake -> app_<name>/build-sim/octavios_sim
 #   7. (optional) launch it briefly to confirm it does not crash on start
@@ -93,17 +94,39 @@ APP_H="$APP_DIR/src/app.h"
 
 # Random non-zero 64-bit GUID for this app
 guid="0x$(od -An -tx8 -N8 /dev/urandom | tr -d ' ' | tr 'a-f' 'A-F')ULL"
-sed -i "s/0x0000000000000000ULL/${guid}/" "$APP_H"
 
-ensure_define() { # $1=name $2=full line
-    grep -q "define[[:space:]]\+$1" "$APP_H" || \
-        sed -i "/#include \"app_/a $2" "$APP_H"
+# Replace the template's zero GUID placeholder if present
+if grep -q '0x0000000000000000ULL' "$APP_H"; then
+    sed -i "s/0x0000000000000000ULL/${guid}/" "$APP_H"
+    step "Set APP_GUID1 = ${guid}"
+fi
+
+missing_names=(); missing_defs=()
+check_define() { # $1=name $2=full define line
+    grep -q "define[[:space:]]\+$1" "$APP_H" || { missing_names+=("$1"); missing_defs+=("$2"); }
 }
-ensure_define APP_VERSION    '#define APP_VERSION 100 //v1.00'
-ensure_define APP_TITLE      "#define APP_TITLE \"${APP}\""
-ensure_define APP_GUID1      "#define APP_GUID1 ${guid}"
-ensure_define APP_CATEGORIES '#define APP_CATEGORIES (APP_CATEGORY_GAME)'
-ensure_define APP_COLORS     '#define APP_COLORS 0x00000000'
+check_define APP_VERSION    '#define APP_VERSION 100 //v1.00'
+check_define APP_TITLE      "#define APP_TITLE \"${APP}\""
+check_define APP_GUID1      "#define APP_GUID1 ${guid}"
+check_define APP_CATEGORIES '#define APP_CATEGORIES (APP_CATEGORY_GAME)'
+check_define APP_COLORS     '#define APP_COLORS 0x00000000'
+
+if [ "${#missing_defs[@]}" -gt 0 ]; then
+    names_csv=""
+    for n in "${missing_names[@]}"; do
+        [ -z "$names_csv" ] && names_csv="$n" || names_csv="$names_csv, $n"
+    done
+    step "Adding missing defines to src/app.h: ${names_csv}"
+    # Build a single multi-line sed 'a' block so all missing defines land in
+    # one place, in forward ($missing_defs) order -- mirrors new_app.ps1.
+    sed_script="/#include \"app_/a\\"
+    for d in "${missing_defs[@]}"; do
+        sed_script="${sed_script}
+${d}\\"
+    done
+    sed_script="${sed_script%\\}"
+    sed -i "$sed_script" "$APP_H"
+fi
 
 # --- 5. Pack assets (pure-Python packer; same on Windows and Linux) -------
 if [ -f "$PACK_PY" ]; then

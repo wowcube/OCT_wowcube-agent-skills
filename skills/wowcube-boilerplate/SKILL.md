@@ -176,7 +176,7 @@ What it does, in order (this is the procedure distilled from real runs):
 2. **Rename** the `.target` marker and the `app_ai_template.h` / `app_ai_template_ids.h`
    headers to `app_<game>*`
 3. **Patch** every embedded reference to the template name in `src/app.h` and
-   `src/app_<game>.h` (the `#include`, `APP_DIR`, `APP_PNG`, `APP_SND`)
+   `src/app_<game>.h` (the `#include`, `APP_DIR`)
 4. **Guarantee `APP_VERSION`** is defined in `src/app.h` (the template omits it —
    see Gotchas)
 5. **Pack** art assets with the Python packer

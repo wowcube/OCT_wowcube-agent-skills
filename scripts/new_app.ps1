@@ -9,7 +9,8 @@
       1. Copy templates/app_ai_template -> <workspace>/app_<name>
       2. Rename the .target marker and the game/ids headers to app_<name>*
       3. Replace every name-bearing reference (app.h, app_<name>.h)
-      4. Guarantee app.h defines APP_VERSION (the template omits it -> sim won't compile)
+      4. Guarantee the full beta define set in app.h (APP_VERSION, APP_TITLE,
+         APP_GUID1 randomized, APP_CATEGORIES, APP_COLORS)
       5. Pack art assets with the pure-Python packer (scripts/pack.py --emit-raw),
          which writes the generated _ids.h straight into src/
       6. Smoke-build the simulator (octavios/apps/build_sim.cmd) -- simulator ONLY,

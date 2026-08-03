@@ -4,9 +4,6 @@
 
 #include "app_ai_template_ids.h"
 
-#define APP_PNG "..\\art\\packed"
-#define APP_SND "..\\sound"
-
 //When defined, binds the per-pixel procedural callback (on_proc_draw) in both
 //the simulator and the ARM module
 ///#define APP_HAS_PROC_DRAW
@@ -42,8 +39,10 @@
 // * ALWAYS copy the project header structure.
 // * ALWAYS copy all handler functions (on_init, on_tick, on_tap,
 //   on_twisted, on_pretwisted, on_shake, on_proc_draw) into the output.
-//   The first six are mandatory; on_proc_draw must exist as a stub even
-//   when unused (a missing symbol is an ARM-module link error).
+//   All seven are mandatory: on_shake must exist or the ARM module fails
+//   to link; on_proc_draw must exist as a stub even when unused (the
+//   simulator binds it unconditionally, so the SIM build fails without
+//   it -- the ARM module only references it under APP_HAS_PROC_DRAW).
 // * Write modular, readable code: extract game state into
 //   structs, split logic into small focused functions,
 //   use named constants instead of magic numbers.
