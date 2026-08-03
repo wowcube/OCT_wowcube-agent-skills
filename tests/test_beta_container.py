@@ -52,3 +52,47 @@ def test_map_raw_golden():
     blob = (GOLDEN / "ahover.raw").read_bytes()
     version, count = struct.unpack_from("<ii", blob, 0)
     assert (version, count, len(blob)) == (1, 1, 36)
+
+
+def test_build_map_matches_golden_byte_exact():
+    # place record starts at offset 8: x,y floats / Tags u32 / w,h i16 / bmp_id i16
+    # / Number i16 / flags u16 / Side i8 / Rate i8, then 4 name/group/parent/type bytes
+    blob = (GOLDEN / "ahover.raw").read_bytes()
+    x, y = struct.unpack_from("<ff", blob, 8)
+    w, h = struct.unpack_from("<hh", blob, 20)
+    bmp_id, = struct.unpack_from("<h", blob, 24)
+    flags, = struct.unpack_from("<H", blob, 28)
+    rate, = struct.unpack_from("<b", blob, 31)
+
+    looped = bool(flags & (1 << 1))
+    assert pack_beta.build_map(bmp_id, w, h, x=x, y=y, looped=looped, rate=rate) == blob
+
+
+def test_build_index_bin_name_length_boundary():
+    records = [(pack_beta.KIND_SPRITE, "x" * 23)]
+    blob = pack_beta.build_index_bin(records)
+    assert pack_beta.INDEX_RECORD.size == 28
+    assert len(blob) == 4 + 28
+
+    with pytest.raises(ValueError):
+        pack_beta.build_index_bin([(pack_beta.KIND_SPRITE, "x" * 24)])
+
+
+def test_read_index_bin_rejects_bad_counts(tmp_path):
+    negative = tmp_path / "negative.bin"
+    negative.write_bytes(struct.pack("<i", -1))
+    with pytest.raises(ValueError):
+        pack_beta.read_index_bin(negative)
+
+    oversized = tmp_path / "oversized.bin"
+    # claims far more records than the blob actually holds
+    oversized.write_bytes(struct.pack("<i", 1000))
+    with pytest.raises(ValueError):
+        pack_beta.read_index_bin(oversized)
+
+
+def test_read_pal_rejects_truncated_file(tmp_path):
+    bad = tmp_path / "bad.pal"
+    bad.write_bytes(b"\x00\x00\x00")   # 3 bytes, not a multiple of 4
+    with pytest.raises(ValueError):
+        pack_beta.read_pal(bad)

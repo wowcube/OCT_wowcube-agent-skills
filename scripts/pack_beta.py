@@ -31,9 +31,10 @@ OCT_FLAG_FULLSIZE = 1 << 1
 OCT_FLAG_ADDITIVE = 1 << 2
 OCT_FLAG_BG = 1 << 3
 OCT_FLAG_RAW565 = 1 << 7
+# octBmp_t::Compression sub-format for a RAW565 payload, mirrors engine/oct_consts.h
 RAW565_PLAIN, RAW565_RLE = 0, 1
 
-# octBmp_t::Compression sub-format for a RAW565 payload, mirrors engine/oct_consts.h
+# RLE control-byte threshold and limits
 RAW565_RUN = 0x80
 MAX_LITERAL = RAW565_RUN
 MAX_RUN = 0xFF - RAW565_RUN + 2
@@ -118,6 +119,14 @@ def smooth_rows(texels, width, height, threshold):
 
 
 def to_rgb565(image, size):
+    """Convert a PIL image to little-endian RGB565 texels.
+
+    ``size`` as an int centre-crops the image to a square and resizes to
+    that side (videopack's original behaviour); ``size`` as a (w, h) tuple
+    resizes straight to exactly w x h. Alpha (or any transparency info) is
+    always flattened onto black before conversion, since RGB565 carries no
+    alpha channel. Returns ``width * height * 2`` bytes.
+    """
     # RGB565 carries no alpha, so flatten onto black instead of letting the undefined colour under fully transparent pixels through
     if image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info:
         image = image.convert("RGBA")
@@ -227,7 +236,8 @@ def rle_encode(texels, width, height):
     rows = starts[token_at] // width
     lengths_per_row = np.bincount(rows, weights=token_bytes, minlength=height).astype(np.int64)
     if lengths_per_row.max(initial=0) > 0xFFFF:
-        raise SystemExit("a compressed row overflows the 16-bit row length table")
+        # raised as ValueError here (library, not CLI)
+        raise ValueError("a compressed row overflows the 16-bit row length table")
 
     # every token writes at a byte offset the engine reaches by walking the stream, so lay them out by prefix sum
     token_off = np.concatenate(((0,), np.cumsum(token_bytes)[:-1])).astype(np.int64)
@@ -263,7 +273,7 @@ def rle_encode(texels, width, height):
 
 
 def rle_decode(payload, width, height):
-    # a reference decoder, only used by --verify, mirrors OCT_RENDER_raw565_row
+    # a reference decoder, used by tests and --verify-style checks, mirrors OCT_RENDER_raw565_row
     table = height * 2
     cursor = (table + 3) & ~3
     lengths = np.frombuffer(payload[:table], dtype="<u2")
@@ -288,7 +298,8 @@ def rle_decode(payload, width, height):
             column += count
 
         if column != width:
-            raise SystemExit(f"row {row} decodes to {column} texels, expected {width}")
+            # raised as ValueError here (library, not CLI)
+            raise ValueError(f"row {row} decodes to {column} texels, expected {width}")
 
     return out.tobytes()
 
@@ -306,12 +317,12 @@ def build_raw565_sprite(texels: bytes, w: int, h: int, *, flags, seq=0, rate=1) 
 
 def build_index_bin(records: list[tuple[int, str]]) -> bytes:
     if len(records) > ASSETS_CAP:
-        raise SystemExit(f"{len(records)} assets exceeds OCT_ASSETS_CAP ({ASSETS_CAP})")
+        raise ValueError(f"{len(records)} assets exceeds OCT_ASSETS_CAP ({ASSETS_CAP})")
     out = [struct.pack("<i", len(records))]
     for kind, name in records:
         encoded = name.encode("ascii")
         if len(encoded) >= ASSET_NAME_MAXLEN:
-            raise SystemExit(f"asset name '{name}' exceeds {ASSET_NAME_MAXLEN - 1} chars")
+            raise ValueError(f"asset name '{name}' exceeds {ASSET_NAME_MAXLEN - 1} chars")
         out.append(INDEX_RECORD.pack(kind, encoded))
     return b"".join(out)
 
@@ -319,6 +330,13 @@ def build_index_bin(records: list[tuple[int, str]]) -> bytes:
 def read_index_bin(path: Path) -> list[tuple[int, str]]:
     blob = Path(path).read_bytes()
     count, = struct.unpack_from("<i", blob, 0)
+    if count < 0:
+        raise ValueError(f"index.bin has negative record count {count}")
+    if 4 + count * INDEX_RECORD.size > len(blob):
+        raise ValueError(
+            f"index.bin claims {count} records ({4 + count * INDEX_RECORD.size} bytes) "
+            f"but the file is only {len(blob)} bytes"
+        )
     records = []
     for i in range(count):
         kind, raw = INDEX_RECORD.unpack_from(blob, 4 + i * INDEX_RECORD.size)
@@ -333,15 +351,18 @@ def build_pal(colors_rgb565: list[int]) -> bytes:
 
 def read_pal(path: Path) -> list[int]:
     blob = Path(path).read_bytes()
+    if len(blob) % 4 != 0:
+        raise ValueError(f"{path}: truncated .pal file, {len(blob)} bytes is not a multiple of 4")
     out = []
     for off in range(0, len(blob), 4):
         a, b = struct.unpack_from("<HH", blob, off)
-        assert a == b, f"pal entry mismatch at {off}: {a:04x} != {b:04x}"
+        if a != b:
+            raise ValueError(f"pal entry mismatch at {off}: {a:04x} != {b:04x}")
         out.append(a)
     return out
 
 
-def build_map(bmp_id: int, w: int, h: int, *, x=120.0, y=120.0, looped=False) -> bytes:
+def build_map(bmp_id: int, w: int, h: int, *, x=120.0, y=120.0, looped=False, rate=1) -> bytes:
     place = b"".join((
         struct.pack("<ff", x, y),
         struct.pack("<I", 0),                       # Tags
@@ -349,7 +370,7 @@ def build_map(bmp_id: int, w: int, h: int, *, x=120.0, y=120.0, looped=False) ->
         struct.pack("<h", bmp_id),
         struct.pack("<h", 0),                       # Number
         struct.pack("<H", (1 << 1) if looped else 0),  # PLACE_LOOPED
-        struct.pack("<bb", 1, 0),                   # Side, Rate
+        struct.pack("<bb", 1, rate),                # Side, Rate
         struct.pack("<BBBB", 0, 0, 0, 0),           # Name, Group, Parent, Type
     ))
     assert len(place) == 28

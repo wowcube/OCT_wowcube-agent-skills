@@ -50,6 +50,16 @@ def test_build_raw565_sprite_picks_smaller_encoding():
     assert pack_beta.parse_bmp_header(blob).compression == pack_beta.RAW565_RLE
 
 
+def test_rle_roundtrip_wide_noise_row_splits_literals():
+    # a row of 300 noisy texels exceeds MAX_LITERAL (128) per control byte,
+    # so this exercises the literal-block-split branch in rle_blocks.
+    w, h = 300, 4
+    img = _noise(w, h, seed=11)
+    texels = pack_beta.to_rgb565(img, (w, h))
+    payload = pack_beta.rle_encode(texels, w, h)
+    assert pack_beta.rle_decode(payload, w, h) == texels
+
+
 def test_rle_roundtrip_half_flat_half_noise():
     # left half of each row is flat (long runs), right half is noise (literals),
     # so every row forces the encoder to interleave a run token with literal
