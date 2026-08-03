@@ -3,12 +3,21 @@
 Synthesises short audio clips with numpy and writes them straight out as
 mono PCM16 WAV files. No external encoder is involved, so the same manifest
 deterministically produces byte-identical output across runs and platforms.
+
+Optionally (`encode_mp3=True` / CLI default, opt out with `--no-mp3`) each
+WAV is additionally encoded to the exact mp3 format the octavios beta engine
+decodes -- 22050 Hz mono CBR 32k, no Xing header, no metadata -- into a
+sibling `assets/` dir, mirroring the octavios/CMakeLists.txt pack target.
+That step shells out to ffmpeg and is unavailable if ffmpeg isn't installed;
+the WAV-only path never touches ffmpeg.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import io
+import shutil
+import subprocess
 import sys
 import wave
 from pathlib import Path
@@ -19,6 +28,11 @@ from manifest_schema import Manifest, Sound, load_manifest
 
 SAMPLE_RATE = 22050
 WAVEFORMS = ("sine", "square", "triangle", "sawtooth")
+
+FFMPEG_MISSING_MSG = (
+    "ffmpeg is required to encode beta sounds (22050 Hz mono mp3). "
+    "Install it and re-run, or drop pre-encoded mp3 files into sound/assets/."
+)
 
 EVENT_PRESETS = {
     "pickup":  {"freq_scale": (1.0, 2.0), "attack_ms": 5,  "release_ms": 80,  "style": "rising"},
@@ -129,11 +143,42 @@ def _write_wav(wav_bytes: bytes, out_path: Path) -> None:
     out_path.write_bytes(wav_bytes)
 
 
-def generate(manifest: Manifest, out_dir: Path, *, group: str | None = None) -> list[Path]:
+def encode_beta_mp3(wav_path: Path, assets_dir: Path) -> Path:
+    """Encode to the exact format the beta engine decodes:
+    22050 Hz mono CBR 32k, no Xing header, no metadata
+    (mirrors octavios/CMakeLists.txt pack target).
+
+    Raises RuntimeError with FFMPEG_MISSING_MSG if ffmpeg isn't on PATH.
+    """
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError(FFMPEG_MISSING_MSG)
+    wav_path = Path(wav_path)
+    assets_dir = Path(assets_dir)
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    out = assets_dir / (wav_path.stem + ".mp3")
+    cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav_path),
+           "-ac", "1", "-ar", "22050", "-sample_fmt", "s16p",
+           "-b:a", "32k", "-codec:a", "libmp3lame", "-cbr", "1",
+           "-write_xing", "0", "-map_metadata", "-1", "-map", "0:a",
+           "-id3v2_version", "0", str(out)]
+    subprocess.run(cmd, check=True)
+    return out
+
+
+def generate(
+    manifest: Manifest, out_dir: Path, *, group: str | None = None,
+    encode_mp3: bool = False,
+) -> list[Path]:
     """Generate WAVs for every sound in `manifest` to `out_dir`.
 
     If `group` is given, only sounds whose derived/explicit group matches
     are regenerated.
+
+    If `encode_mp3` is True, each WAV is additionally encoded via
+    `encode_beta_mp3` into `out_dir/assets/<name>.mp3` (requires ffmpeg;
+    raises RuntimeError with a clear message if it's missing). Defaults to
+    False so plain WAV generation (e.g. in tests) never requires ffmpeg.
+    The returned list contains only the WAV paths, unchanged either way.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -149,6 +194,8 @@ def generate(manifest: Manifest, out_dir: Path, *, group: str | None = None) -> 
         target = out_dir / f"{snd.name}.wav"
         _write_wav(wav_bytes, target)
         written.append(target)
+        if encode_mp3:
+            encode_beta_mp3(target, out_dir / "assets")
     return written
 
 
@@ -157,11 +204,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("manifest", help="Path to <game>_assets.json")
     p.add_argument("--out", default="assets/wav", help="Output directory (default: assets/wav)")
     p.add_argument("--group", default=None, help="Regenerate only this group")
+    p.add_argument("--no-mp3", action="store_true",
+                    help="Skip beta mp3 encoding (WAV only; no ffmpeg required)")
     args = p.parse_args(argv)
 
     m = load_manifest(args.manifest)
-    written = generate(m, Path(args.out), group=args.group)
-    print(f"gen_sounds: wrote {len(written)} WAV(s) to {args.out}")
+    try:
+        written = generate(m, Path(args.out), group=args.group, encode_mp3=not args.no_mp3)
+    except RuntimeError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        return 1
+    suffix = "" if args.no_mp3 else f" (+ mp3 -> {Path(args.out) / 'assets'})"
+    print(f"gen_sounds: wrote {len(written)} WAV(s) to {args.out}{suffix}")
     return 0
 
 

@@ -51,6 +51,10 @@ for m in "${PY_MODULES[@]}"; do
     else echo "  [MISSING] python:$m (asset packer)"; missing+=("python:$m"); fi
 done
 
+# --- Sound encode dep (gen_sounds.py -> sound/assets/*.mp3) ---------------
+if have ffmpeg; then echo "  [ok]      ffmpeg (sound encode: 22050 Hz mono mp3 for sound/assets)"
+else echo "  [MISSING] ffmpeg (sound encode: 22050 Hz mono mp3 for sound/assets)"; missing+=("ffmpeg"); fi
+
 if [ "${#missing[@]}" -eq 0 ]; then
     echo ''; echo "Toolchain OK."; exit 0
 fi
@@ -59,14 +63,14 @@ echo ''
 echo "Missing: ${missing[*]}"
 if have pacman; then
     echo "Install (Arch):"
-    echo "  sudo pacman -S cmake gcc sdl3 bluez bluez-libs systemd-libs arm-none-eabi-gcc ninja"
+    echo "  sudo pacman -S cmake gcc sdl3 bluez bluez-libs systemd-libs arm-none-eabi-gcc ninja ffmpeg"
     echo "  pip install Pillow numpy pytoshop psd-tools"
 elif have apt; then
     echo "Install (Debian/Ubuntu):"
-    echo "  sudo apt install cmake g++ libsdl3-dev libbluetooth-dev libsystemd-dev gcc-arm-none-eabi ninja-build"
+    echo "  sudo apt install cmake g++ libsdl3-dev libbluetooth-dev libsystemd-dev gcc-arm-none-eabi ninja-build ffmpeg"
     echo "  pip install Pillow numpy pytoshop psd-tools"
 else
-    echo "Install the listed tools with your distro's package manager, plus:"
+    echo "Install the listed tools with your distro's package manager (ffmpeg included), plus:"
     echo "  pip install Pillow numpy pytoshop psd-tools"
 fi
 exit 2
