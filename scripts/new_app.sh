@@ -87,13 +87,23 @@ find "$APP_DIR" -type f \( -name '*.h' -o -name '*.txt' \) -print0 | while IFS= 
     grep -q "$TOKEN" "$f" && sed -i "s/${TOKEN}/${APP}/g" "$f"
 done
 
-# --- 4. Guarantee APP_VERSION in app.h (template omits it) ----------------
+# --- 4. Guarantee the full beta define set in app.h ------------------------
 APP_H="$APP_DIR/src/app.h"
 [ -f "$APP_H" ] || fail "expected $APP_H after clone"
-if ! grep -q 'APP_VERSION' "$APP_H"; then
-    step "Adding missing APP_VERSION to src/app.h"
-    sed -i '/^[[:space:]]*#include[[:space:]]\+"app_/a #define APP_VERSION 100 //v1.00' "$APP_H"
-fi
+
+# Random non-zero 64-bit GUID for this app
+guid="0x$(od -An -tx8 -N8 /dev/urandom | tr -d ' ' | tr 'a-f' 'A-F')ULL"
+sed -i "s/0x0000000000000000ULL/${guid}/" "$APP_H"
+
+ensure_define() { # $1=name $2=full line
+    grep -q "define[[:space:]]\+$1" "$APP_H" || \
+        sed -i "/#include \"app_/a $2" "$APP_H"
+}
+ensure_define APP_VERSION    '#define APP_VERSION 100 //v1.00'
+ensure_define APP_TITLE      "#define APP_TITLE \"${APP}\""
+ensure_define APP_GUID1      "#define APP_GUID1 ${guid}"
+ensure_define APP_CATEGORIES '#define APP_CATEGORIES (APP_CATEGORY_GAME)'
+ensure_define APP_COLORS     '#define APP_COLORS 0x00000000'
 
 # --- 5. Pack assets (pure-Python packer; same on Windows and Linux) -------
 if [ -f "$PACK_PY" ]; then

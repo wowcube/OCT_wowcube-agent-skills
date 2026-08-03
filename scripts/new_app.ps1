@@ -131,19 +131,42 @@ Get-ChildItem $AppDir -Recurse -File -Include *.h, *.txt | ForEach-Object {
     }
 }
 
-# --- 4. Guarantee APP_VERSION in app.h (template omits it) ----------------
+# --- 4. Guarantee the full beta define set in app.h ------------------------
 $appH = Join-Path $AppDir 'src\app.h'
 if (-not (Test-Path $appH)) { Fail "expected $appH after clone" }
 $appHraw = Get-Content $appH -Raw
-if ($appHraw -notmatch 'APP_VERSION') {
-    Step "Adding missing APP_VERSION to src/app.h"
-    $lines = Get-Content $appH
+
+# Random non-zero 64-bit GUID for this app
+$bytes = [byte[]]::new(8)
+[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+$guid = '0x{0:X16}ULL' -f [System.BitConverter]::ToUInt64($bytes, 0)
+
+# Replace the template's zero GUID placeholder if present
+if ($appHraw -match '0x0000000000000000ULL') {
+    $appHraw = $appHraw -replace '0x0000000000000000ULL', $guid
+    Step "Set APP_GUID1 = $guid"
+}
+
+$required = [ordered]@{
+    'APP_VERSION'    = '#define APP_VERSION 100 //v1.00'
+    'APP_TITLE'      = "#define APP_TITLE `"$app`""
+    'APP_GUID1'      = "#define APP_GUID1 $guid"
+    'APP_CATEGORIES' = '#define APP_CATEGORIES (APP_CATEGORY_GAME)'
+    'APP_COLORS'     = '#define APP_COLORS 0x00000000'
+}
+$missing = $required.Keys | Where-Object { $appHraw -notmatch "define\s+$_" }
+if ($missing) {
+    Step "Adding missing defines to src/app.h: $($missing -join ', ')"
+    $lines = $appHraw -split "`r?`n"
     $out = foreach ($l in $lines) {
         $l
-        if ($l -match '^\s*#include\s+"app_') { '#define APP_VERSION 100 //v1.00' }
+        if ($l -match '^\s*#include\s+"app_') {
+            foreach ($k in $missing) { $required[$k] }
+        }
     }
-    $out | Set-Content $appH -Encoding utf8
+    $appHraw = $out -join "`r`n"
 }
+Set-Content -Path $appH -Value $appHraw -Encoding UTF8
 
 # --- 5. Pack assets (pure-Python packer; same on Windows and Linux) -------
 # Replaces the legacy art/!pack.bat (psd.exe + utils.exe). The canonical packer
