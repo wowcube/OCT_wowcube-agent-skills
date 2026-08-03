@@ -67,7 +67,7 @@ def stub_ai(monkeypatch):
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
-    def _fake(prompt, out_path, *, size=None, reference=None):
+    def _fake(prompt, out_path, *, size=None, reference=None, cutout=False):
         w, h = size if size else (64, 64)
         img = Image.new("RGBA", (int(w), int(h)), (180, 60, 120, 255))
         out_path = Path(out_path)
