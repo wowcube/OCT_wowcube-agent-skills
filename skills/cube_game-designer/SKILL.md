@@ -194,10 +194,11 @@ Mark any input as "not used" if the game does not use it.
 ### Sprites
 - `<snake_case_name>` — description and approximate **authored** size.
 
-**Sprite sizes are authored (pre-upscale) sizes — always ≤ 120×120.** The engine
+**Sprite sizes are authored (pre-upscale) sizes — always ≤ 120×120, unless the
+sprite is a full-color fullsize sprite — see the exception below.** The engine
 upscales every sprite ×2 at draw time, so the size written here is *half* how big
 the sprite appears on the 240×240 screen: **authored size = intended on-screen size ÷ 2.**
-- Full screen → `120x120` (the maximum; never write a size larger than 120 in either dimension)
+- Full screen → `120x120` (the maximum; never write a size larger than 120 in either dimension, unless the sprite is a full-color fullsize sprite — see the exception below)
 - Half the screen (each side) → `60x60`
 - A quarter of the screen (each side) → `30x30`
 - A small icon/item → size it down proportionally the same way

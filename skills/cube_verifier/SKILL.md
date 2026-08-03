@@ -150,7 +150,7 @@ Reads `app_ai_template.h` and verifies the game code against **everything** docu
      - Fixed-width types only (`<stdint.h>`)
      - Project header structure preserved
      - All 7 handlers present with exact signatures: `on_init()`, `on_tick()`, `on_tap(int32_t tapid, int32_t count)`, `on_twisted(int32_t twid, uint32_t disconnected_ms)`, `on_pretwisted(int32_t twid)`, `on_shake(int32_t shakeid)`, `on_proc_draw` (stub); unused params referenced
-     - `on_shake` and `on_proc_draw` stubs present (link-required — the ARM module fails to link without them); no gameplay logic relies on shake input (the engine currently always runs the system default go-home), and `on_proc_draw` bodies are only active under `#define APP_HAS_PROC_DRAW`
+     - `on_shake` and `on_proc_draw` stubs present: `on_shake` is link-required — the ARM module fails to link without it; `on_proc_draw` is bound unconditionally by the simulator, so the SIM build fails without the stub, while the ARM module only references it under `#define APP_HAS_PROC_DRAW`; no gameplay logic relies on shake input (the engine currently always runs the system default go-home)
      - `src/app.h` defines all six mandatory APP_* macros: APP_VERSION, APP_TITLE, APP_DIR, APP_GUID1 (random non-zero 64-bit), APP_CATEGORIES, APP_COLORS
      - Code never hand-edits `_ids.h`, the `src/app.h` defines, or `index.bin` — these are owned by the scaffolder/packer
      - Modular code: structs for state, small focused functions, named constants
