@@ -52,7 +52,11 @@ def generate(manifest: Manifest, out_dir: Path, *, group: str | None = None) -> 
                 f"Step 4a) or regenerate the manifest."
             )
         target = out_dir / f"{s.name}.png"
-        genimg.generate_image(s.gen_prompt, target, size=s.size)
+        # Object sprites get their backdrop cut out for a clean transparent
+        # background; frame-filling tiles (fullsize) and backgrounds (bg) keep
+        # their solid fill.
+        cutout = not (s.flags.bg or s.flags.fullsize)
+        genimg.generate_image(s.gen_prompt, target, size=s.size, cutout=cutout)
         written.append(target)
     return written
 
