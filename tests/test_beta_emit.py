@@ -482,6 +482,10 @@ def test_build_pipeline_passes_beta_args(tmp_path, monkeypatch):
     packed.mkdir()
     (packed / "pal.png").write_bytes(b"x")
     (workspace / "app_tiny_ids.h").write_text("enum BMP { BMP_none = 0, BMP_last};")
+    # _run is faked, so pre-create the kind-aware header pack.py would emit
+    (tmp_path / "app_tiny" / "src").mkdir(parents=True)
+    (tmp_path / "app_tiny" / "src" / "app_tiny_ids.h").write_text(
+        "enum BMP { BMP_none = 0, BMP_last};")
 
     rc = build_pipeline._cli([
         "pack", "--game", "tiny",

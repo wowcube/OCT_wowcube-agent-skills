@@ -225,9 +225,22 @@ def do_pack(args: argparse.Namespace) -> int:
         return 5
 
     dest_ids = src_dir / ids_path.name
-    shutil.copy2(ids_path, dest_ids)
-
-    header = ids_path.read_text(encoding="utf-8")
+    if args.app_dir:
+        # Beta mode: pack.py already emitted the canonical kind-aware header
+        # (record index == asset id, SND_/MAP_ enums) into <app_dir>/src/.
+        # The legacy workspace header uses a different numbering and has no
+        # sound enum, so copying it over src/ would clobber the real one.
+        beta_ids = Path(args.app_dir) / "src" / ids_path.name
+        if not beta_ids.is_file() or beta_ids.stat().st_size == 0:
+            print(f"ERROR: beta ids header missing or empty: {beta_ids}",
+                  file=sys.stderr)
+            return 5
+        if dest_ids.resolve() != beta_ids.resolve():
+            shutil.copy2(beta_ids, dest_ids)
+        header = beta_ids.read_text(encoding="utf-8")
+    else:
+        shutil.copy2(ids_path, dest_ids)
+        header = ids_path.read_text(encoding="utf-8")
     bmp_count = header.count("BMP_") - header.count("BMP_none") \
                 - header.count("BMP_last") - header.count("BMP_0")
 

@@ -247,6 +247,9 @@ def test_pack_copies_beta_mp3s_to_app_dir(tmp_path, monkeypatch):
     (workspace / "wav" / "assets" / "blip.mp3").write_bytes(b"fake-beta-mp3:blip")
 
     app_dir = tmp_path / "app_tiny"
+    (app_dir / "src").mkdir(parents=True)
+    (app_dir / "src" / "app_tiny_ids.h").write_text(
+        "enum BMP { BMP_none = 0, BMP_last};")
     mp3_present_at_pack: list[bool] = []
 
     def fake_run(cmd, cwd=None):
@@ -283,6 +286,10 @@ def test_pack_without_mp3s_still_passes_beta_args(tmp_path, monkeypatch):
     packed.mkdir()
     (packed / "pal.png").write_bytes(b"x")
     (workspace / "app_tiny_ids.h").write_text("enum BMP { BMP_none = 0, BMP_last};")
+    app_dir = tmp_path / "app_tiny"
+    (app_dir / "src").mkdir(parents=True)
+    (app_dir / "src" / "app_tiny_ids.h").write_text(
+        "enum BMP { BMP_none = 0, BMP_last};")
 
     calls: list[list[str]] = []
     monkeypatch.setattr(build_pipeline, "_run",
@@ -292,8 +299,54 @@ def test_pack_without_mp3s_still_passes_beta_args(tmp_path, monkeypatch):
         "pack", "--game", "tiny",
         "--workspace", str(workspace),
         "--src-dir", str(tmp_path / "src"),
-        "--app-dir", str(tmp_path / "app_tiny"),
+        "--app-dir", str(app_dir),
     ])
     assert rc == 0
     assert "--beta-app-dir" in calls[1]
-    assert not (tmp_path / "app_tiny" / "sound").exists()
+    assert not (app_dir / "sound").exists()
+
+
+def test_pack_app_dir_keeps_beta_ids_header(tmp_path, monkeypatch):
+    """With --app-dir, the kind-aware beta header pack.py emitted into
+    <app_dir>/src/ is canonical: the legacy workspace header (different
+    numbering, no SND_ enum) must NOT clobber it, and a distinct --src-dir
+    receives a copy of the BETA header, not the legacy one."""
+    import build_pipeline
+    from PIL import Image
+
+    workspace = tmp_path / "assets"
+    (workspace / "art").mkdir(parents=True)
+    Image.new("RGB", (4, 4), (1, 2, 3)).save(workspace / "art" / "x.png")
+    (workspace / "packed").mkdir()
+    (workspace / "packed" / "pal.png").write_bytes(b"x")
+    (workspace / "app_tiny_ids.h").write_text(
+        "enum BMP { BMP_none = 0, BMP_legacy = 1, BMP_last};")
+
+    app_dir = tmp_path / "app_tiny"
+    (app_dir / "src").mkdir(parents=True)
+    beta_text = ("enum BMP { BMP_none = 0, BMP_hero = 19, BMP_last};\n"
+                 "enum SND { SND_none = 0, SND_blip = 40, SND_last};\n")
+    (app_dir / "src" / "app_tiny_ids.h").write_text(beta_text)
+
+    monkeypatch.setattr(build_pipeline, "_run", lambda cmd, cwd=None: 0)
+
+    src_dir = tmp_path / "other_src"
+    rc = build_pipeline._cli([
+        "pack", "--game", "tiny",
+        "--workspace", str(workspace),
+        "--src-dir", str(src_dir),
+        "--app-dir", str(app_dir),
+    ])
+    assert rc == 0
+    assert (app_dir / "src" / "app_tiny_ids.h").read_text() == beta_text
+    assert (src_dir / "app_tiny_ids.h").read_text() == beta_text
+
+    # the common case: --src-dir IS <app_dir>/src -- must also survive
+    rc = build_pipeline._cli([
+        "pack", "--game", "tiny",
+        "--workspace", str(workspace),
+        "--src-dir", str(app_dir / "src"),
+        "--app-dir", str(app_dir),
+    ])
+    assert rc == 0
+    assert (app_dir / "src" / "app_tiny_ids.h").read_text() == beta_text
