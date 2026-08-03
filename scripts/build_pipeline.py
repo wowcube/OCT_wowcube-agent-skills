@@ -120,7 +120,9 @@ def do_generate(args: argparse.Namespace) -> int:
     try:
         wav_paths = gen_sounds.generate(manifest, wav_dir, group=args.group,
                                         encode_mp3=want_mp3)
-    except RuntimeError as e:
+    except (RuntimeError, subprocess.CalledProcessError) as e:
+        # RuntimeError = ffmpeg missing; CalledProcessError = ffmpeg present
+        # but the mp3 encode itself failed. Same exit either way.
         print(f"ERROR: sound encoding failed: {e}", file=sys.stderr)
         return 7
 

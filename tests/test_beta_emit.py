@@ -313,6 +313,21 @@ def test_ids_header(emitted):
     assert "BMP_zero" not in text
 
 
+def test_ids_header_duplicate_identifier_raises():
+    # a static sprite named "anim" next to an anim_00/_01 sequence generates
+    # the BMP_anim alias on top of the real BMP_anim — must fail loudly
+    records = [(KIND_SPRITE, "zero"), (KIND_SPRITE, "anim"),
+               (KIND_SPRITE, "anim_00"), (KIND_SPRITE, "anim_01")]
+    with pytest.raises(ValueError, match="duplicate enum identifier"):
+        pack_beta.generate_beta_ids_h(records)
+
+
+def test_ids_header_digit_leading_name_raises():
+    records = [(KIND_SPRITE, "zero"), (KIND_SOUND, "1up")]
+    with pytest.raises(ValueError, match="starts with a digit"):
+        pack_beta.generate_beta_ids_h(records)
+
+
 # ── pack.py wiring ───────────────────────────────────────────────────────────
 
 def test_pack_py_emits_beta_container(tmp_path, monkeypatch):
@@ -392,6 +407,50 @@ def test_pack_py_emits_beta_container(tmp_path, monkeypatch):
     # legacy outputs keep being written
     assert (packed / "pal.png").is_file()
     assert (packed / "coin.png").is_file()
+
+
+def test_pack_py_beta_overwrites_legacy_emit_raw(tmp_path, monkeypatch):
+    """--emit-raw AND --beta-app-dir into the same art/packed dir: the beta
+    emit phase must run AFTER the legacy raw phase, so the .raw that survives
+    is the beta-format one. Pins the phase order in pack.main() — the
+    scaffolders no longer combine the two flags, but callers still may."""
+    import pack
+
+    exported = tmp_path / "exported"
+    exported.mkdir()
+    coin = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
+    for y in range(2, 6):
+        for x in range(2, 6):
+            coin.putpixel((x, y), (250, 200, 20, 255))
+    coin.save(exported / "coin.png")
+
+    art = tmp_path / "art"
+    art.mkdir()
+
+    app = tmp_path / "app_tiny"
+    packed = app / "art" / "packed"
+    monkeypatch.setattr(sys, "argv", [
+        "pack.py", "--build-palette",
+        "--exported-dir", str(exported),
+        "--packed-dir", str(packed),
+        "--output-dir", str(packed),
+        "--art-dir", str(art),
+        "--assets", "assets",
+        "--emit-raw", "--raw-dir", str(packed),
+        "--beta-app-dir", str(app),
+        "--app-name", "app_tiny",
+    ])
+    pack.main()
+
+    records = read_index_bin(app / "index.bin")
+    hdr = parse_bmp_header((packed / "coin.raw").read_bytes())
+    # Beta header: Pidx @0 is a PAL asset id. The legacy _phase_emit_raw
+    # writes decoded-PNG-strip .raw whose first 4 bytes are the legacy
+    # num_pixels u32 — if that version survived, Pidx would be a garbage
+    # low word of a byte count, not a valid KIND_PAL record index.
+    assert 0 < hdr.pidx < len(records)
+    assert records[hdr.pidx][0] == KIND_PAL
+    assert (hdr.w, hdr.h) == (8, 8)
 
 
 # ── build_pipeline wiring ────────────────────────────────────────────────────

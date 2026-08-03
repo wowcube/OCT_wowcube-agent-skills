@@ -185,9 +185,9 @@ What it does, in order (this is the procedure distilled from real runs):
 4. **Guarantee `APP_VERSION`** is defined in `src/app.h` (the template omits it —
    see Gotchas)
 5. **Pack** art assets with the Python packer — `scripts/pack.py --export
-   --build-palette --build-ids --emit-raw --beta-app-dir <AppDir> --app-name
+   --build-palette --build-ids --beta-app-dir <AppDir> --app-name
    app_<game>` (plus `--icon art/icon.png` when present) — which writes the
-   legacy `art/packed/*.raw`/`_ids.h` intermediates AND the beta container
+   legacy `art/packed/*.png` intermediates AND the beta container
    (`app_<game>/index.bin`, `art/packed/*.raw`+`*.pal`, launcher icon maps)
    directly into the app folder, and emits `app_<game>_ids.h` straight into
    `src/` (`--ids-output`) so compiled sprite indices match the packed assets
@@ -287,7 +287,7 @@ if you ever scaffold manually, watch for them.
    `error C2065: 'APP_VERSION': undeclared identifier`. Fix: ensure
    `#define APP_VERSION 100` sits in `src/app.h`.
 
-2. **Pack before you build.** The packer (`scripts/pack.py --emit-raw
+2. **Pack before you build.** The packer (`scripts/pack.py
    --beta-app-dir <AppDir> --app-name app_<game>`) must run first so
    `art/packed/*.raw` AND `index.bin` exist — the simulator loads the beta
    container at launch and a missing pack shows up as an early crash, not a
@@ -313,9 +313,9 @@ If you must pack by hand, run from the app folder:
 
 ```bash
 python <workspace>/OCT_wowcube-agent-skills/scripts/pack.py \
-    --export --build-palette --build-ids --emit-raw \
+    --export --build-palette --build-ids \
     --art-dir art --exported-dir art/exported \
-    --packed-dir art/packed --output-dir art/packed --raw-dir art/packed \
+    --packed-dir art/packed --output-dir art/packed \
     --ids-output src/app_<game>_ids.h --assets assets \
     --beta-app-dir . --app-name app_<game> --icon art/icon.png
 ```
@@ -323,10 +323,14 @@ python <workspace>/OCT_wowcube-agent-skills/scripts/pack.py \
 This is exactly what `new_app.ps1`/`new_app.sh` run (from inside the app
 folder, so `--beta-app-dir .`) — drop `--icon art/icon.png` if the app has no
 launcher icon yet. It exports `art/assets.psd` and the `*.fnt` fonts to PNGs,
-builds the palette, writes the legacy `art/packed/*.png`/`*.raw` intermediates,
+builds the palette, writes the legacy `art/packed/*.png` intermediates,
 generates `src/app_<game>_ids.h`, and — because `--beta-app-dir` is set — also
 emits the beta container the simulator/`.oct` actually load: `index.bin`,
-`art/packed/*.raw`+`*.pal`, and the launcher icon maps. Add `--manifest
+`art/packed/*.raw`+`*.pal`, and the launcher icon maps. `--emit-raw` (with
+`--raw-dir`) is legacy-optional: it writes legacy-format `.raw` files that only
+the pre-beta Linux sim reads — the beta sim never does — and if combined with
+`--beta-app-dir` into the same folder, the beta `.raw` files overwrite the
+legacy ones. Add `--manifest
 plans/<game>_assets.json` if any sprite uses `color: "full"`, so it gets
 RAW565-encoded instead of run through the palette codec. Identical on Windows
 and Linux — Python only, no `.exe`/`.bat`/Wine.

@@ -555,6 +555,7 @@ def _phase_emit_beta(
     # Manifest full-color sprites bypass the palette codec entirely
     full_specs: list[tuple[str, Path, tuple[int, int], int]] = []
     full_names: set[str] = set()
+    manifest = None
     if args.manifest:
         from manifest_schema import load_manifest
         manifest = load_manifest(args.manifest)
@@ -582,8 +583,8 @@ def _phase_emit_beta(
     for png in sorted(Path(args.output_dir).glob('*.png')):
         if png.stem in skip:
             continue
-        palette_blobs.append(
-            (png.stem, Image.open(png).convert('RGBA').tobytes()))
+        with Image.open(png) as img:
+            palette_blobs.append((png.stem, img.convert('RGBA').tobytes()))
 
     icon = Path(args.icon) if args.icon else None
     if icon is None:
@@ -593,6 +594,24 @@ def _phase_emit_beta(
             if cand.is_file():
                 icon = cand
                 break
+
+    # Cross-check manifest sounds against the mp3s actually present. Both
+    # directions are non-fatal, but each gap gets a loud line: a missing mp3
+    # means no KIND_SOUND record (SND_getAssetId returns -1 at runtime), a
+    # stale mp3 gets packed even though the manifest no longer names it.
+    if manifest is not None:
+        snd_dir = app_dir / 'sound' / 'assets'
+        mp3_names = {p.stem for p in snd_dir.glob('*.mp3')} \
+            if snd_dir.is_dir() else set()
+        manifest_sounds = {s.name for s in manifest.sounds}
+        for name in sorted(manifest_sounds - mp3_names):
+            print(f"  WARNING: manifest sound '{name}' has no "
+                  f"{snd_dir / (name + '.mp3')} - the app gets no KIND_SOUND "
+                  f"record for it and SND_getAssetId(\"{name}\") returns -1")
+        for name in sorted(mp3_names - manifest_sounds):
+            print(f"  WARNING: {snd_dir / (name + '.mp3')} has no matching "
+                  f"manifest sound entry (stale file?) - it will still be "
+                  f"packed as a KIND_SOUND record")
 
     records = pack_beta.emit_beta_layout(
         app_dir, app_name,
@@ -607,8 +626,11 @@ def _phase_emit_beta(
     print(f"    sprites={kinds.count(pack_beta.KIND_SPRITE)} "
           f"pals={kinds.count(pack_beta.KIND_PAL)} "
           f"maps={kinds.count(pack_beta.KIND_MAP)} "
-          f"sounds={kinds.count(pack_beta.KIND_SOUND)}"
-          + ("" if icon else "  (no icon found: launcher ico/ahover skipped)"))
+          f"sounds={kinds.count(pack_beta.KIND_SOUND)}")
+    if icon is None:
+        print("  WARNING: no launcher icon found (--icon / icon.png) - the "
+              "ico/ahover records were skipped, and the launcher needs them "
+              "to install the app")
     print(f"  ids header -> {app_dir / 'src' / (app_name + '_ids.h')}")
 
 

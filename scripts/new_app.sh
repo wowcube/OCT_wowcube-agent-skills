@@ -12,7 +12,7 @@
 #   3. Replace every name-bearing reference (app.h, app_<name>.h)
 #   4. Guarantee the full beta define set in app.h (APP_VERSION, APP_TITLE,
 #      APP_GUID1 randomized, APP_CATEGORIES, APP_COLORS)
-#   5. Pack art assets (the shared scripts/pack.py --emit-raw); _ids.h -> src/
+#   5. Pack art assets (the shared scripts/pack.py, beta container); _ids.h -> src/
 #   6. Configure + build the simulator via CMake -> app_<name>/build-sim/octavios_sim
 #   7. (optional) launch it briefly to confirm it does not crash on start
 #
@@ -130,17 +130,19 @@ fi
 
 # --- 5. Pack assets (pure-Python packer; same on Windows and Linux) -------
 if [ -f "$PACK_PY" ]; then
-    step "Packing assets (pack.py --emit-raw + beta container)"
-    # Beta container args: pack.py also emits <APP_DIR>/index.bin,
+    step "Packing assets (pack.py beta container)"
+    # Beta container args: pack.py emits <APP_DIR>/index.bin,
     # art/packed/*.{raw,pal} and the kind-aware src/<app>_ids.h. No manifest
     # exists at scaffold time (full-color sprites come later); the launcher
-    # icon ships with the template at art/icon.png.
+    # icon ships with the template at art/icon.png. The legacy --emit-raw
+    # phase is deliberately NOT passed: the beta sim doesn't read legacy
+    # .raw files, and --beta-app-dir writes beta-format .raw into art/packed.
     beta_args=(--beta-app-dir "$APP_DIR" --app-name "$APP")
     [ -f "$APP_DIR/art/icon.png" ] && beta_args+=(--icon "$APP_DIR/art/icon.png")
     ( cd "$APP_DIR" && python "$PACK_PY" \
-        --export --build-palette --build-ids --emit-raw \
+        --export --build-palette --build-ids \
         --art-dir art --exported-dir art/exported \
-        --packed-dir art/packed --output-dir art/packed --raw-dir art/packed \
+        --packed-dir art/packed --output-dir art/packed \
         --ids-output "src/${APP}_ids.h" --assets assets "${beta_args[@]}" )
     raw_count=$(find "$APP_DIR/art/packed" -maxdepth 1 -name '*.raw' 2>/dev/null | wc -l)
     [ "$raw_count" -gt 0 ] || fail "packing produced no .raw assets in $APP_DIR/art/packed"
