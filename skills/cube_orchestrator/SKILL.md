@@ -9,7 +9,8 @@ description: >-
   sprite", "change the speed", "add a level"); it detects build-from-scratch vs
   modding and routes accordingly. The master controller for the whole pipeline:
   it routes through design, prompts, assets, and implementation, and manages
-  every sub-skill and subagent.
+  every sub-skill and subagent. Supports an opt-in YOLO mode that runs the whole
+  pipeline autonomously with no checkpoints until the final device .oct.
 ---
 
 # WowCube Cube Orchestrator
@@ -32,6 +33,8 @@ Before routing into the pipeline, decide which of two modes the request is in. R
 **When it's ambiguous** — e.g. a working project exists but the wording reads like a brand-new game — **ask the user which they mean.** Never guess between building fresh and modifying working code: picking wrong is expensive in both directions (clobbering a working game, or grafting a mod onto the wrong base).
 
 Default: if nothing indicates an existing project (greenfield workspace, "make a game"), it's **Build mode**.
+
+**Run mode (orthogonal to Build/Mod):** YOLO mode turns on **only if the literal token `YOLO` (case-insensitive) is present in the body of the current user prompt** — see the HARD ACTIVATION RULE in `## YOLO Mode`. No paraphrase, translation, or inferred intent activates it. When OFF (the default) every checkpoint in this skill is in full force. When ON, the autonomous rules in `## YOLO Mode` override the checkpoints in both Build and Mod mode.
 
 ## The Pipeline (what the orchestrator manages)
 
@@ -74,6 +77,8 @@ After a stage produces its artifact and BEFORE invoking the next stage, the orch
 
 This is the same non-negotiable discipline as the per-prompt checkpoint in Stage 4. Never auto-advance across a stage boundary. The user reviews each artifact (design, prompts, assets, device package) before the pipeline proceeds.
 
+**Exception — YOLO Mode:** this stage-boundary checkpoint is SUSPENDED when the user explicitly activated YOLO (see `## YOLO Mode`). In YOLO, after a stage's artifact is produced the orchestrator re-runs Stage Detection and auto-advances to the next stage without stopping.
+
 **MANDATORY RULE — CHECKPOINT AFTER EVERY PROMPT:**
 After each prompt cycle (coder → verifier → context save), you MUST:
 1. Present the summary and test instructions to the user
@@ -82,6 +87,92 @@ After each prompt cycle (coder → verifier → context save), you MUST:
 4. Only after receiving approval, proceed to the next prompt
 
 This is NON-NEGOTIABLE. Never batch multiple prompts. Never skip the checkpoint. Never assume the user wants to continue. The user needs to test every build **in the simulator** before proceeding. (Per-prompt iteration uses the simulator; the authoritative physical-cube test happens once at **Stage 5**, when the device `.oct` is built and verified — see below for why it cannot be built per-prompt without being clobbered.)
+
+**Exception — YOLO Mode:** this per-prompt checkpoint, and every "wait for user approval" instruction in this skill, is SUSPENDED in YOLO (see `## YOLO Mode`). YOLO runs all prompts back-to-back and only reports once, at the final device build.
+
+## YOLO Mode (Autonomous Run — opt-in)
+
+**Default OFF.** YOLO is an explicit, opt-in override of every checkpoint and approval in this skill.
+
+**HARD ACTIVATION RULE — the only way YOLO turns on:** activate YOLO **if and only if the literal token `YOLO` (case-insensitive) appears in the body of the user's prompt.** Nothing else activates it:
+- No paraphrase, synonym, or translation activates YOLO — "автономный режим", "no checkpoints, just build it", "фигачь до финального билда / .oct", "go autonomous", etc. do **NOT** count. Only the literal string `YOLO`.
+- Never infer it from intent, tone, or context.
+- Never carry it across turns or unrelated requests — the token must be present in the current prompt body. A prior prompt's `YOLO` does not keep the mode on.
+- If the user clearly wants autonomy but did not write `YOLO`, do **not** enter YOLO; proceed with normal checkpoints (you may note that they can write `YOLO` to enable it).
+
+When activated this way, it applies to both Build and Mod mode.
+
+### Mandatory pre-activation double-check (risk disclosure + explicit confirmation)
+
+Even when the literal `YOLO` token is present, **the orchestrator does NOT go autonomous immediately.** It MUST first stop, explain the risks in plain language, and get one explicit confirmation. This is the single allowed prompt between seeing `YOLO` and going silent — never skip it, never assume the answer.
+
+Present the risks clearly (adapt wording, but cover all of these):
+- **Result is not guaranteed.** The pipeline runs unattended; the final game may not match what you pictured, and YOLO won't stop to course-correct.
+- **No per-stage verification by you.** Design, prompts, assets, and gameplay are auto-accepted at each boundary — without your eyes on each stage, the cumulative result can drift far from your expectations, and a wrong early decision propagates through everything downstream.
+- **It can take a long time.** A full design → prompts → assets → implement → device-build run is long-running with no interaction in between.
+- **It can burn a lot of tokens / cost.** Autonomous generation, multi-agent verification, and up-to-5 fix cycles per prompt consume significantly more tokens than a checkpointed run.
+- **Rework risk.** If the outcome is off, you may have to redo or heavily mod the game afterward — possibly costing more total than running with checkpoints.
+
+Then ask for an explicit go/no-go, e.g. *"YOLO means I run the whole pipeline unattended to the final `.oct` — no result guarantee, no per-stage review from you, it can take a while and burn a lot of tokens. Confirm you want YOLO, or I'll proceed with normal checkpoints."*
+
+- Proceed into YOLO **only on a clear affirmative** ("yes", "да", "go", "confirm").
+- On anything ambiguous, silence, or "no" → **do NOT enter YOLO**; fall back to the normal checkpointed flow.
+
+Only after this confirmation do the One-time intake and the autonomous run begin.
+
+When YOLO turns on, the orchestrator runs the **entire pipeline in one session** and does not prompt the user again until it delivers the final device package `app_<game>/app_<game>.oct`. The only thing it removes is the human checkpoints — it does NOT remove the correctness gates that decide whether that `.oct` actually runs on the cube.
+
+### One-time intake (gather BEFORE going autonomous)
+
+A truly autonomous run still needs the few inputs that cannot be invented. Collect these once, up front, then go silent:
+
+1. **Game concept** (Build mode, if not already given) — ask for the brief now (genre, core mechanic, vibe, length). YOLO does not run the designer's interview turn-by-turn; it takes the brief once and lets `cube_game-designer` produce the GDD from it.
+2. **Asset source + key** (Stage 3) — default to **Path A (AI generation)**, the autonomous path, and obtain `OPENROUTER_API_KEY` now. Path B (self-supplied art) is inherently non-autonomous (it waits on human-made files); use it in YOLO only if complete assets are already on disk.
+
+Then announce YOLO once ("YOLO ON — running design → prompts → assets → implement → device build autonomously; next stop is the final .oct") and proceed without further prompts.
+
+### What YOLO suspends
+
+| Checkpoint (default) | YOLO behavior |
+|---|---|
+| Stage-Boundary Checkpoint (between every stage) | **Suspended** — re-run Stage Detection, auto-advance. |
+| Per-prompt checkpoint (Stage 4, Step 5) | **Suspended** — save context, go straight to the next prompt. |
+| Stage 3 user asset review (Step 3.4) | **Suspended** — auto-accept any set the consistency reviewer passes (the review→regen loop, max 3, still runs). |
+| Mod-mode mini-plan & per-change checkpoints (M3, M5) | **Suspended** — auto-advance through plan and per-change review. |
+| 5-attempt verification failure → ask user | **Auto-decide** per the Failure policy below. |
+
+### What YOLO NEVER drops (hard invariants — these decide whether the .oct runs)
+
+Dropping any of these yields a package that won't load or won't run on the cube, defeating the whole point of an autonomous run.
+
+- **Both verifier agents** (Requirements + Template) run every prompt, threshold **90/90**, max **5** fix attempts.
+- The orchestrator still **never writes code, design, prompts, or assets itself**.
+- **`_ids.h` is never hand-edited; assets stay valid; the asset-set completeness check still blocks a partial set** (a missing sprite/sound = uncompilable build).
+- **Stage 5 device build + ARM-embed verification still runs and must exit 0** — a sim-only `.oct` is never delivered.
+- All mandatory platform reminders, explicit casts, fixed-width types, and all 5 handlers — still enforced.
+
+### Safe parallelism (Stage 4)
+
+All game code is one file (`app_<game>/src/app_<game>.h`), so **coding stays sequential** — only one coder writes the file at a time. YOLO extracts parallelism from everything else:
+
+1. Build a prompt dependency graph up front (foundational vs. cosmetic/isolated, per the Pipeline Model table).
+2. **Verifiers (Requirements + Template) and fixers fan out** in parallel; verification of prompt N overlaps task-JSON prep for N+1.
+3. **Independent cosmetic/isolated prompts** (audio, visual polish, UI text — touching disjoint code regions, no mutual dependency) batch their verify+fix in parallel.
+4. Coders for independent prompts are still serialized on the file but dispatched back-to-back with no waiting between them.
+5. **Foundational prompts** (scaffold, data structures, core init) stay strictly sequential and fully verified before anything downstream is dispatched.
+6. Never dispatch two coders that could both edit the file concurrently. When in doubt, serialize the coding and parallelize only the checking.
+
+### Failure policy in YOLO (no user to ask)
+
+When a prompt fails verification after the 5-attempt limit:
+- **Foundational prompt** → **abort the run**, save context, surface immediately. This is the one time YOLO breaks silence before the `.oct` — downstream prompts can't be trusted.
+- **Non-foundational prompt** → keep the best-scoring version, record it as a known issue for the final report, and **continue**.
+
+A **Stage 5 ARM build failure** (missing toolchain, asset-only pack) is always a hard stop — surface it; never ship a sim-only `.oct`.
+
+### YOLO completion
+
+After the device build verifies, present a single end-of-run report: stages run, per-prompt verification scores, total fix cycles, any prompts that finished below threshold (with best scores), the consistency-review outcome, and the absolute path to the verified `app_<game>/app_<game>.oct`.
 
 ## When to Use
 
@@ -155,6 +246,8 @@ The orchestrator decides at each step whether to pipeline or wait:
 | Prompt N verification failed, fix agent deployed | **Wait**: do not prepare N+1 until fix is verified |
 | Prompt N is a foundational prompt (scaffold, data structures, core init) | **Always wait**: later prompts depend heavily on getting this right |
 | Prompt N is cosmetic/isolated (audio, visual polish, UI text) | **Safe to pipeline**: failures here won't cascade |
+
+> **In YOLO mode** this same table drives parallelism: "Pipeline" / "Safe to pipeline" rows become parallel verifier+fixer batches, while "Wait" / "Always wait" rows stay strictly sequential. The decision criteria do not change — only the per-prompt user checkpoint between them is removed.
 
 ## JSON Communication Protocol
 
@@ -277,6 +370,27 @@ All data between orchestrator and agents is JSON.
 
 Reached when the GDD, prompts, and manifest exist but `assets/packed/` or `src/app_<game>_ids.h` is missing. Stage 3 produces the source art (`assets/art/*.png`, `assets/wav/*.wav`) and then packs it. The **source art can be produced two ways**, and the orchestrator MUST let the user choose before generating or packing anything. Both paths converge on the same pack step (Step 3.5).
 
+### Display & sprite sizing (CRITICAL — applies to every sprite, both paths)
+
+The two facts below are the authoritative sizing rule for all WowCube assets. Honor them whenever gating the manifest (Step 3.A1), generating (Path A), validating self-supplied art (Path B), or reviewing sizes — and surface them to the user whenever sprite dimensions come up.
+
+1. **The physical screen (quadrant) is 240×240 px.** That is the hardware resolution of one of the cube's 24 displays.
+2. **But every sprite is authored/generated at HALF resolution, because the engine applies a software ×2 upscale at draw time.** The governing formula for **all** assets (not just backgrounds) is:
+
+   > **authored size = intended on-screen size ÷ 2**
+
+   The engine multiplies the authored sprite by 2 when drawing it. So a full-screen sprite is authored at **120×120** (→ 240×240 on screen), making **120×120 the hard maximum** — no sprite is ever larger than that.
+
+This applies to **every** asset, sized proportionally to how much of the screen it should cover:
+- **Full screen** → on-screen 240×240 → authored **120×120** (the ceiling).
+- **Character/object covering a quarter of the screen** → on-screen 60×60 → authored **30×30** — **not 60×60**. (Thinking "a quarter of 240 = 60, so 60×60" is the classic mistake: that 60 is the *on-screen* size, which must still be halved to 30 for authoring.)
+- **Any other sprite** → take its target footprint on the 240×240 screen and halve both dimensions.
+
+Practical consequences:
+- **Never generate or request a sprite larger than 120×120**, and for every smaller asset compute its authored size as (intended on-screen px ÷ 2) — apply this to characters, items, UI elements, effects, everything, not only fullsize/`bg` sprites.
+- Manifest `size` values (`plans/<game>_assets.json`) are in **authored (pre-upscale) pixels**: full-screen = `[120, 120]`, quarter-screen character = `[30, 30]`, etc.
+- If a manifest sprite's `size` looks like it was set in on-screen pixels (e.g. a quarter-screen sprite at `[60, 60]`, or anything > 120), treat it as a sizing error: return to Stage 2 (`technical_prompter`) to halve it rather than generating it.
+
 ### Step 3.0: Choose the asset source (ASK FIRST — before any generation or packing)
 
 Before touching `cube_asset-builder`, present the choice with the **Agent tool's `AskUserQuestion`** (or a short bullet list + wait). Do NOT pick for the user.
@@ -285,6 +399,8 @@ Before touching `cube_asset-builder`, present the choice with the **Agent tool's
 - **Option 2 — Self-supplied assets.** The user creates the assets themselves, following the manifest's exact specs (name, size, animation frames) and the GDD's art style. The orchestrator does NOT generate — it validates completeness, then packs. → **Path B**.
 
 Route to the chosen path below.
+
+> **YOLO mode:** do not ask here. Default to **Path A** and use the `OPENROUTER_API_KEY` gathered during the YOLO one-time intake. Only use Path B in YOLO if a complete asset set is already on disk (the completeness check in 3.B2 still applies). If Path A is required but the key is missing, that is the one input YOLO must request before continuing.
 
 ### Path A — AI generation (Option 1)
 
@@ -314,7 +430,7 @@ The user makes the art by hand (or with their own tools) from the GDD. The orche
 Validate the files actually present against the manifest:
 - For every sprite in the manifest, confirm `assets/art/<name>.png` exists (optionally verify pixel dimensions match `size`).
 - For every sound, confirm `assets/wav/<name>.wav` exists.
-- **List EVERY missing file explicitly** (by `<name>` and expected size/duration). If anything is missing, **STOP**: tell the user exactly which sprites/sounds are absent and that the build will not be playable — every `BMP_<name>`/`"<name>.wav"` referenced in the prompts must exist or the code fails to compile. Wait for the user to add the missing files, then re-run this check. **Never pack a partial set.**
+- **List EVERY missing file explicitly** (by `<name>` and expected size/duration). If anything is missing, **STOP**: tell the user exactly which sprites/sounds are absent and that the build will not be playable — every `BMP_<name>`/`"<name>.wav"` referenced in the prompts must exist or the code fails to compile. Wait for the user to add the missing files, then re-run this check. **Never pack a partial set.** (This check holds even in YOLO — a partial set cannot compile.)
 
 **3.B3 When complete → pack.** Skip generation and the AI consistency review (the user authored and approved their own art). Go straight to **Step 3.5**.
 
@@ -322,9 +438,11 @@ Validate the files actually present against the manifest:
 
 This is `cube_asset-builder`'s own mandatory review of the AI-generated set. Present the generated set and the consistency reviewer's verdict, then STOP and wait for the user. Offer the verbatim options the asset-builder supports: `ok`/`continue`, `regen <group>`, `swap <name>`, `edit <name> size <WxH>`. Never auto-continue to pack.
 
+> **YOLO mode:** skip this user review. Auto-accept any set the consistency reviewer (3.A3) passed; the review→regen loop already enforced cohesion. Proceed directly to Step 3.5.
+
 ### Step 3.5: Pack & boundary checkpoint (both paths)
 
-After approval (Path A: user replies `ok`; Path B: the completeness check passed), invoke `cube_asset-builder`'s pack stage → `build_pipeline.py pack`. It **assembles `assets/assets.psd`, fills `assets/exported/` and `assets/packed/` (+ `pal.png`), and writes `src/app_<game>_ids.h`** with the `BMP_*` enum. Then run the normal **Stage 3→4 boundary checkpoint** (summarize asset counts + `BMP_*` constant count, wait for approval) before any Stage 4 work.
+After approval (Path A: user replies `ok`; Path B: the completeness check passed), invoke `cube_asset-builder`'s pack stage → `build_pipeline.py pack`. It **assembles `assets/assets.psd`, fills `assets/exported/` and `assets/packed/` (+ `pal.png`), and writes `src/app_<game>_ids.h`** with the `BMP_*` enum. Then run the normal **Stage 3→4 boundary checkpoint** (summarize asset counts + `BMP_*` constant count, wait for approval) before any Stage 4 work. (In YOLO, the boundary checkpoint is auto-advanced — see `## YOLO Mode`.)
 
 ### Asset Consistency Task JSON (orchestrator → reviewer agent)
 
@@ -396,7 +514,7 @@ This is the implementation stage — reached only after Stages 1–3 are complet
    (`wowcube-boilerplate` left a working demo there to prove the build; overwriting
    it with the skeleton is expected — the verified folder, marker, packed assets,
    and toolchain are what carry forward.)
-6. Count total prompts, present execution plan to user
+6. Count total prompts, present execution plan to user. **In YOLO**, also build the prompt dependency graph now (foundational vs. cosmetic/isolated) so parallel batches can be planned, and do not wait for approval of the plan.
 
 ### Step 2: Validate Prompts
 
@@ -424,6 +542,8 @@ For each prompt, repeat this cycle:
 | iterate, loop, gObjects, for | `"gObjects[0] is reserved — start from index 1, validate with obj->Idx == i"` |
 | label, text, OCT_label, glyph | `"Label visibility: must also toggle all child glyphs where obj->Parent == label->Idx"` |
 | OCT_add, sprite, layer | `"SPRITES_CAP = 400 max. Verify total count. NO NEED to account for GAP in x/y coordinates — the engine handles GAP offsets automatically."` |
+| position, coordinate, x/y, center, place, fit, bounds, edge | `"Coordinates live in the 240x240 on-screen space (screen center = 120,120). Sprites are authored at HALF size and the engine upscales them x2 at draw time, so a sprite's ON-SCREEN extent = 2x its authored size. Do ALL position/centering/edge-fit math in on-screen pixels using the upscaled extent (2x authored), NEVER the authored sprite size."` |
+| collision, overlap, hit, distance, spacing, grid, snap | `"Compute collision boxes, overlap tests, spacing and grid steps from the UPSCALED on-screen sprite extent (2x authored size) in the 240x240 space — using the authored (half) size makes hitboxes and gaps half as big as what's drawn and breaks gameplay."` |
 | walk, move, cross, plane, wrap | `"Cross-display distance = 240.0f + 2.0f * GAP. Use OCT_TM_walk with wrap=true. OCT_TM_move is in-plane only — no cross-plane handling."` |
 | sound, SND, audio, mp3 | `"Pattern: int32_t id = SND_getAssetId(name); SND_play(id, volume);"` |
 | animation, sequence, frame | `"OCT_sequence restart: OCT_SEQ_RESTART, OCT_SEQ_REVERSE, OCT_SEQ_REFRESH"` |
@@ -435,10 +555,11 @@ For each prompt, repeat this cycle:
 | teleport, set, OCT_TM_set | `"OCT_TM_set overwrites position, angle, and plane directly (teleport) — no animation."` |
 | XSIGN, YSIGN, quad coords | `"XSIGN/YSIGN are already declared in oct_shared.h — do NOT redeclare."` |
 
-**Always include these reminders in EVERY coding task (mandatory for all prompts):**
+**Always include these reminders in EVERY coding task (mandatory for all prompts, including YOLO):**
 - `"Use explicit type casts — never rely on implicit conversions between numeric types, pointers, or enums."`
 - `"Use only fixed-width types from <stdint.h> (int8_t, int16_t, int32_t, uint8_t, uint16_t, uint32_t, size_t). Never use plain int, short, long."`
 - `"All 5 handler functions must be present (on_init, on_tick, on_tap, on_twisted, on_pretwisted). If a handler has no game logic, reference every parameter to suppress warnings (e.g., twid; disconnected_ms;)."`
+- `"Sprites are authored at HALF resolution and the engine upscales them x2 at draw time. ALL coordinate math (positioning, centering, edge/screen-fit, movement bounds, collision boxes, spacing, grids) runs in the 240x240 on-screen space and MUST use each sprite's UPSCALED on-screen extent = 2x its authored size. Never use the authored (half) sprite dimensions for layout or collision — that makes everything half as big as drawn and breaks the game."`
 
 #### 3b. Dispatch Coder Agent
 
@@ -462,7 +583,8 @@ You are a WowCube game coder. Implement exactly what the task describes.
 7. Use only fixed-width types from `<stdint.h>` (int8_t, int16_t, int32_t, uint8_t, uint16_t, uint32_t, size_t). Never use plain `int`, `short`, `long`
 8. All 5 handler functions (on_init, on_tick, on_tap, on_twisted, on_pretwisted) must be present. If a handler has no game logic, reference every parameter as a statement to suppress unused-variable warnings
 9. Write modular, readable code: extract game state into structs, split logic into small focused functions, use named constants instead of magic numbers
-10. After implementing, respond with the Coder Response JSON
+10. Sprites are authored at HALF resolution; the engine upscales them x2 when drawing. The 240x240 quad is the on-screen coordinate space (center = 120,120). Do EVERY layout and collision computation — positioning, centering, screen/edge fitting, movement bounds, hitboxes, spacing, grid steps — in on-screen pixels using each sprite's UPSCALED extent (2x its authored size). NEVER use the authored (half) sprite size for coordinates or collision, or everything ends up half the size it's drawn and the game breaks
+11. After implementing, respond with the Coder Response JSON
 
 ## Response
 Return ONLY the Coder Response JSON. No markdown, no explanation outside the JSON.
@@ -478,7 +600,7 @@ After coder completes, deploy two verifier agents **sequentially** using the `cu
 
 **Evaluate:** Each agent scores out of 100 independently. Both must score >= 90 to pass. If either fails, pass its issues to the fix agent.
 
-**Pipeline rule:** If the orchestrator is confident that prompt N+1 does NOT depend on N's verification outcome (see Pipeline Model table), it MAY begin preparing N+1's task JSON while the verifiers run. But it MUST NOT dispatch N+1's coder until verification passes.
+**Pipeline rule:** If the orchestrator is confident that prompt N+1 does NOT depend on N's verification outcome (see Pipeline Model table), it MAY begin preparing N+1's task JSON while the verifiers run. But it MUST NOT dispatch N+1's coder until verification passes. **In YOLO**, this fan-out is the norm: verifiers and fixers for independent prompts run in parallel batches and the next coder is dispatched as soon as the file is free — coding still serialized, no user checkpoint between prompts.
 
 #### 3d. Handle Verification Result
 
@@ -509,10 +631,14 @@ You are a WowCube code fixer. Fix the issues found by the verifier.
 
 After fix agent completes → re-deploy verifier. Repeat until pass or 5 attempts exhausted.
 
-After 5 failures:
+**After 5 failures (checkpointed mode):**
 1. Save current state to context
 2. Present issues to user
 3. Ask: "Verification failed after 5 attempts (best score: X). Continue / retry / stop?"
+
+**After 5 failures (YOLO mode) — auto-decide, do not ask:**
+- **Foundational prompt** (scaffold, data structures, core init): save context and **abort the run**, surfacing the failure immediately.
+- **Non-foundational prompt**: keep the best-scoring version, record it as a known issue for the end-of-run report, and **continue** to the next prompt.
 
 ### Step 4: Save Context
 
@@ -539,9 +665,11 @@ After verification passes (score >= 90), update `context/<game>_context.json`:
 }
 ```
 
-### Step 5: Checkpoint with User (MANDATORY — NEVER SKIP)
+### Step 5: Checkpoint with User (MANDATORY in checkpointed mode — SKIPPED in YOLO)
 
-**After EVERY prompt completes (verified), you MUST checkpoint and STOP.**
+> **YOLO mode:** skip this entire step. Do not summarize, do not stop, do not ask. Save context (Step 4) and immediately proceed to the next prompt cycle. The only report is the single end-of-run report at completion (see `## YOLO Mode` → YOLO completion).
+
+**In checkpointed mode, after EVERY prompt completes (verified), you MUST checkpoint and STOP.**
 
 Do NOT proceed to the next prompt. Do NOT dispatch any more agents. WAIT for the user.
 
@@ -613,7 +741,9 @@ After all prompts executed and final checkpoint passes:
    ARM code is actually embedded** (it fails loudly on an asset-only pack). The
    task is not complete until this exits 0. If the ARM toolchain is missing, that
    is a `wowcube-boilerplate` toolchain problem (`check_env.ps1` / `check_env.sh`)
-   to resolve — not a reason to ship the sim-only `.oct`.
+   to resolve — not a reason to ship the sim-only `.oct`. (This Stage 5
+   verification is a hard invariant even in YOLO — a sim-only `.oct` is never
+   delivered.)
 
    **Critical ordering:** the simulator rewrites `app_<game>.oct` as an
    asset-only pack on *every* launch, so all per-prompt sim testing (Stage 4)
@@ -628,6 +758,9 @@ After all prompts executed and final checkpoint passes:
    ```
    app_<game>/app_<game>.oct
    ```
+
+   (In YOLO this final report is delivered automatically without waiting — it is
+   the single end-of-run report.)
 3. Suggest next steps (testing on the physical cube, polish, features)
 
 ## Mod Mode Workflow
@@ -663,6 +796,8 @@ Asset work (T2/T3) needs a manifest entry for the affected asset. If `plans/<gam
 
 Present a short plan: the chosen type, exactly which files/assets change, and why this is the minimal path. If the optimal path needs a resource (e.g. an OpenRouter image key for T2 generation), request it here. **STOP and wait for explicit user approval before touching anything.** Never start editing or generating before the plan is approved.
 
+> **YOLO mode:** the mini-plan is still composed but auto-approved — do not stop. Gather any required resource (e.g. the OpenRouter key) during the YOLO intake; if it is genuinely missing, that single input may be requested, otherwise proceed.
+
 ### M4 — Execute at minimal scope
 
 Run the chosen path through the existing components, scoped to the change:
@@ -675,9 +810,11 @@ Run the same verifier (threshold 90/90), but frame the criteria for a mod: **(a)
 
 Then run the per-change checkpoint just like the Stage 4 per-prompt checkpoint: summarize what changed, give sim test instructions, **STOP**, and wait for the user. Several independent mods are handled one at a time, each with its own checkpoint — never batch.
 
+> **YOLO mode:** the verifier (90/90) and fixer still run — that gate is never dropped. The per-change user checkpoint is skipped; independent mods are processed back-to-back and reported once at the end alongside the repackaged `.oct`.
+
 ### M6 — Repackage for the device
 
-A mod isn't done until the cube package is rebuilt. Run **Stage 5** (`wowcube-boilerplate` → `build_device.ps1` / `build_device.sh`) so `app_<game>/app_<game>.oct` re-embeds the ARM code — mandatory for the same reason as in Build mode: the simulator rewrites the `.oct` as asset-only on every launch, so the device build must be the last action. Then checkpoint with the absolute `.oct` path.
+A mod isn't done until the cube package is rebuilt. Run **Stage 5** (`wowcube-boilerplate` → `build_device.ps1` / `build_device.sh`) so `app_<game>/app_<game>.oct` re-embeds the ARM code — mandatory for the same reason as in Build mode: the simulator rewrites the `.oct` as asset-only on every launch, so the device build must be the last action. Then checkpoint with the absolute `.oct` path. (In YOLO, the device build + ARM-embed verification still run; the final path is reported automatically.)
 
 ## Configuration
 
@@ -686,3 +823,6 @@ A mod isn't done until the cube package is rebuilt. Run **Stage 5** (`wowcube-bo
 | Verification threshold | 90 | Minimum score to pass (per agent, each scores out of 100) |
 | Max retry attempts | 5 | Max fix+re-verify cycles per prompt |
 | Start from | 1 | First prompt to execute (for resumption) |
+| Run mode | checkpointed | `checkpointed` (default — stop at every stage boundary and after every prompt) or `yolo` (autonomous — no checkpoints until the final device `.oct`). YOLO is opt-in only; see `## YOLO Mode`. |
+| YOLO foundational-failure | abort | On 5-attempt failure of a foundational prompt in YOLO, abort the run; non-foundational failures keep best effort and continue. |
+| YOLO asset path | A (AI gen) | YOLO defaults to AI generation (Path A) and gathers the OpenRouter key up front; Path B only if a complete set is already on disk. |

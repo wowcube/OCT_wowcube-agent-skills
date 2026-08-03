@@ -33,6 +33,7 @@ The GDD must account for these device characteristics (expressed in player-frien
 
 - **The cube has 6 faces**, each with **4 small screens** (24 screens total)
 - **Screens are 240x240 pixels** with a **physical gap** (border) between them
+- **Sprites are authored at HALF the on-screen size** — the engine applies a software ×2 upscale at draw time. So **authored size = intended on-screen size ÷ 2**, with a hard maximum of **120×120** (a full-screen sprite). A quarter-screen object is 30×30, etc. Whenever the GDD states a sprite size, it MUST be the authored (pre-upscale) size, never the on-screen size. See the Assets section below.
 - **Player interactions**: twist a face row (full or half twist), tap a face, tilt the cube
 - **Twists** rotate a row of 4 screens — this is the primary input for most games
 - **Half-twists** shift screens partially — useful for fine movement
@@ -191,8 +192,18 @@ Mark any input as "not used" if the game does not use it.
 ## 7. Assets
 
 ### Sprites
-- `<snake_case_name>` — description and approximate size (e.g., "48x48px")
-- ...
+- `<snake_case_name>` — description and approximate **authored** size.
+
+**Sprite sizes are authored (pre-upscale) sizes — always ≤ 120×120.** The engine
+upscales every sprite ×2 at draw time, so the size written here is *half* how big
+the sprite appears on the 240×240 screen: **authored size = intended on-screen size ÷ 2.**
+- Full screen → `120x120` (the maximum; never write a size larger than 120 in either dimension)
+- Half the screen (each side) → `60x60`
+- A quarter of the screen (each side) → `30x30`
+- A small icon/item → size it down proportionally the same way
+
+Example: `hero — small character, occupies about a quarter of a screen → 30x30px`.
+Do NOT write the on-screen size (e.g. `60x60` for a quarter-screen sprite) — halve it.
 
 Total sprite assets: N
 
@@ -267,6 +278,7 @@ Before finalizing, verify:
 4. Asset names are unique, descriptive, and use `snake_case`
 5. The game is feasible given the device constraints (sprite count, screen count, input types)
 6. **Sprite budget** — worst-case total sprites <= 400
+6a. **Sprite sizes are authored sizes** — every sprite size in §7 is ≤ 120×120 (full-screen = 120×120) and equals the intended on-screen size ÷ 2 (e.g. a quarter-screen object is 30×30, not 60×60). Any size > 120, or any size written in on-screen pixels, is wrong — fix it.
 7. The controls summary matches the mechanics described in the gameplay section
 8. The document is understandable by someone who has never seen WowCube code
 9. All user answers from the discovery interview are reflected in the document
