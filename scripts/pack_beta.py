@@ -12,6 +12,7 @@ utils.exe (from the app_hulk example).
 """
 from __future__ import annotations
 
+import re
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -362,6 +363,32 @@ def read_pal(path: Path) -> list[int]:
     return out
 
 
+def patch_palette_sprite(blob: bytes, *, pal_id: int, seq_id: int = 0) -> bytes:
+    """Convert a legacy packed-sprite blob into a beta one, payload untouched.
+
+    The legacy octBmp_t (pack_codec.build_header) and the beta octBmp_t
+    (oct_types.h) are the same 48 bytes except for four fields:
+
+        offset   legacy                     beta
+        0..3     num_pixels (u32)           Pidx (u16) + Seq (u16)
+        44       Flags (u8)                 Flags (u8)          (unchanged)
+        45       Pidx (u8)                  Rate (i8)
+        46       Seq (i8)                   Reserved = 0
+        47       Rate (i8)                  Reserved = 0
+
+    Beta Pidx/Seq are ASSET IDS (index.bin record indices), not the legacy
+    palette-group / sibling-sprite indices, so the caller supplies them.
+    The legacy Rate byte is preserved by moving it into the beta slot.
+    """
+    if len(blob) < BMP_SIZE:
+        raise ValueError(f"sprite blob is {len(blob)} bytes, needs at least {BMP_SIZE}")
+    hdr = bytearray(blob[:BMP_SIZE])
+    rate, = struct.unpack_from("<b", hdr, 47)
+    struct.pack_into("<HH", hdr, 0, pal_id, seq_id)
+    struct.pack_into("<bBB", hdr, 45, rate, 0, 0)
+    return bytes(hdr) + blob[BMP_SIZE:]
+
+
 def build_map(bmp_id: int, w: int, h: int, *, x=120.0, y=120.0, looped=False, rate=1) -> bytes:
     place = b"".join((
         struct.pack("<ff", x, y),
@@ -375,3 +402,249 @@ def build_map(bmp_id: int, w: int, h: int, *, x=120.0, y=120.0, looped=False, ra
     ))
     assert len(place) == 28
     return struct.pack("<ii", 1, 1) + place
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Beta container emit layer
+# ─────────────────────────────────────────────────────────────────────────────
+
+# animation frames are named <base>_NN (two or more digits), same rule the
+# legacy pack_psd.generate_app_ids_h uses for its base/_end aliases
+_RE_SEQ_FRAME = re.compile(r"^(.+?)_(\d{2,})$")
+
+
+def _seq_frame_groups(names) -> dict[str, list[tuple[int, str]]]:
+    """Group sprite names into animation sequences, sorted by frame number.
+
+    Only sequences that include frame 0 count (mirrors generate_app_ids_h);
+    a stray coin_05 without coin_00 stays a plain static sprite.
+    """
+    raw: dict[str, list[tuple[int, str]]] = {}
+    for name in names:
+        m = _RE_SEQ_FRAME.match(name)
+        if m:
+            raw.setdefault(m.group(1), []).append((int(m.group(2)), name))
+    return {base: sorted(members)
+            for base, members in raw.items()
+            if any(num == 0 for num, _ in members)}
+
+
+def _seq_chain(sprite_ids: dict[str, int]) -> dict[str, int]:
+    """Map each animation frame name to the ASSET ID of its next frame.
+
+    Frames chain 00 -> 01 -> ... -> last -> 00 (the engine walks Seq to
+    advance animation). Single-frame groups get no chain: Seq = 0 stops the
+    walk on the frame itself, which is what a static sprite wants.
+    """
+    chain: dict[str, int] = {}
+    for members in _seq_frame_groups(sprite_ids).values():
+        if len(members) < 2:
+            continue
+        for (_, cur), (_, nxt) in zip(members, members[1:] + members[:1]):
+            chain[cur] = sprite_ids[nxt]
+    return chain
+
+
+def _write_raw(path: Path, blob: bytes) -> None:
+    # the sim streams payloads in whole and keeps the next one 4-byte aligned;
+    # utils.exe always emits %4 sizes, so never ship a file that is not
+    path.write_bytes(blob + b"\0" * ((-len(blob)) & 3))
+
+
+def _load_rgb565(image, size) -> bytes:
+    """to_rgb565 for a Path or an already-open PIL image.
+
+    Only images this function opened get closed; a caller-supplied Image
+    stays usable after the call.
+    """
+    if isinstance(image, Image.Image):
+        return to_rgb565(image, size)
+    with Image.open(image) as img:
+        return to_rgb565(img, size)
+
+
+def generate_beta_ids_h(records: list[tuple[int, str]]) -> str:
+    """Kind-aware ids header text for a beta record list (index == asset id).
+
+    enum BMP carries every KIND_SPRITE record except the reserved slot-0
+    "zero" (covered by BMP_none = 0), enum MAP every KIND_MAP, enum SND every
+    KIND_SOUND. Animation sequences additionally get the legacy aliases:
+    BMP_<base> = first frame, BMP_<base>_end = last frame.
+    """
+    bmp = [(i, n) for i, (k, n) in enumerate(records)
+           if k == KIND_SPRITE and not (i == 0 and n == "zero")]
+    maps = [(i, n) for i, (k, n) in enumerate(records) if k == KIND_MAP]
+    snds = [(i, n) for i, (k, n) in enumerate(records) if k == KIND_SOUND]
+
+    bmp_ids = {n: i for i, n in bmp}
+    groups = _seq_frame_groups(bmp_ids)
+    last_frame_of = {members[-1][1]: base for base, members in groups.items()}
+
+    lines = ["// generated by pack_beta.py (emit_beta_layout), do not edit\n",
+             "enum BMP { BMP_none = 0, \n", "BMP_0 = 0, \n"]
+    for i, name in bmp:
+        lines.append(f"BMP_{name} = {i}, \n")
+        base = last_frame_of.get(name)
+        if base is not None:
+            members = groups[base]
+            lines.append(f"BMP_{base} = {bmp_ids[members[0][1]]}, \n")
+            lines.append(f"BMP_{base}_end = {i}, \n")
+    lines.append("BMP_last};\n\n")
+
+    lines.append("enum MAP { MAP_none = 0, \n")
+    lines.extend(f"MAP_{name} = {i}, \n" for i, name in maps)
+    lines.append("MAP_last};\n\n")
+
+    lines.append("enum SND { SND_none = 0, \n")
+    lines.extend(f"SND_{name} = {i}, \n" for i, name in snds)
+    lines.append("SND_last};\n\n")
+
+    lines.append("typedef enum BMP BMP;\ntypedef enum MAP MAP;\ntypedef enum SND SND;\n")
+    return "".join(lines)
+
+
+def emit_beta_layout(
+    app_dir: str | Path,
+    app_name: str,
+    *,
+    palettes: dict[int, list[int]] | None = None,
+    palette_sprites=(),
+    full_sprites=(),
+    icon: str | Path | Image.Image | None = None,
+    icon_side: int = 160,
+    sounds: list[str] | None = None,
+    ids_path: str | Path | None = None,
+) -> list[tuple[int, str]]:
+    """Write the complete beta asset container for one app directory.
+
+    Produces <app_dir>/index.bin, <app_dir>/art/packed/*.{raw,pal} and the
+    kind-aware ids header (default <app_dir>/src/<app_name>_ids.h). Record
+    index in index.bin == runtime asset id, in this fixed order:
+
+      0. ("zero", SPRITE)     - reserved empty sprite, 48-byte zero header
+      1. one PAL per palette group, named "1", "2", ...
+      2. icon assets (only when `icon` is given): ico_idle SPRITE (RAW565
+         icon at icon_side²) + "ico"/"ahover" MAPs pointing at it - the
+         launcher looks these up by name within the first EXT_MAX_DESCS
+         descriptors (mirrors app_hulk's videopack.build_icon_assets)
+      3. every palette sprite, header patched from legacy to beta layout
+         (Pidx -> pal ASSET id, Seq -> next-frame asset id for _NN chains)
+      4. every full-color sprite, RAW565-encoded at its target size
+      5. one SOUND per mp3 (payload stays in sound/assets/, nothing written)
+
+    Arguments:
+      palettes:        {legacy_pidx: [rgb565, ...]} - keyed by whatever Pidx
+                       values the legacy sprite headers actually carry.
+      palette_sprites: iterable of (name, legacy_blob) - 48-byte legacy
+                       octBmp_t + opaque payload, as read from the current
+                       packer's output containers.
+      full_sprites:    iterable of (name, png_path_or_image, (w, h), flags) -
+                       flags WITHOUT OCT_FLAG_RAW565 (ORed in automatically).
+      icon:            source image for the launcher icon, or None.
+      sounds:          mp3 basenames; None scans <app_dir>/sound/assets/.
+
+    Legacy PSD maps are NOT emitted: their embedded bmp indices are legacy
+    enum values, meaningless in the beta asset-id space.
+
+    Returns the records written (same shape read_index_bin returns).
+    """
+    app_dir = Path(app_dir)
+    palettes = dict(palettes or {})
+    palette_sprites = list(palette_sprites)
+    full_sprites = list(full_sprites)
+
+    if sounds is None:
+        snd_dir = app_dir / "sound" / "assets"
+        sounds = sorted(p.stem for p in snd_dir.glob("*.mp3")) if snd_dir.is_dir() else []
+
+    # ── plan the id space first: record index == asset id ──────────────────
+    records: list[tuple[int, str]] = [(KIND_SPRITE, "zero")]
+
+    pal_asset_id: dict[int, int] = {}
+    for n, legacy_pidx in enumerate(sorted(palettes), start=1):
+        pal_asset_id[legacy_pidx] = len(records)
+        records.append((KIND_PAL, str(n)))
+
+    ico_idle_id = None
+    if icon is not None:
+        ico_idle_id = len(records)
+        records.append((KIND_SPRITE, "ico_idle"))
+        records.append((KIND_MAP, "ico"))
+        records.append((KIND_MAP, "ahover"))
+        if len(records) > EXT_MAX_DESCS:
+            raise ValueError(
+                f"icon assets reach id {len(records) - 1}, past the "
+                f"{EXT_MAX_DESCS} descriptors the launcher can see")
+
+    sprite_ids: dict[str, int] = {}
+    for name, _blob in palette_sprites:
+        sprite_ids[name] = len(records)
+        records.append((KIND_SPRITE, name))
+    for name, _image, _size, _flags in full_sprites:
+        sprite_ids[name] = len(records)
+        records.append((KIND_SPRITE, name))
+
+    for name in sounds:
+        records.append((KIND_SOUND, name))
+
+    # sprites and maps share one on-disk namespace (art/packed/<name>.raw)
+    raw_names = [n for k, n in records if k in (KIND_SPRITE, KIND_MAP)]
+    dupes = {n for n in raw_names if raw_names.count(n) > 1}
+    if dupes:
+        raise ValueError(
+            f"asset name collision in art/packed/: {', '.join(sorted(dupes))}")
+    build_index_bin(records)   # validates count <= ASSETS_CAP and name lengths early
+
+    seq = _seq_chain(sprite_ids)
+
+    # ── write payloads ──────────────────────────────────────────────────────
+    packed_dir = app_dir / "art" / "packed"
+    packed_dir.mkdir(parents=True, exist_ok=True)
+
+    _write_raw(packed_dir / "zero.raw", build_bmp_header(w=0, h=0, flags=0))
+
+    for legacy_pidx, asset_id in pal_asset_id.items():
+        _kind, pal_name = records[asset_id]
+        (packed_dir / f"{pal_name}.pal").write_bytes(build_pal(palettes[legacy_pidx]))
+
+    if icon is not None:
+        texels = _load_rgb565(icon, icon_side)
+        _write_raw(packed_dir / "ico_idle.raw",
+                   build_raw565_sprite(texels, icon_side, icon_side,
+                                       flags=OCT_FLAG_FULLSIZE))
+        # ahover normally animates the hover; pointing it at the same static
+        # sprite (Seq=0 stops the chain walk) just holds the icon
+        icon_map = build_map(ico_idle_id, icon_side, icon_side)
+        _write_raw(packed_dir / "ico.raw", icon_map)
+        _write_raw(packed_dir / "ahover.raw", icon_map)
+
+    for name, blob in palette_sprites:
+        if len(blob) < BMP_SIZE:
+            raise ValueError(f"sprite '{name}': blob is {len(blob)} bytes, "
+                             f"needs at least {BMP_SIZE}")
+        legacy_pidx = blob[45]                     # legacy header: Pidx @45
+        pal_id = pal_asset_id.get(legacy_pidx)
+        if pal_id is None:
+            if not pal_asset_id:
+                raise ValueError(f"sprite '{name}' needs a palette "
+                                 f"but no palette groups were provided")
+            # mirror the encoder's palettes.get(pidx, first) fallback
+            pal_id = pal_asset_id[min(pal_asset_id)]
+        _write_raw(packed_dir / f"{name}.raw",
+                   patch_palette_sprite(blob, pal_id=pal_id,
+                                        seq_id=seq.get(name, 0)))
+
+    for name, image, (w, h), flags in full_sprites:
+        texels = _load_rgb565(image, (w, h))
+        _write_raw(packed_dir / f"{name}.raw",
+                   build_raw565_sprite(texels, w, h, flags=flags,
+                                       seq=seq.get(name, 0)))
+
+    # ── index.bin + ids header ──────────────────────────────────────────────
+    (app_dir / "index.bin").write_bytes(build_index_bin(records))
+
+    ids_file = Path(ids_path) if ids_path else app_dir / "src" / f"{app_name}_ids.h"
+    ids_file.parent.mkdir(parents=True, exist_ok=True)
+    ids_file.write_text(generate_beta_ids_h(records), encoding="ascii")
+
+    return records

@@ -107,6 +107,22 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument('--raw-dir', default=None,
                    help='Destination for --emit-raw .raw files '
                         '(default: --packed-dir, where the sim reads packed/*.raw)')
+    p.add_argument('--beta-app-dir', default=None,
+                   help='Beta (octavios dev) app root. When set, after the '
+                        'legacy pack a beta asset container is emitted there: '
+                        'index.bin, art/packed/*.{raw,pal}, launcher icon '
+                        'maps, and a kind-aware src/<app-name>_ids.h')
+    p.add_argument('--app-name', default=None,
+                   help='App name for the beta ids header filename '
+                        '(<app-name>_ids.h; default: the --beta-app-dir folder name)')
+    p.add_argument('--manifest', default=None,
+                   help='Path to plans/<game>_assets.json. Sprites with '
+                        'color=="full" are RAW565-encoded into the beta '
+                        'container from their exported PNGs instead of the '
+                        'palette codec. Optional; legacy invocations omit it.')
+    p.add_argument('--icon', default=None,
+                   help='Launcher icon PNG for the beta container (default: '
+                        'auto-detect icon.png in --art-dir or --beta-app-dir)')
     return p
 
 
@@ -423,9 +439,15 @@ def _phase_pack_sprites(
 
 
 def _phase_pack_maps(args: argparse.Namespace,
-                     asset_names_set: set[str]) -> None:
+                     asset_names_set: set[str]) -> list[str]:
+    """Pack PSD maps and optionally the legacy app_ids.h.
+
+    Returns the packed map names (clean, without the map_ prefix) so later
+    phases can tell map containers apart from sprite containers in
+    --output-dir. Empty when the phase is skipped.
+    """
     if not (args.build_maps or args.build_ids):
-        return
+        return []
 
     print("\n=== Building maps and/or app_ids.h ===")
     mf = args.map_filter
@@ -454,6 +476,8 @@ def _phase_pack_maps(args: argparse.Namespace,
             name_map, type_map, group_map, tag_map,
             ids_path, args.exported_dir,
         )
+
+    return map_names
 
 
 def _phase_emit_raw(args: argparse.Namespace) -> None:
@@ -489,6 +513,105 @@ def _phase_emit_raw(args: argparse.Namespace) -> None:
     print(f"  Wrote {ok} .raw file(s)" + (f", {bad} skipped (not %4)" if bad else ""))
 
 
+def _phase_emit_beta(
+    args: argparse.Namespace,
+    sprite_assignments: dict[str, tuple[int, EncoderPalette, int]] | None,
+    palettes: dict[int, EncoderPalette],
+    map_names: list[str],
+) -> None:
+    """Emit the beta (octavios dev) asset container into --beta-app-dir.
+
+    Runs after the legacy outputs are all written; nothing here changes them.
+    Palette-sprite payloads are taken from the freshly packed --output-dir
+    containers, full-color manifest sprites are RAW565-encoded from their
+    exported PNGs, palette groups become .pal assets, and index.bin pins the
+    shared asset-id space (see pack_beta.emit_beta_layout).
+    """
+    if not args.beta_app_dir:
+        return
+
+    import pack_beta
+    from pack_codec import rgba_to_rgb565
+
+    app_dir = Path(args.beta_app_dir)
+    app_name = args.app_name or app_dir.name
+    print(f"\n=== Emitting beta container to {app_dir} ===")
+
+    # Palette groups keyed by the Pidx values actually written into headers.
+    # In the --build-palette grouped path those are the sprite_assignments'
+    # 0-based group indices; in the load-pal.png path they are the dict keys
+    # load_palette_for_encoding produced (same source the encoder used).
+    def _to_565(pal: EncoderPalette) -> list[int]:
+        return [0x0000 if c[3] == 0 else rgba_to_rgb565(c[0], c[1], c[2])
+                for c in pal.colors]
+
+    pal_groups: dict[int, list[int]] = {}
+    if sprite_assignments:
+        for pidx, pal, _sym in sprite_assignments.values():
+            pal_groups.setdefault(pidx, _to_565(pal))
+    else:
+        pal_groups = {pidx: _to_565(pal) for pidx, pal in palettes.items()}
+
+    # Manifest full-color sprites bypass the palette codec entirely
+    full_specs: list[tuple[str, Path, tuple[int, int], int]] = []
+    full_names: set[str] = set()
+    if args.manifest:
+        from manifest_schema import load_manifest
+        manifest = load_manifest(args.manifest)
+        for s in manifest.sprites:
+            if s.color != 'full':
+                continue
+            png = Path(args.exported_dir) / f'{s.name}.png'
+            if not png.is_file():
+                raise FileNotFoundError(
+                    f"full-color sprite '{s.name}': {png} not found "
+                    f"(generate/export assets first)")
+            flags = (pack_beta.OCT_FLAG_FULLSIZE if s.flags.fullsize else 0) \
+                  | (pack_beta.OCT_FLAG_ADDITIVE if s.flags.additive else 0) \
+                  | (pack_beta.OCT_FLAG_BG if s.flags.bg else 0)
+            full_specs.append((s.name, png, s.size, flags))
+            full_names.add(s.name)
+
+    # Palette-sprite blobs = the packed containers just written to output-dir
+    # (decoded strip bytes ARE the legacy octBmp_t + payload). pal.png, the
+    # legacy 0 placeholder, map containers and full-color sprites are not
+    # palette sprites.
+    skip = {PALETTE_SPRITE_NAME, PLACEHOLDER_SPRITE_NAME} \
+        | set(map_names) | full_names
+    palette_blobs: list[tuple[str, bytes]] = []
+    for png in sorted(Path(args.output_dir).glob('*.png')):
+        if png.stem in skip:
+            continue
+        palette_blobs.append(
+            (png.stem, Image.open(png).convert('RGBA').tobytes()))
+
+    icon = Path(args.icon) if args.icon else None
+    if icon is None:
+        for cand in (Path(args.art_dir) / 'icon.png',
+                     app_dir / 'icon.png',
+                     app_dir / 'art' / 'icon.png'):
+            if cand.is_file():
+                icon = cand
+                break
+
+    records = pack_beta.emit_beta_layout(
+        app_dir, app_name,
+        palettes=pal_groups,
+        palette_sprites=palette_blobs,
+        full_sprites=full_specs,
+        icon=icon,
+    )
+
+    kinds = [k for k, _n in records]
+    print(f"  {len(records)} asset records -> {app_dir / 'index.bin'}")
+    print(f"    sprites={kinds.count(pack_beta.KIND_SPRITE)} "
+          f"pals={kinds.count(pack_beta.KIND_PAL)} "
+          f"maps={kinds.count(pack_beta.KIND_MAP)} "
+          f"sounds={kinds.count(pack_beta.KIND_SOUND)}"
+          + ("" if icon else "  (no icon found: launcher ico/ahover skipped)"))
+    print(f"  ids header -> {app_dir / 'src' / (app_name + '_ids.h')}")
+
+
 def main() -> None:
     args = _build_arg_parser().parse_args()
     asset_names_set = _resolve_asset_names(args)
@@ -522,9 +645,11 @@ def main() -> None:
         map_skip_names, sprite_pivots, has_palette,
     )
 
-    _phase_pack_maps(args, asset_names_set)
+    map_names = _phase_pack_maps(args, asset_names_set)
 
     _phase_emit_raw(args)
+
+    _phase_emit_beta(args, sprite_assignments, palettes, map_names)
 
     if sprite_pivots:
         custom = [(n, px, py) for n, (px, py) in sprite_pivots.items()

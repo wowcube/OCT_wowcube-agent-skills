@@ -164,7 +164,7 @@ def do_pack(args: argparse.Namespace) -> int:
         return rc
 
     print("=== Stage: pack ===")
-    rc = _run([
+    pack_cmd = [
         sys.executable, str(pack_py),
         "--export",
         "--build-palette",
@@ -177,7 +177,17 @@ def do_pack(args: argparse.Namespace) -> int:
         "--raw-dir", str(packed_dir),
         "--ids-output", str(ids_path),
         "--assets", "assets",
-    ])
+    ]
+    if args.app_dir:
+        # beta (octavios dev) container: index.bin + art/packed + kind-aware
+        # src/app_<game>_ids.h, emitted into the app dir by pack.py
+        pack_cmd += [
+            "--beta-app-dir", str(Path(args.app_dir)),
+            "--app-name", f"app_{args.game}",
+        ]
+        if args.manifest:
+            pack_cmd += ["--manifest", str(args.manifest)]
+    rc = _run(pack_cmd)
     if rc != 0:
         return rc
 
@@ -225,6 +235,14 @@ def build_parser() -> argparse.ArgumentParser:
     k.add_argument("--game", required=True, help="Game name (used in _ids.h filename)")
     k.add_argument("--workspace", default="assets", help="Workspace root (default: assets)")
     k.add_argument("--src-dir", default="src", help="Target dir for the ids header")
+    k.add_argument("--app-dir", default=None,
+                   help="Beta app root (app_<game>/). When set, pack.py also "
+                        "emits the beta container there: index.bin, "
+                        "art/packed/*.{raw,pal}, launcher icon maps, and a "
+                        "kind-aware src/app_<game>_ids.h")
+    k.add_argument("--manifest", default=None,
+                   help="Path to plans/<game>_assets.json, so color=='full' "
+                        "sprites are RAW565-encoded in the beta container")
     k.set_defaults(func=do_pack)
 
     return p
