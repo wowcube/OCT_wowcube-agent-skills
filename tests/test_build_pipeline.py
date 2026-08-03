@@ -23,6 +23,48 @@ def _deps_available() -> bool:
         return False
 
 
+@pytest.fixture
+def stub_ffmpeg(monkeypatch):
+    """Make the beta-mp3 path deterministic and offline.
+
+    shutil.which('ffmpeg') always 'finds' it (so do_generate opts into
+    encode_mp3 regardless of the host machine) and encode_beta_mp3 writes a
+    fake mp3 instead of shelling out — tests never require real ffmpeg.
+    """
+    import shutil as _shutil
+
+    import gen_sounds
+
+    real_which = _shutil.which
+    monkeypatch.setattr(
+        _shutil, "which",
+        lambda name, *a, **kw: ("ffmpeg" if name == "ffmpeg"
+                                else real_which(name, *a, **kw)))
+
+    def _fake_encode(wav_path, assets_dir):
+        wav_path = Path(wav_path)
+        assets_dir = Path(assets_dir)
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        out = assets_dir / (wav_path.stem + ".mp3")
+        out.write_bytes(b"fake-beta-mp3:" + wav_path.stem.encode())
+        return out
+
+    monkeypatch.setattr(gen_sounds, "encode_beta_mp3", _fake_encode)
+    return _fake_encode
+
+
+@pytest.fixture
+def no_ffmpeg(monkeypatch):
+    """The opposite: shutil.which never finds ffmpeg."""
+    import shutil as _shutil
+
+    real_which = _shutil.which
+    monkeypatch.setattr(
+        _shutil, "which",
+        lambda name, *a, **kw: (None if name == "ffmpeg"
+                                else real_which(name, *a, **kw)))
+
+
 def test_find_script_returns_repo_root_copy_in_dev():
     """In the dev layout, find_script('build_psd.py') must resolve to repo root."""
     p = find_script("build_psd.py")
@@ -35,7 +77,7 @@ def test_find_script_raises_for_missing_name():
         find_script("definitely_not_a_real_script.py")
 
 
-def test_generate_stage_runs(tmp_path, tmp_manifest, minimal_manifest, stub_ai):
+def test_generate_stage_runs(tmp_path, tmp_manifest, minimal_manifest, stub_ai, stub_ffmpeg):
     manifest = tmp_manifest(minimal_manifest)
     project = tmp_path / "project"
     project.mkdir()
@@ -49,6 +91,28 @@ def test_generate_stage_runs(tmp_path, tmp_manifest, minimal_manifest, stub_ai):
     assert rc == 0
     assert (project / "assets" / "art" / "coin.png").exists()
     assert (project / "assets" / "wav" / "sfx_coin.wav").exists()
+    # ffmpeg "available" (stubbed) -> beta mp3s land next to the WAVs
+    assert (project / "assets" / "wav" / "assets" / "sfx_coin.mp3").exists()
+
+
+def test_generate_skips_mp3_without_ffmpeg(tmp_path, tmp_manifest, minimal_manifest,
+                                           stub_ai, no_ffmpeg):
+    """No ffmpeg and no --mp3 flag: WAVs are written, mp3 encoding is skipped."""
+    manifest = tmp_manifest(minimal_manifest)
+    rc = _cli(["generate", "--manifest", str(manifest),
+               "--workspace", str(tmp_path / "assets")])
+    assert rc == 0
+    assert (tmp_path / "assets" / "wav" / "sfx_coin.wav").exists()
+    assert not (tmp_path / "assets" / "wav" / "assets").exists()
+
+
+def test_generate_mp3_flag_fails_without_ffmpeg(tmp_path, tmp_manifest, minimal_manifest,
+                                                stub_ai, no_ffmpeg):
+    """--mp3 makes a missing ffmpeg a hard error with its own exit code."""
+    manifest = tmp_manifest(minimal_manifest)
+    rc = _cli(["generate", "--manifest", str(manifest),
+               "--workspace", str(tmp_path / "assets"), "--mp3"])
+    assert rc == 7
 
 
 def test_generate_rejects_invalid_manifest(tmp_path, tmp_manifest, stub_ai):
@@ -73,7 +137,7 @@ def test_generate_missing_api_key_fails(tmp_path, tmp_manifest, minimal_manifest
 
 
 @pytest.mark.slow
-def test_pack_stage_end_to_end(tmp_path, tmp_manifest, minimal_manifest, stub_ai):
+def test_pack_stage_end_to_end(tmp_path, tmp_manifest, minimal_manifest, stub_ai, stub_ffmpeg):
     if not _deps_available():
         pytest.skip("pack stage needs pytoshop + psd-tools")
     manifest = tmp_manifest(minimal_manifest)
@@ -103,7 +167,7 @@ def _deps_for_e2e() -> bool:
         return False
 
 
-def test_acceptance_criteria_e2e(tmp_path, tmp_manifest, stub_ai):
+def test_acceptance_criteria_e2e(tmp_path, tmp_manifest, stub_ai, stub_ffmpeg):
     """Covers all four acceptance criteria from the spec §12."""
     if not _deps_for_e2e():
         pytest.skip("acceptance test needs pytoshop + psd-tools")
@@ -163,3 +227,73 @@ def test_acceptance_criteria_e2e(tmp_path, tmp_manifest, stub_ai):
     # Sounds are deterministic (pure synthesis); AI sprites are not, so only
     # the WAVs are hash-compared across runs.
     assert wav_hashes_1 == wav_hashes_2
+
+
+def test_pack_copies_beta_mp3s_to_app_dir(tmp_path, monkeypatch):
+    """With --app-dir, the pack stage carries <workspace>/wav/assets/*.mp3 to
+    <app_dir>/sound/assets/ BEFORE invoking pack.py, so emit_beta_layout's
+    sound scan picks them up (the beta sim loads sounds only from there)."""
+    import build_pipeline
+    from PIL import Image
+
+    workspace = tmp_path / "assets"
+    (workspace / "art").mkdir(parents=True)
+    Image.new("RGB", (4, 4), (1, 2, 3)).save(workspace / "art" / "x.png")
+    packed = workspace / "packed"
+    packed.mkdir()
+    (packed / "pal.png").write_bytes(b"x")
+    (workspace / "app_tiny_ids.h").write_text("enum BMP { BMP_none = 0, BMP_last};")
+    (workspace / "wav" / "assets").mkdir(parents=True)
+    (workspace / "wav" / "assets" / "blip.mp3").write_bytes(b"fake-beta-mp3:blip")
+
+    app_dir = tmp_path / "app_tiny"
+    mp3_present_at_pack: list[bool] = []
+
+    def fake_run(cmd, cwd=None):
+        cmd = [str(c) for c in cmd]
+        if "--beta-app-dir" in cmd:
+            mp3_present_at_pack.append(
+                (app_dir / "sound" / "assets" / "blip.mp3").is_file())
+        return 0
+
+    monkeypatch.setattr(build_pipeline, "_run", fake_run)
+
+    rc = build_pipeline._cli([
+        "pack", "--game", "tiny",
+        "--workspace", str(workspace),
+        "--src-dir", str(tmp_path / "src"),
+        "--app-dir", str(app_dir),
+    ])
+    assert rc == 0
+    copied = app_dir / "sound" / "assets" / "blip.mp3"
+    assert copied.read_bytes() == b"fake-beta-mp3:blip"
+    # the copy happened before pack.py was invoked, not after
+    assert mp3_present_at_pack == [True]
+
+
+def test_pack_without_mp3s_still_passes_beta_args(tmp_path, monkeypatch):
+    """No wav/assets dir at all: the pack stage must not trip over it."""
+    import build_pipeline
+    from PIL import Image
+
+    workspace = tmp_path / "assets"
+    (workspace / "art").mkdir(parents=True)
+    Image.new("RGB", (4, 4), (1, 2, 3)).save(workspace / "art" / "x.png")
+    packed = workspace / "packed"
+    packed.mkdir()
+    (packed / "pal.png").write_bytes(b"x")
+    (workspace / "app_tiny_ids.h").write_text("enum BMP { BMP_none = 0, BMP_last};")
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(build_pipeline, "_run",
+                        lambda cmd, cwd=None: (calls.append([str(c) for c in cmd]), 0)[1])
+
+    rc = build_pipeline._cli([
+        "pack", "--game", "tiny",
+        "--workspace", str(workspace),
+        "--src-dir", str(tmp_path / "src"),
+        "--app-dir", str(tmp_path / "app_tiny"),
+    ])
+    assert rc == 0
+    assert "--beta-app-dir" in calls[1]
+    assert not (tmp_path / "app_tiny" / "sound").exists()

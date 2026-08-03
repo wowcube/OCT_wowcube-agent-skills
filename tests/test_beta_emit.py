@@ -95,7 +95,9 @@ def test_record_zero(emitted):
     zero = _packed(app) / "zero.raw"
     assert zero.is_file()
     blob = zero.read_bytes()
-    assert len(blob) == 48
+    # byte-for-byte what the real toolchain packs: 48 bytes of pure zeros
+    # (in particular rate @45 must be 0, not the builder's default 1)
+    assert blob == b"\x00" * 48
     hdr = parse_bmp_header(blob)
     assert (hdr.w, hdr.h, hdr.flags, hdr.pidx, hdr.seq) == (0, 0, 0, 0, 0)
 
@@ -150,11 +152,17 @@ def test_icon_assets(emitted):
 
     ico = (_packed(app) / "ico.raw").read_bytes()
     ahover = (_packed(app) / "ahover.raw").read_bytes()
-    assert ico == ahover
-    assert struct.unpack_from("<ii", ico, 0) == (1, 1)
-    assert struct.unpack_from("<hh", ico, 20) == (160, 160)
-    bmp_id, = struct.unpack_from("<h", ico, 24)
-    assert bmp_id == ico_idle_id
+    for blob in (ico, ahover):
+        assert struct.unpack_from("<ii", blob, 0) == (1, 1)
+        assert struct.unpack_from("<hh", blob, 20) == (160, 160)
+        bmp_id, = struct.unpack_from("<h", blob, 24)
+        assert bmp_id == ico_idle_id
+    # ahover is the hover ANIMATION map: PLACE_LOOPED (1 << 1), matching the
+    # golden app_hulk ahover.raw; ico stays static -- and the loop flag @28
+    # is the ONLY difference between the two maps
+    assert struct.unpack_from("<H", ico, 28)[0] == 0
+    assert struct.unpack_from("<H", ahover, 28)[0] == (1 << 1)
+    assert ahover[:28] == ico[:28] and ahover[30:] == ico[30:]
 
 
 def test_no_icon_no_launcher_records(tmp_path):

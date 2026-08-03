@@ -601,7 +601,9 @@ def emit_beta_layout(
     packed_dir = app_dir / "art" / "packed"
     packed_dir.mkdir(parents=True, exist_ok=True)
 
-    _write_raw(packed_dir / "zero.raw", build_bmp_header(w=0, h=0, flags=0))
+    # rate=0 keeps the reserved record all-zero, matching the real toolchain's
+    # 48-byte pure-zero zero.raw (the rate default of 1 would set byte 45)
+    _write_raw(packed_dir / "zero.raw", build_bmp_header(w=0, h=0, flags=0, rate=0))
 
     for legacy_pidx, asset_id in pal_asset_id.items():
         _kind, pal_name = records[asset_id]
@@ -612,11 +614,14 @@ def emit_beta_layout(
         _write_raw(packed_dir / "ico_idle.raw",
                    build_raw565_sprite(texels, icon_side, icon_side,
                                        flags=OCT_FLAG_FULLSIZE))
-        # ahover normally animates the hover; pointing it at the same static
-        # sprite (Seq=0 stops the chain walk) just holds the icon
-        icon_map = build_map(ico_idle_id, icon_side, icon_side)
-        _write_raw(packed_dir / "ico.raw", icon_map)
-        _write_raw(packed_dir / "ahover.raw", icon_map)
+        # both maps point at the same static sprite (Seq=0 stops the chain
+        # walk, so the icon just holds either way), but ahover is the hover
+        # ANIMATION map and the real toolchain packs it looped (PLACE_LOOPED,
+        # see golden app_hulk ahover.raw) while ico stays static
+        _write_raw(packed_dir / "ico.raw",
+                   build_map(ico_idle_id, icon_side, icon_side))
+        _write_raw(packed_dir / "ahover.raw",
+                   build_map(ico_idle_id, icon_side, icon_side, looped=True))
 
     for name, blob in palette_sprites:
         if len(blob) < BMP_SIZE:
