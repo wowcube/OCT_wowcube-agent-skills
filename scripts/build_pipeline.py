@@ -246,9 +246,16 @@ def do_pack(args: argparse.Namespace) -> int:
 
     raw_count = len(list(packed_dir.glob("*.raw")))
 
+    if args.app_dir:
+        # Beta mode: these *.raw live in the legacy workspace copy only; the
+        # sim actually loads <app_dir>/art/packed/*.raw (copied there by
+        # pack.py's --beta-app-dir handling above), not this workspace path.
+        raw_label = "legacy workspace copies; the sim loads <app_dir>/art/packed"
+    else:
+        raw_label = "sim/.oct assets"
     print("=" * 60)
     print(f"  packed/pal.png       : ok")
-    print(f"  packed/*.raw         : {raw_count} file(s) (sim/.oct assets)")
+    print(f"  packed/*.raw         : {raw_count} file(s) ({raw_label})")
     print(f"  {ids_path.name:<20}: {bmp_count} BMP_* constants")
     print(f"  {dest_ids}: copied")
     print("=" * 60)

@@ -86,6 +86,10 @@ def parse_bmp_header(blob: bytes) -> BmpHeader:
                       w, h, number, group, type_, flags, rate)
 
 
+# Intentionally kept but currently uncalled: ported from videopack.py as the
+# documented knob for smoothing noisy full-color video source frames before
+# run-encoding. No caller wires it up yet (no --smooth flag exists); kept
+# in place for when that option is added rather than re-derived from scratch.
 def smooth_rows(texels, width, height, threshold):
     # the run encoder needs texels that match EXACTLY, so a generated clip's faint noise costs it everything: a gradient drifting by one step every other pixel yields runs of two, which save nothing
     # this drags a sticky value along each row and snaps anything within threshold onto it, turning near-matches into real runs at the price of some horizontal streaking in smooth areas

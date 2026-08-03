@@ -179,6 +179,24 @@ container instead of run through the palette codec. Under the hood this
 drives `scripts/pack.py --export --build-palette --build-ids --emit-raw
 --beta-app-dir <app-dir> --app-name app_<game> --manifest <manifest-path>`.
 
+**Full-color-only apps can skip the palette pipeline entirely.** When every
+sprite in the manifest is `color: "full"` (e.g. a photo/video app packing
+pre-made PNGs, nothing PSD-authored to export or palette-encode), drop
+`--export` and `--build-palette` from the `pack.py` invocation — the legacy
+export/palette phases self-skip when there's nothing for them to do, and only
+the beta container gets emitted:
+
+```
+python scripts/pack.py --build-ids \
+    --beta-app-dir <app-dir> --app-name <app-name> \
+    --manifest <manifest-path> --icon <icon.png>
+```
+
+`--build-ids` is still required (it's what lets the no-palette legacy phase
+exit cleanly instead of erroring on a missing `pal.png`); the pre-made sprite
+PNGs must already sit in `--exported-dir` (default `exported/`) since there's
+no `--export` step to populate it.
+
 On success the driver prints:
 - Path to `assets/packed/pal.png` and the packed PNGs (legacy intermediates).
 - Count of `assets/packed/*.raw` — the decoded-RGBA asset bitmaps (emitted by
@@ -241,7 +259,7 @@ approved.
 | Manifest invalid (`rc=2`) | Relay all stderr lines to the user; wait for them to fix the manifest (or delegate back to `technical_prompter`). |
 | Missing dependency or API key (`rc=3`) | Print the install hints / `export OPENROUTER_API_KEY=...` hint printed by the driver; stop. |
 | Sprite generation failed (`rc=6`) | Relay stderr. If it is a network/OpenRouter error, retry (optionally `--group` for just the failed group). If it names a sprite with no `gen_prompt`, send the user back to `technical_prompter` to add it. |
-| mp3 encode failed (`rc=7`) | Only happens with `--mp3` forcing the encode. Means `ffmpeg` is missing or errored — relay stderr. Install via `winget install Gyan.FFmpeg` (Windows) or the distro package (Linux), or drop pre-encoded mp3s straight into `sound/assets/` and retry without `--mp3`. |
+| mp3 encode failed (`rc=7`) | The mp3 encode is attempted whenever `ffmpeg` is on PATH — even without `--mp3` — and `--mp3` additionally forces the encode when `ffmpeg` is missing (a hard error instead of a skip). Either way, `rc=7` means `ffmpeg` was found but the encode itself errored — relay stderr. Install/repair `ffmpeg` via `winget install Gyan.FFmpeg` (Windows) or the distro package (Linux), or drop pre-encoded mp3s straight into `sound/assets/` and retry. |
 | `ffmpeg not found` (no `rc=7`, mp3s just silently absent) | Without `--mp3`, a missing `ffmpeg` degrades the `generate` stage to WAV-only instead of failing. If beta mp3s are needed, install `ffmpeg` (`winget install Gyan.FFmpeg` on Windows) or supply pre-encoded mp3 files in `sound/assets/` before packing. |
 | `build_psd.py` failure during pack | Show the failing filename from stderr. Ask the user to inspect `assets/art/<name>.png`. |
 | `pack.py` palette overflow | Suggest `--target-colors 64`; the driver currently uses default grouped palette — add the flag if this becomes common. |

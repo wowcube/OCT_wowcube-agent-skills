@@ -182,8 +182,11 @@ What it does, in order (this is the procedure distilled from real runs):
    headers to `app_<game>*`
 3. **Patch** every embedded reference to the template name in `src/app.h` and
    `src/app_<game>.h` (the `#include`, `APP_DIR`)
-4. **Guarantee `APP_VERSION`** is defined in `src/app.h` (the template omits it —
-   see Gotchas)
+4. **Guarantee the full beta define set** (`APP_VERSION`, `APP_TITLE`, `APP_GUID1`,
+   `APP_CATEGORIES`, `APP_COLORS`) is present in `src/app.h` and `APP_GUID1` is
+   randomized — the template already ships all six defines, so this is a
+   self-healing backstop (re-adds any that go missing, replaces the template's
+   zero placeholder GUID) rather than a required repair; see Gotchas
 5. **Pack** art assets with the Python packer — `scripts/pack.py --export
    --build-palette --build-ids --beta-app-dir <AppDir> --app-name
    app_<game>` (plus `--icon art/icon.png` when present) — which writes the
@@ -280,12 +283,13 @@ checkpoints with the user and reports the absolute path to the verified `.oct`.
 These are the failures observed when doing this by hand. The scripts handle them;
 if you ever scaffold manually, watch for them.
 
-1. **`APP_VERSION` is missing from the template's `app.h`.** The simulator's
-   `sim.h` only defines a fallback `APP_VERSION` when `SIM_APP_HEADER` is *not*
-   set — but the build always sets it, so `app.h` must define `APP_VERSION`
-   itself. Without it the build dies with
-   `error C2065: 'APP_VERSION': undeclared identifier`. Fix: ensure
-   `#define APP_VERSION 100` sits in `src/app.h`.
+1. **`app.h` must define `APP_VERSION` itself.** The simulator's `sim.h` only
+   defines a fallback `APP_VERSION` when `SIM_APP_HEADER` is *not* set — but the
+   build always sets it, so a hand-rolled `app.h` missing the define dies with
+   `error C2065: 'APP_VERSION': undeclared identifier`. The shipped template
+   already includes `#define APP_VERSION 100`; this is called out because the
+   scaffolder's step 4 guarantee exists specifically to catch it if a manual
+   edit ever drops it, not because the template ships broken.
 
 2. **Pack before you build.** The packer (`scripts/pack.py
    --beta-app-dir <AppDir> --app-name app_<game>`) must run first so
