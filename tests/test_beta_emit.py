@@ -322,9 +322,18 @@ def test_ids_header_duplicate_identifier_raises():
         pack_beta.generate_beta_ids_h(records)
 
 
-def test_ids_header_digit_leading_name_raises():
-    records = [(KIND_SPRITE, "zero"), (KIND_SOUND, "1up")]
-    with pytest.raises(ValueError, match="starts with a digit"):
+def test_ids_header_digit_leading_name_ok():
+    # the BMP_/SND_ prefix supplies the leading letter, so digit-leading
+    # asset names ("000", "1up") are valid — the shipped template uses them
+    records = [(KIND_SPRITE, "zero"), (KIND_SPRITE, "000"), (KIND_SOUND, "1up")]
+    text = pack_beta.generate_beta_ids_h(records)
+    assert "BMP_000 = 1" in text
+    assert "SND_1up = 2" in text
+
+
+def test_ids_header_invalid_char_name_raises():
+    records = [(KIND_SPRITE, "zero"), (KIND_SPRITE, "coin-gold")]
+    with pytest.raises(ValueError, match="not a valid C enum identifier"):
         pack_beta.generate_beta_ids_h(records)
 
 

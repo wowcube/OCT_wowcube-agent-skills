@@ -472,21 +472,22 @@ def generate_beta_ids_h(records: list[tuple[int, str]]) -> str:
     BMP_<base> = first frame, BMP_<base>_end = last frame.
 
     Raises ValueError when two records (or a record and an animation alias)
-    would produce the same enum identifier, and when an asset name starts
-    with a digit (e.g. a sound named "1up"): such names are rejected loudly
-    instead of shipping a header that surprises downstream tooling.
+    would produce the same enum identifier, and when an asset name contains
+    characters that make the identifier invalid C (e.g. "coin-gold"): such
+    names are rejected loudly instead of shipping a header that surprises
+    downstream tooling. Digit-leading names ("000", "1up") are fine - the
+    BMP_/MAP_/SND_ prefix supplies the leading letter.
     """
     seen = {"BMP_none", "BMP_0", "BMP_last",
             "MAP_none", "MAP_last", "SND_none", "SND_last"}
 
     def ident(prefix: str, name: str) -> str:
-        if name[:1].isdigit():
-            raise ValueError(
-                f"asset name '{name}' starts with a digit: '{prefix}_{name}' "
-                f"is not a usable enum identifier - rename the asset to start "
-                f"with a letter (e.g. '{name}' -> 'x{name}' or spell the "
-                f"digit out)")
         result = f"{prefix}_{name}"
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", result):
+            raise ValueError(
+                f"asset name '{name}' yields '{result}', which is not a "
+                f"valid C enum identifier - use only letters, digits and "
+                f"underscores in asset names")
         if result in seen:
             raise ValueError(
                 f"duplicate enum identifier '{result}' in the generated ids "
