@@ -504,7 +504,7 @@ void initDemo5(void) {
 
     // Short: OCT_BMP_info fills an octBmpInfo_t structure with bitmap metadata (size, pivot, bounding box, etc.).
     // Declaration: void OCT_BMP_info(uint32_t bmp_idx, octBmpInfo_t* info);
-    // Comment: octBmpInfo_t fields: Name[24], W, H (screen pixels), PivotX, PivotY, Bx, By, Bw, Bh (bounding geometry), NumPixels, Tags, Number, Group, Type.
+    // Comment: octBmpInfo_t fields: Name[24], W, H (screen pixels), PivotX, PivotY, Bx, By, Bw, Bh (bounding geometry), Tags, Number, Group, Type.
     // Comment: Can be called at any time with any valid BMP index; does not require a sprite to exist.
     octBmpInfo_t info;
     OCT_BMP_info((uint32_t)BMP_001, &info);
@@ -513,8 +513,8 @@ void initDemo5(void) {
     // Declaration: void OCT_text(int string_index, const char* format, ...);
     // Comment: string_index is a slot in a fixed array of DEBUG_STRINGS (10) lines. An in-range index [0; 10) overwrites that slot directly (use for a stable line refreshed each tick); any out-of-range index (e.g. -1) appends in log mode, scrolling older lines toward higher slots.
     // Comment: lines whose text starts with '.' are pinned and do not scroll. Same no-%f rule as OCT_trace (variadic, double poisoned on ARM) - print floats via OCT_F_INT/OCT_F_FRAC.
-    OCT_text(-1, "Demo5 init BMP_001: name=%s W=%d H=%d pivotX=%d.%03d pivotY=%d.%03d numPixels=%d\n",
-        info.Name, (int32_t)info.W, (int32_t)info.H, OCT_F_INT(info.PivotX), OCT_F_FRAC(info.PivotX), OCT_F_INT(info.PivotY), OCT_F_FRAC(info.PivotY), info.NumPixels);
+    OCT_text(-1, "Demo5 init BMP_001: name=%s W=%d H=%d pivotX=%d.%03d pivotY=%d.%03d\n",
+        info.Name, (int32_t)info.W, (int32_t)info.H, OCT_F_INT(info.PivotX), OCT_F_FRAC(info.PivotX), OCT_F_INT(info.PivotY), OCT_F_FRAC(info.PivotY));
 }
 
 // Demo: do not copy-paste this code
