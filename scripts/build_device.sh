@@ -92,6 +92,19 @@ if [ "$embedded" -ne 1 ]; then
 fi
 echo "    verified ARM code embedded ($bin_len bytes) in the .oct"
 
+# --- 4. Warn about stray timestamped .oct files in the app root ------------
+# The Linux simulator deletes root .oct files at startup, so anything like
+# <app>_20250101.oct left in the app root can silently vanish. Warning only.
+stray_oct=$(find "$APP_DIR" -maxdepth 1 -name "${app}_*.oct" -type f 2>/dev/null)
+if [ -n "$stray_oct" ]; then
+    {
+        echo "WARNING: stray timestamped .oct file(s) in the app root:"
+        printf '%s\n' "$stray_oct" | while IFS= read -r s; do echo "    $(basename "$s")"; done
+        echo "The Linux simulator deletes root .oct files at startup. Keep deliverables"
+        echo "in a pack/ subfolder (or copy them out of the app root) so they survive."
+    } >&2
+fi
+
 echo ''
 echo "CUBE PACKAGE READY:"
 echo "  $oct"

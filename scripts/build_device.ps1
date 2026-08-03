@@ -115,6 +115,17 @@ if (-not $embedded) {
 }
 Write-Host "    verified ARM code embedded ($binLen bytes) in the .oct"
 
+# --- 4. Warn about stray timestamped .oct files in the app root ------------
+# The Linux simulator deletes root .oct files at startup, so anything like
+# <app>_20250101.oct left in the app root can silently vanish. Warning only.
+$strayOct = Get-ChildItem $AppDir -Filter "${app}_*.oct" -File -ErrorAction SilentlyContinue
+if ($strayOct) {
+    Write-Host "WARNING: stray timestamped .oct file(s) in the app root:" -ForegroundColor Yellow
+    foreach ($s in $strayOct) { Write-Host "    $($s.Name)" -ForegroundColor Yellow }
+    Write-Host "The Linux simulator deletes root .oct files at startup. Keep deliverables" -ForegroundColor Yellow
+    Write-Host "in a pack\ subfolder (or copy them out of the app root) so they survive." -ForegroundColor Yellow
+}
+
 Write-Host ""
 Write-Host "CUBE PACKAGE READY:" -ForegroundColor Green
 Write-Host "  $oct"

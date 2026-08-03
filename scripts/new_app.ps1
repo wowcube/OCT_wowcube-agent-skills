@@ -178,12 +178,19 @@ Set-Content -Path $appH -Value $appHraw -Encoding UTF8
 $artDir = Join-Path $AppDir 'art'
 $packPy = Join-Path $PSScriptRoot 'pack.py'
 if (Test-Path $packPy) {
-    Step "Packing assets (pack.py --emit-raw)"
+    Step "Packing assets (pack.py --emit-raw + beta container)"
+    # Beta container args: pack.py also emits <AppDir>/index.bin,
+    # art/packed/*.{raw,pal} and the kind-aware src/<app>_ids.h. No manifest
+    # exists at scaffold time (full-color sprites come later); the launcher
+    # icon ships with the template at art/icon.png.
+    $betaArgs = @('--beta-app-dir', $AppDir, '--app-name', $app)
+    $iconPng = Join-Path $artDir 'icon.png'
+    if (Test-Path $iconPng) { $betaArgs += @('--icon', $iconPng) }
     Push-Location $AppDir
     python $packPy --export --build-palette --build-ids --emit-raw `
         --art-dir art --exported-dir art\exported `
         --packed-dir art\packed --output-dir art\packed --raw-dir art\packed `
-        --ids-output "src\${app}_ids.h" --assets assets | Out-Host
+        --ids-output "src\${app}_ids.h" --assets assets @betaArgs | Out-Host
     $packCode = $LASTEXITCODE
     Pop-Location
     if ($packCode -ne 0) { Fail "asset packing failed (pack.py exit $packCode)" }
@@ -191,7 +198,10 @@ if (Test-Path $packPy) {
     $packed = Join-Path $artDir 'packed'
     $rawCount = (Get-ChildItem $packed -Filter *.raw -ErrorAction SilentlyContinue | Measure-Object).Count
     if ($rawCount -eq 0) { Fail "packing produced no .raw assets in $packed" }
-    Write-Host "    packed $rawCount .raw assets; ids -> src/${app}_ids.h"
+    if (-not (Test-Path (Join-Path $AppDir 'index.bin'))) {
+        Fail "beta pack incomplete: index.bin missing $([char]0x2014) the simulator cannot load this app"
+    }
+    Write-Host "    packed $rawCount .raw assets; index.bin ok; ids -> src/${app}_ids.h"
 } else {
     Write-Host "    (scripts/pack.py not found at $packPy - skipping pack)" -ForegroundColor Yellow
 }

@@ -130,15 +130,22 @@ fi
 
 # --- 5. Pack assets (pure-Python packer; same on Windows and Linux) -------
 if [ -f "$PACK_PY" ]; then
-    step "Packing assets (pack.py --emit-raw)"
+    step "Packing assets (pack.py --emit-raw + beta container)"
+    # Beta container args: pack.py also emits <APP_DIR>/index.bin,
+    # art/packed/*.{raw,pal} and the kind-aware src/<app>_ids.h. No manifest
+    # exists at scaffold time (full-color sprites come later); the launcher
+    # icon ships with the template at art/icon.png.
+    beta_args=(--beta-app-dir "$APP_DIR" --app-name "$APP")
+    [ -f "$APP_DIR/art/icon.png" ] && beta_args+=(--icon "$APP_DIR/art/icon.png")
     ( cd "$APP_DIR" && python "$PACK_PY" \
         --export --build-palette --build-ids --emit-raw \
         --art-dir art --exported-dir art/exported \
         --packed-dir art/packed --output-dir art/packed --raw-dir art/packed \
-        --ids-output "src/${APP}_ids.h" --assets assets )
+        --ids-output "src/${APP}_ids.h" --assets assets "${beta_args[@]}" )
     raw_count=$(find "$APP_DIR/art/packed" -maxdepth 1 -name '*.raw' 2>/dev/null | wc -l)
     [ "$raw_count" -gt 0 ] || fail "packing produced no .raw assets in $APP_DIR/art/packed"
-    echo "    packed $raw_count .raw assets; ids -> src/${APP}_ids.h"
+    [ -f "$APP_DIR/index.bin" ] || fail "beta pack incomplete: index.bin missing — the simulator cannot load this app"
+    echo "    packed $raw_count .raw assets; index.bin ok; ids -> src/${APP}_ids.h"
 else
     echo "    (scripts/pack.py not found at $PACK_PY - skipping pack)" >&2
 fi
