@@ -250,3 +250,87 @@ def test_empty_gen_prompt_rejected(tmp_manifest, bad):
 def test_minimal_manifest_has_no_errors(tmp_manifest, minimal_manifest):
     errors = validate(load_manifest(tmp_manifest(minimal_manifest)))
     assert errors == []
+
+
+# ── color field (v2: full-color RAW565 sprites) ────────────────────────
+
+def test_fullcolor_sprite_accepted(tmp_manifest):
+    """color=full at native 240x240 with flags.fullsize (and no alpha) is valid."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "splash", "size": [240, 240], "description": "d",
+                     "color": "full", "flags": {"alpha": False, "fullsize": True}}],
+        "sounds": [],
+    }
+    m = load_manifest(tmp_manifest(data))
+    assert m.sprites[0].color == "full"
+    assert validate(m) == []
+
+
+def test_fullcolor_native_240_requires_fullsize(tmp_manifest):
+    """color=full at 240x240 WITHOUT flags.fullsize must be rejected with a fullsize hint."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "splash", "size": [240, 240], "description": "d",
+                     "color": "full", "flags": {"alpha": False}}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert any("fullsize" in e.lower() for e in errors)
+
+
+def test_fullcolor_rejects_alpha(tmp_manifest):
+    """RAW565 full-color sprites have no transparency; alpha must be rejected."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "splash", "size": [64, 64], "description": "d",
+                     "color": "full", "flags": {"alpha": True}}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert any("alpha" in e.lower() or "transparen" in e.lower() for e in errors)
+
+
+def test_fullcolor_small_without_fullsize_ok(tmp_manifest):
+    """A small opaque full-color sprite (no fullsize) draws at 2x like any other sprite."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "gem", "size": [64, 64], "description": "d",
+                     "color": "full", "flags": {"alpha": False}}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert errors == []
+
+
+def test_palette_sprite_still_capped_at_120(tmp_manifest):
+    """Existing behaviour preserved: default (palette) sprites cap at 120 per side."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [121, 121], "description": "d"}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert any("size" in e.lower() for e in errors)
+
+
+def test_color_defaults_to_palette(tmp_manifest):
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [32, 32], "description": "d"}],
+        "sounds": [],
+    }
+    m = load_manifest(tmp_manifest(data))
+    assert m.sprites[0].color == "palette"
+
+
+def test_color_invalid_value_rejected(tmp_manifest):
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [32, 32], "description": "d",
+                     "color": "rgb"}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert any("color" in e.lower() and ("palette" in e.lower() or "full" in e.lower())
+               for e in errors)

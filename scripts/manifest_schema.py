@@ -1,4 +1,19 @@
-"""Load and validate plans/<game>_assets.json (schema_version 1)."""
+"""Load and validate plans/<game>_assets.json (schema_version 1).
+
+Sprites support two color encodings, selected by the per-sprite `color`
+field:
+
+- "palette" (default): quantized-palette sprites, index 0 is transparent.
+  Authored at HALF resolution; the engine upscales x2 at draw time, so the
+  on-screen size is 2x the authored size. Max authored side is 120.
+- "full": full-color RAW565 sprites (RGB565, 2 bytes/texel). No
+  transparency support -- 0x0000 is opaque black, not transparent -- so
+  `flags.alpha` must not be set. With `flags.fullsize` the sprite draws
+  1:1 (no 2x upscale), so full-screen art is authored at native
+  resolution, up to 240 per side. Without `flags.fullsize`, a full-color
+  sprite still draws at 2x like any other sprite and is capped at 120,
+  same as palette sprites.
+"""
 from __future__ import annotations
 
 import json
@@ -15,7 +30,13 @@ RESERVED_NAMES = frozenset({
 # Sprites are authored at HALF resolution; the engine upscales them x2 at draw
 # time, so the on-screen size is 2x the authored size. A full-screen sprite is
 # authored at 120x120 (-> 240x240 on screen), which is the hard maximum.
+# This cap applies to "palette" sprites always, and to "full" (RAW565)
+# sprites unless flags.fullsize is set -- see SPRITE_MAX_SIDE_FULLSIZE.
 SPRITE_MAX_SIDE = 120
+# color="full" sprites with flags.fullsize draw 1:1 (no 2x upscale), so
+# full-screen full-color art is authored at native resolution, up to 240.
+SPRITE_MAX_SIDE_FULLSIZE = 240
+ALLOWED_SPRITE_COLORS = frozenset({"palette", "full"})
 SOUND_MAX_DURATION_MS = 2000
 SOUND_DEFAULT_DURATION_MS = 500
 ALLOWED_EVENT_TYPES = frozenset({
@@ -46,6 +67,7 @@ class Sprite:
     frame: int | None = None
     pivot: tuple[int, int] = (0, 0)
     flags: Flags = field(default_factory=Flags)
+    color: str = "palette"
 
 
 @dataclass(frozen=True)
@@ -90,6 +112,7 @@ def _parse_sprite(raw: dict) -> Sprite:
         frame=raw.get("frame"),
         pivot=(int(pivot[0]), int(pivot[1])),
         flags=_parse_flags(raw.get("flags")),
+        color=raw.get("color", "palette"),
     )
 
 
@@ -142,12 +165,36 @@ def validate(m: Manifest) -> list[str]:
         if s.name in RESERVED_NAMES:
             errors.append(f"sprite {s.name!r}: reserved name")
 
-        w, h = s.size
-        if not (1 <= w <= SPRITE_MAX_SIDE) or not (1 <= h <= SPRITE_MAX_SIDE):
+        if s.color not in ALLOWED_SPRITE_COLORS:
             errors.append(
-                f"sprite {s.name!r}: size {s.size} out of range "
-                f"(must be 1..{SPRITE_MAX_SIDE} per axis)"
+                f"sprite {s.name!r}: color {s.color!r} invalid "
+                f"(allowed: {sorted(ALLOWED_SPRITE_COLORS)})"
             )
+
+        if s.color == "full" and s.flags.alpha:
+            errors.append(
+                f"sprite {s.name!r}: color 'full' (RAW565) sprites have no "
+                f"transparency (0x0000 is opaque black, not transparent) -- "
+                f"clear flags.alpha, or use color 'palette' for transparency"
+            )
+
+        w, h = s.size
+        is_native_fullsize = s.color == "full" and s.flags.fullsize
+        max_side = SPRITE_MAX_SIDE_FULLSIZE if is_native_fullsize else SPRITE_MAX_SIDE
+        if not (1 <= w <= max_side) or not (1 <= h <= max_side):
+            if s.color == "full" and not s.flags.fullsize and (
+                w > SPRITE_MAX_SIDE or h > SPRITE_MAX_SIDE
+            ):
+                errors.append(
+                    f"sprite {s.name!r}: size {s.size} out of range -- "
+                    f"sides over {SPRITE_MAX_SIDE} need flags.fullsize "
+                    f"(draws 1:1) and color 'full'"
+                )
+            else:
+                errors.append(
+                    f"sprite {s.name!r}: size {s.size} out of range "
+                    f"(must be 1..{max_side} per axis)"
+                )
 
         if s.gen_prompt is not None and not (
             isinstance(s.gen_prompt, str) and s.gen_prompt.strip()
