@@ -203,6 +203,35 @@ def test_seq_chaining(emitted):
     assert static.seq == 0
 
 
+def test_seq_chaining_one_based_three_digit(tmp_path):
+    """Video-cut frame sets are named <base>_001.. (3-digit, one-based).
+    They must chain cyclically and get the BMP_<base>/_end aliases exactly
+    like zero-based _00 groups; a stray _05-only group must stay static."""
+    png = tmp_path / "f.png"
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(png)
+    app = tmp_path / "app_vid"
+    records = pack_beta.emit_beta_layout(
+        app, "app_vid",
+        full_sprites=[("clip_001", png, (8, 8), 0),
+                      ("clip_002", png, (8, 8), 0),
+                      ("clip_003", png, (8, 8), 0),
+                      ("stray_05", png, (8, 8), 0)],
+    )
+    ids = {name: i for i, (kind, name) in enumerate(records) if kind == KIND_SPRITE}
+    packed = _packed(app)
+    for cur, nxt in (("clip_001", "clip_002"), ("clip_002", "clip_003"),
+                     ("clip_003", "clip_001")):
+        hdr = parse_bmp_header((packed / f"{cur}.raw").read_bytes())
+        assert hdr.seq == ids[nxt], cur
+    stray = parse_bmp_header((packed / "stray_05.raw").read_bytes())
+    assert stray.seq == 0
+
+    text = (app / "src" / "app_vid_ids.h").read_text()
+    assert f"BMP_clip = {ids['clip_001']}" in text
+    assert f"BMP_clip_end = {ids['clip_003']}" in text
+    assert "BMP_stray =" not in text and "BMP_stray_end" not in text
+
+
 # ── full-color sprites ───────────────────────────────────────────────────────
 
 def test_full_sprite_headers(emitted):

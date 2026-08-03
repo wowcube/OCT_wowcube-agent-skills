@@ -416,8 +416,10 @@ _RE_SEQ_FRAME = re.compile(r"^(.+?)_(\d{2,})$")
 def _seq_frame_groups(names) -> dict[str, list[tuple[int, str]]]:
     """Group sprite names into animation sequences, sorted by frame number.
 
-    Only sequences that include frame 0 count (mirrors generate_app_ids_h);
-    a stray coin_05 without coin_00 stays a plain static sprite.
+    Only sequences that start at their natural base count: zero-based
+    (coin_00, mirrors generate_app_ids_h) or one-based (frame_001, the
+    convention video-cut frame sets use). A stray coin_05 without coin_00
+    or coin_01 stays a plain static sprite.
     """
     raw: dict[str, list[tuple[int, str]]] = {}
     for name in names:
@@ -426,7 +428,7 @@ def _seq_frame_groups(names) -> dict[str, list[tuple[int, str]]]:
             raw.setdefault(m.group(1), []).append((int(m.group(2)), name))
     return {base: sorted(members)
             for base, members in raw.items()
-            if any(num == 0 for num, _ in members)}
+            if min(num for num, _ in members) in (0, 1)}
 
 
 def _seq_chain(sprite_ids: dict[str, int]) -> dict[str, int]:
