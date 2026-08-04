@@ -12,8 +12,11 @@ utils.exe (from the app_hulk example).
 """
 from __future__ import annotations
 
+import argparse
 import re
 import struct
+import sys
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +29,27 @@ ASSETS_CAP = 2048               # oct_pack.h OCT_ASSETS_CAP
 EXT_MAX_DESCS = 512             # launcher sees only the first 512 descriptors
 INDEX_RECORD = struct.Struct("<i24s")
 BMP_SIZE = 48
+
+# .oct pack layout, mirrors engine/oct_pack.h (field offsets confirmed by
+# tests against a real simulator-built pack)
+OCT_HEADER_SIZE = 232           # sizeof(octPackHeader_t)
+OCT_DESC_SIZE = 84              # sizeof(octAssetDesc_t)
+OCT_PACK_MAGIC = bytes((0xCC, 0x00, 0x00, 0xBB))
+OCT_PACK_FORMAT_SUPPORTED = 4
+OCT_ENGINE_VERSION_CURRENT = 2
+SOFTWARE_NAME_MAXLEN = 80       # oct_consts.h OCT_SOFTWARE_NAME_MAXLEN
+
+# APP_CATEGORIES macro spellings (engine/oct_consts.h) so an app.h that says
+# `(APP_CATEGORY_GAME)` resolves without a C preprocessor
+_CATEGORY_MACROS = {
+    "OCT_CAT_LAUNCHER": 1 << 0, "OCT_CAT_CHARGER": 1 << 1,
+    "OCT_CAT_SCREENSAVER": 1 << 2, "OCT_CAT_SYSTEM": 1 << 3,
+    "OCT_CAT_GETSTARTED": 1 << 4, "OCT_CAT_SLEEP": 1 << 5,
+    "APP_CATEGORY_GAME": 0,
+    "APP_CATEGORY_LAUNCHER": 1 << 0, "APP_CATEGORY_CHARGER": 1 << 1,
+    "APP_CATEGORY_SCREENSAVER": 1 << 2, "APP_CATEGORY_SYSTEM": 1 << 3,
+    "APP_CATEGORY_GETSTARTED": 1 << 4, "APP_CATEGORY_SLEEP": 1 << 5,
+}
 
 OCT_FLAG_ALPHA = 1 << 0
 OCT_FLAG_FULLSIZE = 1 << 1
@@ -776,3 +800,280 @@ def emit_beta_layout(
     ids_file.write_text(generate_beta_ids_h(records), encoding="ascii")
 
     return records
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# .oct pack assembly (pure-python replacement for the simulator's
+# SIM_build_pack, octavios/sim/src/sim.h)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_c_int(token: str) -> int | None:
+    """Parse a C integer literal ('102', '0xDF...', with u/U/l/L suffixes)."""
+    m = re.fullmatch(r"(0[xX][0-9a-fA-F]+|\d+)[uUlL]*", token)
+    return int(m.group(1), 0) if m else None
+
+
+def _parse_int_expr(text: str, define: str) -> int:
+    """Evaluate a `#define` value that is an OR of int literals and the
+    APP_CATEGORY_*/OCT_CAT_* macros (the only expressions app.h files use).
+    Parens are transparent because `|` is the sole operator."""
+    total = 0
+    for term in text.replace("(", " ").replace(")", " ").split("|"):
+        term = term.strip()
+        if not term:
+            raise ValueError(f"{define}: empty term in '{text}'")
+        value = _parse_c_int(term)
+        if value is None:
+            value = _CATEGORY_MACROS.get(term)
+        if value is None:
+            raise ValueError(f"{define}: unknown token '{term}' in '{text}' - "
+                             f"use an integer or an APP_CATEGORY_*/OCT_CAT_* macro")
+        total |= value
+    return total
+
+
+def read_app_defines(app_h: str | Path) -> dict:
+    """Extract the pack-header defines from an app's src/app.h.
+
+    Returns only the keys actually present: title (str), guid1, app_version,
+    categories, colors (ints). Mirrors videopack.py's read_app_guid but for
+    the whole define set the pack header needs. Reads with utf-8-sig because
+    real app.h files carry a BOM.
+    """
+    text = Path(app_h).read_text(encoding="utf-8-sig")
+    out: dict = {}
+
+    def value_of(name: str) -> str | None:
+        m = re.search(rf"^\s*#\s*define\s+{name}\s+(.+)$", text, re.M)
+        if not m:
+            return None
+        return m.group(1).split("//", 1)[0].strip()
+
+    title = value_of("APP_TITLE")
+    if title is not None:
+        m = re.fullmatch(r'"((?:[^"\\]|\\.)*)"', title)
+        if not m:
+            raise ValueError(f"APP_TITLE is not a plain string literal: {title}")
+        out["title"] = m.group(1)
+
+    for define, key in (("APP_GUID1", "guid1"), ("APP_VERSION", "app_version"),
+                        ("APP_CATEGORIES", "categories"), ("APP_COLORS", "colors")):
+        raw = value_of(define)
+        if raw is not None:
+            out[key] = _parse_int_expr(raw, define)
+    return out
+
+
+def extract_gnu_build_id(elf: bytes) -> bytes | None:
+    """20-byte GNU build-id (NT_GNU_BUILD_ID) of a little-endian ELF32 image,
+    or None. Mirrors the sim's SIM_extract_gnu_build_id
+    (octavios/sim/src/oct_elf_build_id.h): malformed input yields None."""
+    if len(elf) < 52 or elf[:4] != b"\x7fELF" or elf[4] != 1 or elf[5] != 1:
+        return None
+    sh_off, = struct.unpack_from("<I", elf, 32)
+    sh_entsize, sh_num = struct.unpack_from("<HH", elf, 46)
+    if sh_num == 0 or sh_entsize < 40 or sh_off + sh_num * sh_entsize > len(elf):
+        return None
+    for i in range(sh_num):
+        shdr = sh_off + i * sh_entsize
+        if struct.unpack_from("<I", elf, shdr + 4)[0] != 7:    # SHT_NOTE
+            continue
+        note_off, = struct.unpack_from("<I", elf, shdr + 16)
+        note_size, = struct.unpack_from("<I", elf, shdr + 20)
+        note_end = note_off + note_size
+        if note_end > len(elf):
+            continue
+        pos = note_off
+        while pos + 12 <= note_end:
+            namesz, descsz, type_ = struct.unpack_from("<III", elf, pos)
+            name_at = pos + 12
+            desc_at = name_at + ((namesz + 3) & ~3)
+            nxt = desc_at + ((descsz + 3) & ~3)
+            if nxt > note_end:
+                break
+            if (namesz == 4 and type_ == 3 and descsz == 20
+                    and elf[name_at:name_at + 4] == b"GNU\0"):
+                return elf[desc_at:desc_at + 20]
+            pos = nxt
+    return None
+
+
+def _asset_payload_path(app_dir: Path, kind: int, name: str) -> Path:
+    if kind == KIND_SOUND:
+        return app_dir / "sound" / "assets" / f"{name}.mp3"
+    if kind == KIND_PAL:
+        return app_dir / "art" / "packed" / f"{name}.pal"
+    if kind in (KIND_SPRITE, KIND_MAP):
+        return app_dir / "art" / "packed" / f"{name}.raw"
+    raise ValueError(f"index.bin has unknown asset kind {kind} for '{name}'")
+
+
+def build_oct(app_dir: str | Path, code_bin: str | Path, out_path: str | Path,
+              *, title: str | None = None, guid1: int | None = None,
+              app_version: int | None = None, categories: int | None = None,
+              colors: int | None = None) -> Path:
+    """Assemble the cube-loadable .oct pack, byte-identical to the beta
+    simulator's SIM_build_pack except BuildDateTime (the sim stamps wall-clock
+    time; this builder pins 0 so the same inputs always produce the same
+    bytes).
+
+    Layout (engine/oct_pack.h): 232-byte octPackHeader_t, then one 84-byte
+    octAssetDesc_t per index.bin record (record index == asset id; sprite
+    descs embed the payload's leading octBmp_t so the engine can cull without
+    the disk), then the payloads 4-byte aligned in id order, then the ARM
+    code as the final chunk. CRC32 over bytes 8..Size lands at offset 4.
+    BuildId is the GNU build-id of the ELF sitting next to `code_bin`
+    (out/<app>.elf), zeros when absent - same telemetry contract as the sim.
+
+    `title`/`guid1`/`app_version`/`categories`/`colors` fall back to the
+    APP_* defines in <app_dir>/src/app.h when omitted; guid1 and app_version
+    have no safe default, so missing both ways raises ValueError.
+    """
+    app_dir = Path(app_dir)
+    code_bin = Path(code_bin)
+    out_path = Path(out_path)
+
+    index_path = app_dir / "index.bin"
+    if not index_path.is_file():
+        raise ValueError(f"no {index_path} - pack the assets first")
+    records = read_index_bin(index_path)
+    if not records:
+        raise ValueError(f"{index_path} holds no assets")
+    if len(records) > ASSETS_CAP:
+        raise ValueError(f"{index_path} claims {len(records)} assets, "
+                         f"over OCT_ASSETS_CAP ({ASSETS_CAP})")
+
+    if None in (title, guid1, app_version, categories, colors):
+        app_h = app_dir / "src" / "app.h"
+        defines = read_app_defines(app_h) if app_h.is_file() else {}
+        if title is None:
+            # the sim compiles without APP_TITLE too (catalog falls back to
+            # the pack name), so an absent define is a zero title, not an error
+            title = defines.get("title", "")
+        if guid1 is None:
+            guid1 = defines.get("guid1")
+            if guid1 is None:
+                raise ValueError(f"no APP_GUID1 in {app_h} and no guid1 given")
+        if app_version is None:
+            app_version = defines.get("app_version")
+            if app_version is None:
+                raise ValueError(f"no APP_VERSION in {app_h} and no app_version given")
+        if categories is None:
+            categories = defines.get("categories", 0)
+        if colors is None:
+            colors = defines.get("colors", 0)
+
+    if not code_bin.is_file():
+        raise ValueError(f"ARM module not found: {code_bin} - build it first "
+                         f"(cmake -G Ninja -S <octavios>/apps -B out && cmake --build out)")
+    code = code_bin.read_bytes()
+    if not code:
+        raise ValueError(f"{code_bin} is empty - the ARM build produced no code")
+
+    # ── descriptor table + payloads, id order, 4-byte aligned ───────────────
+    descs = bytearray(OCT_DESC_SIZE * len(records))
+    payloads = bytearray()
+    cursor = (OCT_HEADER_SIZE + len(descs) + 3) & ~3
+    for i, (kind, name) in enumerate(records):
+        src = _asset_payload_path(app_dir, kind, name)
+        if not src.is_file():
+            raise ValueError(f"asset '{name}' (id {i}): no payload at {src}")
+        payload = src.read_bytes()
+        if not payload:
+            raise ValueError(f"asset '{name}' (id {i}): {src} is empty")
+
+        desc_off = i * OCT_DESC_SIZE
+        descs[desc_off:desc_off + len(name)] = name.encode("ascii")
+        struct.pack_into("<II", descs, desc_off + 24, cursor, len(payload))
+        descs[desc_off + 32] = kind                 # Flags/ExtId/Reserved stay 0
+        if kind == KIND_SPRITE:
+            # the sim memcpys sizeof(octBmp_t) from its zeroed pack buffer,
+            # so a shorter payload embeds zero-padded - mirror that
+            bmp = payload[:BMP_SIZE].ljust(BMP_SIZE, b"\0")
+            descs[desc_off + 36:desc_off + 36 + BMP_SIZE] = bmp
+
+        padding = (-len(payload)) & 3
+        payloads += payload + b"\0" * padding
+        cursor += len(payload) + padding
+
+    code_offset = cursor
+    total = code_offset + len(code)
+
+    # ── octPackHeader_t ──────────────────────────────────────────────────────
+    header = bytearray(OCT_HEADER_SIZE)
+    header[0:4] = OCT_PACK_MAGIC
+    struct.pack_into("<I", header, 8, OCT_PACK_FORMAT_SUPPORTED)
+    struct.pack_into("<Q", header, 16, guid1)
+    struct.pack_into("<I", header, 32, app_version)
+    struct.pack_into("<I", header, 36, OCT_ENGINE_VERSION_CURRENT)
+    struct.pack_into("<I", header, 44, categories)
+    # BuildDateTime (offset 48) stays 0: deterministic output, unlike the sim
+    struct.pack_into("<I", header, 52, total)
+    encoded_title = title.encode("utf-8")[:SOFTWARE_NAME_MAXLEN - 1]
+    header[56:56 + len(encoded_title)] = encoded_title
+    struct.pack_into("<I", header, 136, colors)
+    struct.pack_into("<II", header, 140, code_offset, len(code))
+    struct.pack_into("<II", header, 148, OCT_HEADER_SIZE, len(records))
+    # SoundDescs mirrors AssetDescs, SoundCount 0: one unified table, sounds
+    # are found by Kind (see SIM_build_pack)
+    struct.pack_into("<II", header, 156, OCT_HEADER_SIZE, 0)
+
+    elf_path = code_bin.with_suffix(".elf")
+    if elf_path.is_file():
+        build_id = extract_gnu_build_id(elf_path.read_bytes())
+        if build_id:
+            header[164:184] = build_id
+
+    pack = bytearray(total)
+    pack[0:OCT_HEADER_SIZE] = header
+    pack[OCT_HEADER_SIZE:OCT_HEADER_SIZE + len(descs)] = descs
+    payload_offset = (OCT_HEADER_SIZE + len(descs) + 3) & ~3
+    pack[payload_offset:payload_offset + len(payloads)] = payloads
+    pack[code_offset:total] = code
+    struct.pack_into("<I", pack, 4, zlib.crc32(bytes(pack[8:total])) & 0xFFFFFFFF)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_bytes(pack)
+    return out_path
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="beta asset-container tools (see module docstring)")
+    parser.add_argument("--build-oct", action="store_true", required=True,
+                        help="assemble the cube-loadable .oct from a packed app dir")
+    parser.add_argument("--app-dir", required=True, type=Path,
+                        help="app folder holding index.bin, art/packed, sound/assets")
+    parser.add_argument("--code", required=True, type=Path,
+                        help="ARM module binary, out/<app>.bin")
+    parser.add_argument("--out", required=True, type=Path,
+                        help="destination .oct path")
+    parser.add_argument("--title", help="pack title (default: APP_TITLE from src/app.h)")
+    parser.add_argument("--guid", help="pack Guid1 (default: APP_GUID1 from src/app.h)")
+    parser.add_argument("--version", type=int,
+                        help="app version (default: APP_VERSION from src/app.h)")
+    parser.add_argument("--categories", type=lambda s: int(s, 0),
+                        help="category bitmask (default: APP_CATEGORIES from src/app.h)")
+    parser.add_argument("--colors", type=lambda s: int(s, 0),
+                        help="Colors field (default: APP_COLORS from src/app.h)")
+    args = parser.parse_args(argv)
+
+    try:
+        path = build_oct(args.app_dir, args.code, args.out,
+                         title=args.title,
+                         guid1=int(args.guid, 0) if args.guid else None,
+                         app_version=args.version,
+                         categories=args.categories,
+                         colors=args.colors)
+    except (ValueError, OSError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    size = path.stat().st_size
+    code_size = Path(args.code).stat().st_size
+    print(f"{path}: {size} bytes (assets + {code_size} bytes ARM code)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
