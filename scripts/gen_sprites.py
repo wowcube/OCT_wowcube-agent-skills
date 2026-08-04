@@ -1,11 +1,9 @@
 """AI sprite generator for cube_asset-builder.
 
 Turns each sprite's `gen_prompt` (written by `technical_prompter`) into a PNG
-via the OpenRouter image model in `genimg.py`. This is the AI counterpart to
-the deterministic `gen_placeholders.py`: same `generate(...)` interface, but the
-pixels come from the model instead of procedural shapes.
+via the OpenRouter image model in `genimg.py`.
 
-Unlike placeholders, AI output is NOT deterministic across runs.
+AI output is NOT deterministic across runs.
 """
 from __future__ import annotations
 
@@ -15,11 +13,18 @@ from pathlib import Path
 
 from PIL import Image
 
-from manifest_schema import Manifest, load_manifest
-# `_derived_group` is the canonical group-derivation helper; reuse it so the
-# AI and placeholder paths group sprites identically.
-from gen_placeholders import _derived_group
+from manifest_schema import Manifest, Sprite, load_manifest
 import genimg
+
+
+def _derived_group(s: Sprite) -> str:
+    """Explicit group wins; otherwise strip a trailing _NN suffix."""
+    if s.group:
+        return s.group
+    n = s.name
+    if len(n) >= 3 and n[-3] == "_" and n[-2:].isdigit():
+        return n[:-3]
+    return n
 
 
 def _write_zero_png(out_dir: Path) -> None:
