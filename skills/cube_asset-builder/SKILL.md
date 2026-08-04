@@ -113,7 +113,7 @@ requests — those are owned by `cube_orchestrator`, which routes here as Stage 
 |------|--------|----------|
 | `plans/<game>/<game>_assets.json` OR `plans/<game>_assets.json` | `technical_prompter` | Yes |
 | A non-empty `gen_prompt` on every sprite in the manifest | `technical_prompter` (Step 4a) | Yes |
-| `build_psd.py` (at repo root, its `scripts/`, or next to scripts/) | Project | Yes |
+| `build_psd.py` (at repo root, its `scripts/`, or next to scripts/) — internal: the pack stage uses it to atlas the sprite PNGs into a throwaway `assets.psd`; no hand-authored PSD is ever needed | Project | Yes |
 | `pack.py` (at repo root, its `scripts/`, or next to scripts/) | Project | Yes |
 | `Pillow`, `numpy`, `requests`, `pytoshop`, `psd-tools` | `pip install` | Yes |
 | `OPENROUTER_API_KEY` environment variable | User (OpenRouter account) | Yes (generate stage) |
@@ -231,6 +231,42 @@ exit cleanly instead of erroring on a missing `pal.png`); the pre-made sprite
 PNGs must already sit in `--exported-dir` (default `exported/`) since there's
 no `--export` step to populate it.
 
+**Palette sprites from PNGs need NO hand-authored PSD — and no PSD knowledge
+at all.** The pack stage reads one `<name>.png` per manifest sprite from
+`<workspace>/art/` (default `assets/art/` — the same folder the `generate`
+stage writes into; PNGs made or edited outside the generate stage go there
+too: RGBA, transparent background, sized to the manifest `size`). The driver
+then atlases those PNGs into a throwaway `assets.psd` internally
+(`build_psd.py` — this is the only reason `pytoshop` is a dependency) and
+packs from its export; nothing is ever authored in Photoshop. So the
+`build_pipeline.py pack` command at the top of this step **is** the complete,
+canonical palette invocation — run it from the workspace root (every path it
+takes is cwd-relative), copy-pasteable form:
+
+```
+python OCT_wowcube-agent-skills/scripts/build_pipeline.py \
+    pack --game <game> --workspace assets --src-dir src \
+    --app-dir app_<game> --manifest plans/<game>_assets.json
+```
+
+The equivalent direct `pack.py` call — mirroring the full-color-only recipe
+above, for when the PNGs already sit in an exported dir — keeps
+`--build-palette` and drops `--export`:
+
+```
+python scripts/pack.py --build-palette --build-ids \
+    --exported-dir <png-dir> --packed-dir <out> --output-dir <out> \
+    --assets assets --ids-output <out>/ids.h \
+    --beta-app-dir <app-dir> --app-name app_<game> \
+    --manifest plans/<game>_assets.json --icon <icon.png>
+```
+
+**Never add `--export` to a PNG-only invocation.** `--export` means "rebuild
+the exported dir from `--art-dir` PSD/FNT *sources*" — it deletes every
+pre-placed PNG in `--exported-dir` first (it warns loudly and the pack then
+fails with exit 1, but the PNGs are already gone). Use `--export` only for
+PSD-authored art such as the template's `assets.psd`.
+
 On success the driver prints:
 - Path to `assets/packed/pal.png` and the packed PNGs (legacy intermediates).
 - Count of `assets/packed/*.raw` — the decoded-RGBA asset bitmaps (emitted by
@@ -296,6 +332,7 @@ approved.
 | mp3 encode failed (`rc=7`) | The mp3 encode is attempted whenever `ffmpeg` is on PATH — even without `--mp3` — and `--mp3` additionally forces the encode when `ffmpeg` is missing (a hard error instead of a skip). Either way, `rc=7` means `ffmpeg` was found but the encode itself errored — relay stderr. Install/repair `ffmpeg` via `winget install Gyan.FFmpeg` (Windows) or the distro package (Linux), or drop pre-encoded mp3s straight into `sound/assets/` and retry. |
 | `ffmpeg not found` (no `rc=7`, mp3s just silently absent) | Without `--mp3`, a missing `ffmpeg` degrades the `generate` stage to WAV-only instead of failing. If beta mp3s are needed, install `ffmpeg` (`winget install Gyan.FFmpeg` on Windows) or supply pre-encoded mp3 files in `sound/assets/` before packing. |
 | `build_psd.py` failure during pack | Show the failing filename from stderr. Ask the user to inspect `assets/art/<name>.png`. |
+| `pack.py` exit 1: `no palette groups exist, but N PNG(s) need packing` | The exported dir held no sprites when the palette build ran. Almost always: `--export` was passed on a plain-PNG workflow and deleted the pre-placed PNGs (the export phase prints a `WARNING: --export cleaned ...` line when this happens). Restore the PNGs and re-run without `--export` — or use `build_pipeline.py pack` with the PNGs in `<workspace>/art/`, which never needs `--export` by hand. |
 | `pack.py` palette overflow | Suggest `--target-colors 64`; the driver currently uses default grouped palette — add the flag if this becomes common. |
 | Empty `_ids.h` after pack | Likely `build_psd.py` produced an empty PSD. Diagnose by listing `assets/exported/` contents. |
 | `index.bin` missing after pack | The pack command omitted `--app-dir` (which maps to `pack.py --beta-app-dir`) — only the legacy `assets/packed/` intermediates were produced. Re-run `build_pipeline.py pack` with `--app-dir <workspace>/app_<game>` (or invoke `pack.py` directly with `--beta-app-dir <app-dir> --app-name app_<game>`). |

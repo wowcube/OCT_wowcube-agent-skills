@@ -339,3 +339,27 @@ plans/<game>_assets.json` if any sprite uses `color: "full"` (so it gets
 RAW565-encoded instead of run through the palette codec) or carries flags
 like `fullsize` (so they reach the packed palette-sprite header). Identical on Windows
 and Linux — Python only, no `.exe`/`.bat`/Wine.
+
+**Packing plain-PNG palette sprites by hand (no PSD): drop `--export`, keep
+`--build-palette`.** `--export` exists solely to regenerate the exported dir
+from PSD/FNT *sources* in `--art-dir` — as its first act it DELETES every
+pre-placed PNG in `--exported-dir` (it warns loudly and the pack then fails
+with exit 1, but the PNGs are already gone). If your sprites are plain PNGs
+(the AI-asset workflow — nothing was ever authored in Photoshop), put one
+`<name>.png` per sprite in `--exported-dir` and run the same command WITHOUT
+`--export`:
+
+```bash
+python <workspace>/OCT_wowcube-agent-skills/scripts/pack.py \
+    --build-palette --build-ids \
+    --art-dir art --exported-dir art/exported \
+    --packed-dir art/packed --output-dir art/packed \
+    --ids-output src/app_<game>_ids.h --assets assets \
+    --beta-app-dir . --app-name app_<game> \
+    --manifest plans/<game>_assets.json --icon art/icon.png
+```
+
+(That said, the normal PNG route is not this manual command at all — it is
+`build_pipeline.py pack`, which takes the PNGs from `<workspace>/art/`,
+atlases them into a throwaway PSD internally, and runs `pack.py` itself; see
+`cube_asset-builder` Step 4.)
