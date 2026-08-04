@@ -2,13 +2,17 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import shutil
 import struct
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from manifest_schema import load_manifest
-from gen_sounds import generate, render_wav_bytes
+import gen_sounds
+from gen_sounds import FFMPEG_MISSING_MSG, encode_beta_mp3, generate, render_wav_bytes
 
 
 # ── Pure-Python WAV synthesis (no ffmpeg) ─────────────────────────────
@@ -61,6 +65,63 @@ def test_generate_determinism_between_runs(tmp_manifest, minimal_manifest, tmp_p
     h1 = hashlib.md5((a / "sfx_coin.wav").read_bytes()).hexdigest()
     h2 = hashlib.md5((b / "sfx_coin.wav").read_bytes()).hexdigest()
     assert h1 == h2
+
+
+def _write_test_wav(path: Path) -> Path:
+    """Write a tiny synthesised WAV to `path` for encoder tests."""
+    data = render_wav_bytes(group="ui", name="blip", event_type="ui", duration_ms=120)
+    path.write_bytes(data)
+    return path
+
+
+# ── Beta mp3 encoding (22050 Hz mono CBR 32k, no Xing, no metadata) ───
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_encode_beta_mp3_writes_playable_mp3(tmp_path):
+    wav = tmp_path / "blip.wav"
+    _write_test_wav(wav)
+
+    out = encode_beta_mp3(wav, tmp_path / "assets")
+
+    assert out == tmp_path / "assets" / "blip.mp3"
+    assert out.exists()
+    assert out.stat().st_size > 0
+
+    if shutil.which("ffprobe") is None:
+        return
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", str(out)],
+        capture_output=True, text=True, check=True,
+    )
+    stream = json.loads(probe.stdout)["streams"][0]
+    assert int(stream["sample_rate"]) == 22050
+    assert int(stream["channels"]) == 1
+
+
+def test_encode_beta_mp3_missing_ffmpeg_raises(tmp_path, monkeypatch):
+    wav = tmp_path / "blip.wav"
+    _write_test_wav(wav)
+
+    monkeypatch.setattr(gen_sounds.shutil, "which", lambda name: None)
+
+    with pytest.raises(RuntimeError, match=r"ffmpeg is required"):
+        encode_beta_mp3(wav, tmp_path / "assets")
+
+
+def test_generate_wav_only_does_not_require_ffmpeg(tmp_manifest, minimal_manifest, tmp_path, monkeypatch):
+    """encode_mp3=False (the default) must never touch ffmpeg."""
+    monkeypatch.setattr(gen_sounds.shutil, "which", lambda name: None)
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("subprocess.run must not be called when encode_mp3=False")
+    monkeypatch.setattr(gen_sounds.subprocess, "run", _boom)
+
+    m = load_manifest(tmp_manifest(minimal_manifest))
+    out = tmp_path / "wav"
+    written = generate(m, out)
+    assert (out / "sfx_coin.wav").exists()
+    assert written == [out / "sfx_coin.wav"]
+    assert not (out / "assets").exists()
 
 
 def test_generate_group_filter(tmp_manifest, tmp_path):

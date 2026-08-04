@@ -4,8 +4,9 @@
 
 #include "app_ai_template_ids.h"
 
-#define APP_PNG "..\\art\\packed"
-#define APP_SND "..\\sound"
+//When defined, binds the per-pixel procedural callback (on_proc_draw) in both
+//the simulator and the ARM module
+///#define APP_HAS_PROC_DRAW
 
 #define OCT_PLANES_MAX 6 // max planes on the cube
 #define OCT_QUADS_AT_PLANE 4 // max quads per plane
@@ -36,8 +37,12 @@
 //   (int8_t, int16_t, int32_t, uint8_t, uint16_t,
 //   uint32_t, size_t, etc.). Never use plain int, short, long.
 // * ALWAYS copy the project header structure.
-// * ALWAYS copy all handler functions (on_init, on_tick,
-//   on_tap, on_twisted, on_pretwisted) into the output.
+// * ALWAYS copy all handler functions (on_init, on_tick, on_tap,
+//   on_twisted, on_pretwisted, on_shake, on_proc_draw) into the output.
+//   All seven are mandatory: on_shake must exist or the ARM module fails
+//   to link; on_proc_draw must exist as a stub even when unused (the
+//   simulator binds it unconditionally, so the SIM build fails without
+//   it -- the ARM module only references it under APP_HAS_PROC_DRAW).
 // * Write modular, readable code: extract game state into
 //   structs, split logic into small focused functions,
 //   use named constants instead of magic numbers.
@@ -499,7 +504,7 @@ void initDemo5(void) {
 
     // Short: OCT_BMP_info fills an octBmpInfo_t structure with bitmap metadata (size, pivot, bounding box, etc.).
     // Declaration: void OCT_BMP_info(uint32_t bmp_idx, octBmpInfo_t* info);
-    // Comment: octBmpInfo_t fields: Name[24], W, H (screen pixels), PivotX, PivotY, Bx, By, Bw, Bh (bounding geometry), NumPixels, Tags, Number, Group, Type.
+    // Comment: octBmpInfo_t fields: Name[24], W, H (screen pixels), PivotX, PivotY, Bx, By, Bw, Bh (bounding geometry), Tags, Number, Group, Type.
     // Comment: Can be called at any time with any valid BMP index; does not require a sprite to exist.
     octBmpInfo_t info;
     OCT_BMP_info((uint32_t)BMP_001, &info);
@@ -508,8 +513,8 @@ void initDemo5(void) {
     // Declaration: void OCT_text(int string_index, const char* format, ...);
     // Comment: string_index is a slot in a fixed array of DEBUG_STRINGS (10) lines. An in-range index [0; 10) overwrites that slot directly (use for a stable line refreshed each tick); any out-of-range index (e.g. -1) appends in log mode, scrolling older lines toward higher slots.
     // Comment: lines whose text starts with '.' are pinned and do not scroll. Same no-%f rule as OCT_trace (variadic, double poisoned on ARM) - print floats via OCT_F_INT/OCT_F_FRAC.
-    OCT_text(-1, "Demo5 init BMP_001: name=%s W=%d H=%d pivotX=%d.%03d pivotY=%d.%03d numPixels=%d\n",
-        info.Name, (int32_t)info.W, (int32_t)info.H, OCT_F_INT(info.PivotX), OCT_F_FRAC(info.PivotX), OCT_F_INT(info.PivotY), OCT_F_FRAC(info.PivotY), info.NumPixels);
+    OCT_text(-1, "Demo5 init BMP_001: name=%s W=%d H=%d pivotX=%d.%03d pivotY=%d.%03d\n",
+        info.Name, (int32_t)info.W, (int32_t)info.H, OCT_F_INT(info.PivotX), OCT_F_FRAC(info.PivotX), OCT_F_INT(info.PivotY), OCT_F_FRAC(info.PivotY));
 }
 
 // Demo: do not copy-paste this code
@@ -780,10 +785,14 @@ OCT_CALLBACK void on_twisted(int32_t twid, uint32_t disconnected_ms) {
 }
 
 
-OCT_CALLBACK void on_tap(int32_t tapid) {
+OCT_CALLBACK void on_tap(int32_t tapid, int32_t count) {
     // API info
     // on_tap is called when the user taps on a plane.
     // Use it to handle user interactions, e.g., select objects or trigger actions.
+    // tapid  - the plane index (0..5) that was tapped
+    // count  - tap-series counter: 1 for a single tap, 2 for the second tap
+    //          in a quick series (within 500 ms), and so on
+    (void)count;
 
     // API info
     {
@@ -854,4 +863,21 @@ OCT_CALLBACK void on_tick() {
     }
 
     vars.tick++;
+}
+
+
+OCT_CALLBACK void on_shake(int32_t shakeid) {
+    // on_shake fires when the cube is shaken. NOTE: in the current beta the
+    // engine always runs the system default (animated go-home) and does NOT
+    // route shakes here — but the symbol MUST exist or the ARM module fails
+    // to link (octavios/apps/src/app_module.cpp references it).
+    (void)shakeid;
+}
+
+
+//Enable the APP_HAS_PROC_DRAW define (top of this file) to use procedural sprites
+OCT_CALLBACK void on_proc_draw(uint16_t* back, int idx, float x, float y, int angle, int vid, int reserved) {
+    // Per-pixel procedural drawing callback. Only bound when APP_HAS_PROC_DRAW
+    // is defined; keep the stub otherwise.
+    (void)back; (void)idx; (void)x; (void)y; (void)angle; (void)vid; (void)reserved;
 }

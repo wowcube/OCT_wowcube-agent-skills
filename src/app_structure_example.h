@@ -2,10 +2,7 @@
 #include "oct_api.h"
 #include "oct_consts.h"
 
-#include "app_test_ids.h"
-
-#define APP_PNG "..\\art\\packed"
-#define APP_SND "..\\sound"
+#include "app_ai_template_ids.h" // renamed to app_<game>_ids.h by the scaffolder token pass
 
 #define OCT_PLANES_MAX 6 // max planes on cube
 #define OCT_QUADS_AT_PLANE 4 // max quads at plane
@@ -62,10 +59,28 @@ OCT_CALLBACK void on_twisted(int32_t twid, uint32_t disconnected_ms) {
 }
 
 
-OCT_CALLBACK void on_tap(int32_t tapid) {
+OCT_CALLBACK void on_tap(int32_t tapid, int32_t count) {
+    (void)tapid; (void)count;
 }
 
 
 OCT_CALLBACK void on_tick() {
 
+}
+
+
+OCT_CALLBACK void on_shake(int32_t shakeid) {
+    // on_shake fires when the cube is shaken. NOTE: in the current beta the
+    // engine always runs the system default (animated go-home) and does NOT
+    // route shakes here — but the symbol MUST exist or the ARM module fails
+    // to link (octavios/apps/src/app_module.cpp references it).
+    (void)shakeid;
+}
+
+
+//Enable the APP_HAS_PROC_DRAW define (top of this file) to use procedural sprites
+OCT_CALLBACK void on_proc_draw(uint16_t* back, int idx, float x, float y, int angle, int vid, int reserved) {
+    // Per-pixel procedural drawing callback. Only bound when APP_HAS_PROC_DRAW
+    // is defined; keep the stub otherwise.
+    (void)back; (void)idx; (void)x; (void)y; (void)angle; (void)vid; (void)reserved;
 }

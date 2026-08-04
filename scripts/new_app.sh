@@ -10,8 +10,9 @@
 #   1. Copy templates/app_ai_template -> <workspace>/app_<name>
 #   2. Rename the .target marker and the game/ids headers to app_<name>*
 #   3. Replace every name-bearing reference (app.h, app_<name>.h)
-#   4. Guarantee app.h defines APP_VERSION (template omits it -> sim won't compile)
-#   5. Pack art assets (the shared scripts/pack.py --emit-raw); _ids.h -> src/
+#   4. Guarantee the full beta define set in app.h (APP_VERSION, APP_TITLE,
+#      APP_GUID1 randomized, APP_CATEGORIES, APP_COLORS)
+#   5. Pack art assets (the shared scripts/pack.py, beta container); _ids.h -> src/
 #   6. Configure + build the simulator via CMake -> app_<name>/build-sim/octavios_sim
 #   7. (optional) launch it briefly to confirm it does not crash on start
 #
@@ -87,25 +88,66 @@ find "$APP_DIR" -type f \( -name '*.h' -o -name '*.txt' \) -print0 | while IFS= 
     grep -q "$TOKEN" "$f" && sed -i "s/${TOKEN}/${APP}/g" "$f"
 done
 
-# --- 4. Guarantee APP_VERSION in app.h (template omits it) ----------------
+# --- 4. Guarantee the full beta define set in app.h ------------------------
 APP_H="$APP_DIR/src/app.h"
 [ -f "$APP_H" ] || fail "expected $APP_H after clone"
-if ! grep -q 'APP_VERSION' "$APP_H"; then
-    step "Adding missing APP_VERSION to src/app.h"
-    sed -i '/^[[:space:]]*#include[[:space:]]\+"app_/a #define APP_VERSION 100 //v1.00' "$APP_H"
+
+# Random non-zero 64-bit GUID for this app
+guid="0x$(od -An -tx8 -N8 /dev/urandom | tr -d ' ' | tr 'a-f' 'A-F')ULL"
+
+# Replace the template's zero GUID placeholder if present
+if grep -q '0x0000000000000000ULL' "$APP_H"; then
+    sed -i "s/0x0000000000000000ULL/${guid}/" "$APP_H"
+    step "Set APP_GUID1 = ${guid}"
+fi
+
+missing_names=(); missing_defs=()
+check_define() { # $1=name $2=full define line
+    grep -q "define[[:space:]]\+$1" "$APP_H" || { missing_names+=("$1"); missing_defs+=("$2"); }
+}
+check_define APP_VERSION    '#define APP_VERSION 100 //v1.00'
+check_define APP_TITLE      "#define APP_TITLE \"${APP}\""
+check_define APP_GUID1      "#define APP_GUID1 ${guid}"
+check_define APP_CATEGORIES '#define APP_CATEGORIES (APP_CATEGORY_GAME)'
+check_define APP_COLORS     '#define APP_COLORS 0x00000000'
+
+if [ "${#missing_defs[@]}" -gt 0 ]; then
+    names_csv=""
+    for n in "${missing_names[@]}"; do
+        [ -z "$names_csv" ] && names_csv="$n" || names_csv="$names_csv, $n"
+    done
+    step "Adding missing defines to src/app.h: ${names_csv}"
+    # Build a single multi-line sed 'a' block so all missing defines land in
+    # one place, in forward ($missing_defs) order -- mirrors new_app.ps1.
+    sed_script="/#include \"app_/a\\"
+    for d in "${missing_defs[@]}"; do
+        sed_script="${sed_script}
+${d}\\"
+    done
+    sed_script="${sed_script%\\}"
+    sed -i "$sed_script" "$APP_H"
 fi
 
 # --- 5. Pack assets (pure-Python packer; same on Windows and Linux) -------
 if [ -f "$PACK_PY" ]; then
-    step "Packing assets (pack.py --emit-raw)"
+    step "Packing assets (pack.py beta container)"
+    # Beta container args: pack.py emits <APP_DIR>/index.bin,
+    # art/packed/*.{raw,pal} and the kind-aware src/<app>_ids.h. No manifest
+    # exists at scaffold time (full-color sprites come later); the launcher
+    # icon ships with the template at art/icon.png. The legacy --emit-raw
+    # phase is deliberately NOT passed: the beta sim doesn't read legacy
+    # .raw files, and --beta-app-dir writes beta-format .raw into art/packed.
+    beta_args=(--beta-app-dir "$APP_DIR" --app-name "$APP")
+    [ -f "$APP_DIR/art/icon.png" ] && beta_args+=(--icon "$APP_DIR/art/icon.png")
     ( cd "$APP_DIR" && python "$PACK_PY" \
-        --export --build-palette --build-ids --emit-raw \
+        --export --build-palette --build-ids \
         --art-dir art --exported-dir art/exported \
-        --packed-dir art/packed --output-dir art/packed --raw-dir art/packed \
-        --ids-output "src/${APP}_ids.h" --assets assets )
+        --packed-dir art/packed --output-dir art/packed \
+        --ids-output "src/${APP}_ids.h" --assets assets "${beta_args[@]}" )
     raw_count=$(find "$APP_DIR/art/packed" -maxdepth 1 -name '*.raw' 2>/dev/null | wc -l)
     [ "$raw_count" -gt 0 ] || fail "packing produced no .raw assets in $APP_DIR/art/packed"
-    echo "    packed $raw_count .raw assets; ids -> src/${APP}_ids.h"
+    [ -f "$APP_DIR/index.bin" ] || fail "beta pack incomplete: index.bin missing — the simulator cannot load this app"
+    echo "    packed $raw_count .raw assets; index.bin ok; ids -> src/${APP}_ids.h"
 else
     echo "    (scripts/pack.py not found at $PACK_PY - skipping pack)" >&2
 fi

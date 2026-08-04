@@ -46,7 +46,8 @@ $MSVC_ARGS = '--passive --wait --add Microsoft.VisualStudio.Workload.VCTools ' +
 $TOOLS = @(
     @{ Name = 'arm-none-eabi-gcc'; Pkg = 'ARM.GnuArmEmbeddedToolchain'; Purpose = 'ARM device compile (.bin for .oct)' },
     @{ Name = 'cmake';             Pkg = 'Kitware.CMake';               Purpose = 'device build generator' },
-    @{ Name = 'ninja';             Pkg = 'Ninja-build.Ninja';           Purpose = 'device build backend' }
+    @{ Name = 'ninja';             Pkg = 'Ninja-build.Ninja';           Purpose = 'device build backend' },
+    @{ Name = 'ffmpeg';            Pkg = 'Gyan.FFmpeg';                 Purpose = 'sound encode (22050 Hz mono mp3 for sound/assets)' }
 )
 
 Step "Checking WowCube toolchain"

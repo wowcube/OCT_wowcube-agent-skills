@@ -111,8 +111,20 @@ def do_generate(args: argparse.Namespace) -> int:
         print(f"ERROR: sprite generation failed: {e}", file=sys.stderr)
         return 6
 
-    print(f"Generating sounds     -> {wav_dir}")
-    wav_paths = gen_sounds.generate(manifest, wav_dir, group=args.group)
+    # beta mp3s (22050 Hz mono CBR 32k) are what the beta simulator actually
+    # loads; encode them whenever ffmpeg is around, or unconditionally when
+    # --mp3 forces it (then a missing ffmpeg is a hard error, not a skip)
+    want_mp3 = args.mp3 or shutil.which("ffmpeg") is not None
+    mp3_note = f" (+ mp3 -> {wav_dir / 'assets'})" if want_mp3 else ""
+    print(f"Generating sounds     -> {wav_dir}{mp3_note}")
+    try:
+        wav_paths = gen_sounds.generate(manifest, wav_dir, group=args.group,
+                                        encode_mp3=want_mp3)
+    except (RuntimeError, subprocess.CalledProcessError) as e:
+        # RuntimeError = ffmpeg missing; CalledProcessError = ffmpeg present
+        # but the mp3 encode itself failed. Same exit either way.
+        print(f"ERROR: sound encoding failed: {e}", file=sys.stderr)
+        return 7
 
     groups: set[str] = set()
     for s in manifest.sprites:
@@ -164,7 +176,7 @@ def do_pack(args: argparse.Namespace) -> int:
         return rc
 
     print("=== Stage: pack ===")
-    rc = _run([
+    pack_cmd = [
         sys.executable, str(pack_py),
         "--export",
         "--build-palette",
@@ -177,7 +189,30 @@ def do_pack(args: argparse.Namespace) -> int:
         "--raw-dir", str(packed_dir),
         "--ids-output", str(ids_path),
         "--assets", "assets",
-    ])
+    ]
+    if args.app_dir:
+        app_dir = Path(args.app_dir)
+        # the beta simulator loads sounds ONLY from <app_dir>/sound/assets/;
+        # the generate stage encodes its beta mp3s into <workspace>/wav/assets/
+        # (it doesn't know the app dir), so carry them over BEFORE pack.py
+        # scans the app dir for KIND_SOUND records
+        wav_assets = workspace / "wav" / "assets"
+        mp3s = sorted(wav_assets.glob("*.mp3")) if wav_assets.is_dir() else []
+        if mp3s:
+            snd_assets = app_dir / "sound" / "assets"
+            snd_assets.mkdir(parents=True, exist_ok=True)
+            for mp3 in mp3s:
+                shutil.copy2(mp3, snd_assets / mp3.name)
+            print(f"  copied {len(mp3s)} beta mp3(s) -> {snd_assets}")
+        # beta (octavios dev) container: index.bin + art/packed + kind-aware
+        # src/app_<game>_ids.h, emitted into the app dir by pack.py
+        pack_cmd += [
+            "--beta-app-dir", str(app_dir),
+            "--app-name", f"app_{args.game}",
+        ]
+        if args.manifest:
+            pack_cmd += ["--manifest", str(args.manifest)]
+    rc = _run(pack_cmd)
     if rc != 0:
         return rc
 
@@ -190,17 +225,37 @@ def do_pack(args: argparse.Namespace) -> int:
         return 5
 
     dest_ids = src_dir / ids_path.name
-    shutil.copy2(ids_path, dest_ids)
-
-    header = ids_path.read_text(encoding="utf-8")
+    if args.app_dir:
+        # Beta mode: pack.py already emitted the canonical kind-aware header
+        # (record index == asset id, SND_/MAP_ enums) into <app_dir>/src/.
+        # The legacy workspace header uses a different numbering and has no
+        # sound enum, so copying it over src/ would clobber the real one.
+        beta_ids = Path(args.app_dir) / "src" / ids_path.name
+        if not beta_ids.is_file() or beta_ids.stat().st_size == 0:
+            print(f"ERROR: beta ids header missing or empty: {beta_ids}",
+                  file=sys.stderr)
+            return 5
+        if dest_ids.resolve() != beta_ids.resolve():
+            shutil.copy2(beta_ids, dest_ids)
+        header = beta_ids.read_text(encoding="utf-8")
+    else:
+        shutil.copy2(ids_path, dest_ids)
+        header = ids_path.read_text(encoding="utf-8")
     bmp_count = header.count("BMP_") - header.count("BMP_none") \
                 - header.count("BMP_last") - header.count("BMP_0")
 
     raw_count = len(list(packed_dir.glob("*.raw")))
 
+    if args.app_dir:
+        # Beta mode: these *.raw live in the legacy workspace copy only; the
+        # sim actually loads <app_dir>/art/packed/*.raw (copied there by
+        # pack.py's --beta-app-dir handling above), not this workspace path.
+        raw_label = "legacy workspace copies; the sim loads <app_dir>/art/packed"
+    else:
+        raw_label = "sim/.oct assets"
     print("=" * 60)
     print(f"  packed/pal.png       : ok")
-    print(f"  packed/*.raw         : {raw_count} file(s) (sim/.oct assets)")
+    print(f"  packed/*.raw         : {raw_count} file(s) ({raw_label})")
     print(f"  {ids_path.name:<20}: {bmp_count} BMP_* constants")
     print(f"  {dest_ids}: copied")
     print("=" * 60)
@@ -219,12 +274,24 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Workspace root (default: assets). PNGs -> <ws>/art, WAVs -> <ws>/wav.")
     g.add_argument("--group", default=None,
                    help="Only regenerate one group (sprites + sounds)")
+    g.add_argument("--mp3", action="store_true",
+                   help="Require beta mp3 encoding (fail if ffmpeg is missing; "
+                        "without this flag mp3s are encoded only when ffmpeg "
+                        "is on PATH)")
     g.set_defaults(func=do_generate)
 
     k = sub.add_parser("pack", help="Build PSD + run pack.py + copy ids to src/")
     k.add_argument("--game", required=True, help="Game name (used in _ids.h filename)")
     k.add_argument("--workspace", default="assets", help="Workspace root (default: assets)")
     k.add_argument("--src-dir", default="src", help="Target dir for the ids header")
+    k.add_argument("--app-dir", default=None,
+                   help="Beta app root (app_<game>/). When set, pack.py also "
+                        "emits the beta container there: index.bin, "
+                        "art/packed/*.{raw,pal}, launcher icon maps, and a "
+                        "kind-aware src/app_<game>_ids.h")
+    k.add_argument("--manifest", default=None,
+                   help="Path to plans/<game>_assets.json, so color=='full' "
+                        "sprites are RAW565-encoded in the beta container")
     k.set_defaults(func=do_pack)
 
     return p

@@ -25,7 +25,7 @@ flowchart TD
     %% Path A: AI
     S30 -->|"Option 1: AI"| PA1["Gates: gen_prompt coverage<br/>+ OPENROUTER_API_KEY"]
     PA1 -->|"missing gen_prompt"| S2
-    PA1 -->|"key ok"| PA2["Generate via OpenRouter<br/>gpt-5.4-image-2 -> assets/art"]
+    PA1 -->|"key ok"| PA2["Generate via OpenRouter<br/>the configured OpenRouter image model -> assets/art"]
     PA2 --> PA3{"Consistency review agent"}
     PA3 -->|"fail, < 3 cycles"| PA3R["regen group"]
     PA3R --> PA2
@@ -40,7 +40,7 @@ flowchart TD
     PB2 -->|complete| PACK
 
     %% Pack (both paths)
-    PACK["Stage 3.5 — pack<br/>assets.psd + exported/ + packed/ + _ids.h"]
+    PACK["Stage 3.5 — pack<br/>assets.psd + exported/ + packed/ + index.bin + _ids.h"]
     PACK --> CP3{{"⏸ Checkpoint 3->4"}}
     CP3 -->|approved| INFRA
 
@@ -77,7 +77,7 @@ flowchart TD
 |-------|-------|----------|
 | 1. Design | `cube_game-designer` | `plans/<game>_gdd.md` |
 | 2. Prompts | `technical_prompter` | `plans/<game>_prompts.md` + `plans/<game>_assets.json` (per-sprite `gen_prompt`) |
-| 3. Assets | `cube_asset-builder` (+ consistency reviewer) | `assets/packed/*.png`, `pal.png`, `assets/mp3/*.mp3`, `src/app_<game>_ids.h` |
+| 3. Assets | `cube_asset-builder` (+ consistency reviewer) | `app_<game>/index.bin`, `art/packed/*.raw`+`*.pal`, `sound/assets/*.mp3`, `src/app_<game>_ids.h` |
 | Infra gate | `wowcube-boilerplate` (#1) | scaffolded `app_<game>/`, verified **simulator** build |
 | 4. Implement | coder / verifier / fixer subagents | `src/app_<game>.h` (per prompt, sim-tested) |
 | 5. Package | `wowcube-boilerplate` (#2) | `app_<game>/app_<game>.oct` (ARM embedded, verified) |
@@ -85,6 +85,6 @@ flowchart TD
 ## Key points
 
 - **Single entry point:** the user always talks to `cube_orchestrator`; it routes.
-- **Two asset sources (Stage 3.0):** AI generation via an OpenRouter/GPT Image 2 key, or self-supplied assets validated for completeness before packing. Both converge on `pack`.
+- **Two asset sources (Stage 3.0):** AI generation via the configured OpenRouter image model (needs `OPENROUTER_API_KEY`), or self-supplied assets validated for completeness before packing. Both converge on `pack`.
 - **`wowcube-boilerplate` runs twice:** first to bring up the **simulator** before coding (so each prompt is testable), then at the end for the authoritative **device `.oct`** (built once because the simulator clobbers the `.oct` on every run).
 - **Resume-safe:** on any re-entry, stage detection reads the filesystem/context and continues from the first incomplete stage.

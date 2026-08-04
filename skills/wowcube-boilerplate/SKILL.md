@@ -35,11 +35,16 @@ cube_orchestrator (master controller)
 ## Cross-platform: one pack path, two build toolchains
 
 **Asset packing is pure Python on every OS.** The art pipeline runs through the
-canonical packer `scripts/pack.py` (PSD→PNG export,
-BMFont `.fnt` export, palette build, packed `.raw` emission, `_ids.h`
-generation) — it needs only `Pillow`, `numpy`,
-`pytoshop`, `psd-tools`. There is **no** `psd.exe`, `utils.exe`, `!pack.bat`, or
-Wine anywhere in this flow; those legacy Windows binaries are fully replaced.
+canonical packer `scripts/pack.py` (PSD→PNG export, BMFont `.fnt` export,
+palette build, packed `.raw`/`.pal` emission, kind-aware `_ids.h` generation,
+and — with `--beta-app-dir`/`--app-name` — the full beta container: `index.bin`
+plus `art/packed/*.raw`+`*.pal` and the launcher icon maps written straight
+into the app folder) — it needs only `Pillow`, `numpy`, `pytoshop`,
+`psd-tools`. There is **no** `psd.exe`, `utils.exe`, `!pack.bat`, or Wine
+anywhere in this flow; those legacy Windows binaries are fully replaced.
+Sound assets are synthesized WAVs encoded to beta mp3 (22050 Hz mono CBR 32k,
+requires `ffmpeg`) by `scripts/gen_sounds.py`, copied into
+`app_<game>/sound/assets/` by the pack step — sounds never ship as WAV.
 
 Only the **simulator/device build** differs by OS, and this skill ships both:
 
@@ -57,7 +62,7 @@ behavioural mirrors; the steps below describe both.
 
 - `cube_orchestrator` routed here for the **infra gate** before Stage 4: prompts
   and assets exist, but `app_<game>/` is missing (no `*.target`, no
-  `art/packed/*.raw`) or the simulator won't build/launch
+  `art/packed/*.raw` AND `index.bin`) or the simulator won't build/launch
 - `cube_orchestrator` routed here for **Stage 5**: all prompts are implemented
   and there is no verified device `.oct` yet (or it was last touched by a sim run)
 
@@ -176,13 +181,19 @@ What it does, in order (this is the procedure distilled from real runs):
 2. **Rename** the `.target` marker and the `app_ai_template.h` / `app_ai_template_ids.h`
    headers to `app_<game>*`
 3. **Patch** every embedded reference to the template name in `src/app.h` and
-   `src/app_<game>.h` (the `#include`, `APP_DIR`, `APP_PNG`, `APP_SND`)
-4. **Guarantee `APP_VERSION`** is defined in `src/app.h` (the template omits it —
-   see Gotchas)
-5. **Pack** art assets with the Python packer
-   (`scripts/pack.py … --emit-raw`) and **sync** the generated
-   `app_<game>_ids.h` into `src/` so compiled sprite
-   indices match the packed `art/packed/*.raw` files
+   `src/app_<game>.h` (the `#include`, `APP_DIR`)
+4. **Guarantee the full beta define set** (`APP_VERSION`, `APP_TITLE`, `APP_GUID1`,
+   `APP_CATEGORIES`, `APP_COLORS`) is present in `src/app.h` and `APP_GUID1` is
+   randomized — the template already ships all six defines, so this is a
+   self-healing backstop (re-adds any that go missing, replaces the template's
+   zero placeholder GUID) rather than a required repair; see Gotchas
+5. **Pack** art assets with the Python packer — `scripts/pack.py --export
+   --build-palette --build-ids --beta-app-dir <AppDir> --app-name
+   app_<game>` (plus `--icon art/icon.png` when present) — which writes the
+   legacy `art/packed/*.png` intermediates AND the beta container
+   (`app_<game>/index.bin`, `art/packed/*.raw`+`*.pal`, launcher icon maps)
+   directly into the app folder, and emits `app_<game>_ids.h` straight into
+   `src/` (`--ids-output`) so compiled sprite indices match the packed assets
 6. **Build the simulator** — Windows: `octavios/apps/build_sim.cmd` (MSVC/PC
    target). Linux: `cmake -S <octavios> -B app_<game>/build-sim -DAPP_DIR=app_<game>`
    then `cmake --build app_<game>/build-sim` → `build-sim/octavios_sim`. **Never**
@@ -203,7 +214,9 @@ On success, report to the user what was verified and where:
 
 - `app_<game>/app_<game>.target` (marker)
 - `app_<game>/src/app_<game>.h` — **the file the orchestrator will write game code into**
-- `app_<game>/art/packed/*.raw` + `pal.raw` (packed assets)
+- `app_<game>/art/packed/*.raw` + `*.pal` (packed assets) and
+  `app_<game>/index.bin` (the beta asset index — the gate that actually matters:
+  both `*.raw` AND `index.bin` must exist, not `*.raw` alone)
 - The built simulator that launches without crashing — `app_<game>/bin/app_<game>.exe`
   (Windows) or `app_<game>/build-sim/octavios_sim` (Linux)
 
@@ -253,6 +266,13 @@ bash OCT_wowcube-agent-skills/scripts/build_device.sh --app-dir <workspace>/app_
    final `.bin`-sized bytes of the pack must match the `.bin` byte-for-byte). It
    fails loudly on an asset-only pack, so you can never ship a `.oct` that would
    silently die on the cube.
+4. **Warn** → both `build_device.ps1` and `build_device.sh` flag any stray
+   timestamped `<app>_*.oct` files sitting in the app root. The **Linux**
+   simulator deletes root `.oct` files at startup, so a leftover
+   `app_<game>_20250101.oct` can silently vanish the next time anyone runs the
+   sim (Linux or Windows dev machine, doesn't matter where it was created) —
+   this is a warning only, not a failure, but keep deliverables named
+   `app_<game>.oct` (no timestamp suffix) to avoid losing them.
 
 This is the final deliverable the orchestrator runs (mandatorily) as **Stage 5**
 on completion. After it exits 0, return control to `cube_orchestrator`, which
@@ -263,18 +283,21 @@ checkpoints with the user and reports the absolute path to the verified `.oct`.
 These are the failures observed when doing this by hand. The scripts handle them;
 if you ever scaffold manually, watch for them.
 
-1. **`APP_VERSION` is missing from the template's `app.h`.** The simulator's
-   `sim.h` only defines a fallback `APP_VERSION` when `SIM_APP_HEADER` is *not*
-   set — but the build always sets it, so `app.h` must define `APP_VERSION`
-   itself. Without it the build dies with
-   `error C2065: 'APP_VERSION': undeclared identifier`. Fix: ensure
-   `#define APP_VERSION 100` sits in `src/app.h`.
+1. **`app.h` must define `APP_VERSION` itself.** The simulator's `sim.h` only
+   defines a fallback `APP_VERSION` when `SIM_APP_HEADER` is *not* set — but the
+   build always sets it, so a hand-rolled `app.h` missing the define dies with
+   `error C2065: 'APP_VERSION': undeclared identifier`. The shipped template
+   already includes `#define APP_VERSION 100`; this is called out because the
+   scaffolder's step 4 guarantee exists specifically to catch it if a manual
+   edit ever drops it, not because the template ships broken.
 
-2. **Pack before you build.** The packer (`scripts/pack.py --emit-raw`) must run
-   first so `art/packed/*.raw` exist — the simulator loads those at launch and a
-   missing pack shows up as an early crash, not a compile error. Judge pack
-   success by the `art/packed/*.raw` files produced (and the `_ids.h` written),
-   not by console noise.
+2. **Pack before you build.** The packer (`scripts/pack.py
+   --beta-app-dir <AppDir> --app-name app_<game>`) must run first so
+   `art/packed/*.raw` AND `index.bin` exist — the simulator loads the beta
+   container at launch and a missing pack shows up as an early crash, not a
+   compile error. Judge pack success by **both** the `art/packed/*.raw` files
+   produced AND `index.bin` existing (and the `_ids.h` written), not by
+   console noise — `*.raw` alone is not a complete pack.
 
 3. **The generated `_ids.h` must be synced into `src/`.** The packer writes
    `app_<game>_ids.h`, but the build compiles against `src/app_<game>_ids.h`. If
@@ -294,13 +317,49 @@ If you must pack by hand, run from the app folder:
 
 ```bash
 python <workspace>/OCT_wowcube-agent-skills/scripts/pack.py \
-    --export --build-palette --build-ids --emit-raw \
+    --export --build-palette --build-ids \
     --art-dir art --exported-dir art/exported \
-    --packed-dir art/packed --output-dir art/packed --raw-dir art/packed \
-    --ids-output src/app_<game>_ids.h --assets assets
+    --packed-dir art/packed --output-dir art/packed \
+    --ids-output src/app_<game>_ids.h --assets assets \
+    --beta-app-dir . --app-name app_<game> --icon art/icon.png
 ```
 
-This exports `art/assets.psd` and the `*.fnt` fonts to PNGs, builds the palette,
-writes `art/packed/*.png`, emits the decoded `art/packed/*.raw` the sim/`.oct`
-load, and generates `src/app_<game>_ids.h`. Identical on Windows and Linux —
-Python only, no `.exe`/`.bat`/Wine.
+This is exactly what `new_app.ps1`/`new_app.sh` run (from inside the app
+folder, so `--beta-app-dir .`) — drop `--icon art/icon.png` if the app has no
+launcher icon yet. It exports `art/assets.psd` and the `*.fnt` fonts to PNGs,
+builds the palette, writes the legacy `art/packed/*.png` intermediates,
+generates `src/app_<game>_ids.h`, and — because `--beta-app-dir` is set — also
+emits the beta container the simulator/`.oct` actually load: `index.bin`,
+`art/packed/*.raw`+`*.pal`, and the launcher icon maps. `--emit-raw` (with
+`--raw-dir`) is legacy-optional: it writes legacy-format `.raw` files that only
+the pre-beta Linux sim reads — the beta sim never does — and if combined with
+`--beta-app-dir` into the same folder, the beta `.raw` files overwrite the
+legacy ones. Add `--manifest
+plans/<game>_assets.json` if any sprite uses `color: "full"` (so it gets
+RAW565-encoded instead of run through the palette codec) or carries flags
+like `fullsize` (so they reach the packed palette-sprite header). Identical on Windows
+and Linux — Python only, no `.exe`/`.bat`/Wine.
+
+**Packing plain-PNG palette sprites by hand (no PSD): drop `--export`, keep
+`--build-palette`.** `--export` exists solely to regenerate the exported dir
+from PSD/FNT *sources* in `--art-dir` — as its first act it DELETES every
+pre-placed PNG in `--exported-dir` (it warns loudly and the pack then fails
+with exit 1, but the PNGs are already gone). If your sprites are plain PNGs
+(the AI-asset workflow — nothing was ever authored in Photoshop), put one
+`<name>.png` per sprite in `--exported-dir` and run the same command WITHOUT
+`--export`:
+
+```bash
+python <workspace>/OCT_wowcube-agent-skills/scripts/pack.py \
+    --build-palette --build-ids \
+    --art-dir art --exported-dir art/exported \
+    --packed-dir art/packed --output-dir art/packed \
+    --ids-output src/app_<game>_ids.h --assets assets \
+    --beta-app-dir . --app-name app_<game> \
+    --manifest plans/<game>_assets.json --icon art/icon.png
+```
+
+(That said, the normal PNG route is not this manual command at all — it is
+`build_pipeline.py pack`, which takes the PNGs from `<workspace>/art/`,
+atlases them into a throwaway PSD internally, and runs `pack.py` itself; see
+`cube_asset-builder` Step 4.)

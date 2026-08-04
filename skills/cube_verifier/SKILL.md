@@ -149,7 +149,10 @@ Reads `app_ai_template.h` and verifies the game code against **everything** docu
      - Explicit type casts on every narrowing/widening/cross-type assignment
      - Fixed-width types only (`<stdint.h>`)
      - Project header structure preserved
-     - All 5 handlers present; unused params referenced
+     - All 7 handlers present with exact signatures: `on_init()`, `on_tick()`, `on_tap(int32_t tapid, int32_t count)`, `on_twisted(int32_t twid, uint32_t disconnected_ms)`, `on_pretwisted(int32_t twid)`, `on_shake(int32_t shakeid)`, `on_proc_draw` (stub); unused params referenced
+     - `on_shake` and `on_proc_draw` stubs present: `on_shake` is link-required — the ARM module fails to link without it; `on_proc_draw` is bound unconditionally by the simulator, so the SIM build fails without the stub, while the ARM module only references it under `#define APP_HAS_PROC_DRAW`; no gameplay logic relies on shake input (the engine currently always runs the system default go-home)
+     - `src/app.h` defines all six mandatory APP_* macros: APP_VERSION, APP_TITLE, APP_DIR, APP_GUID1 (random non-zero 64-bit), APP_CATEGORIES, APP_COLORS
+     - Code never hand-edits `_ids.h`, the `src/app.h` defines, or `index.bin` — these are owned by the scaffolder/packer
      - Modular code: structs for state, small focused functions, named constants
 6. **For struct organization and sprite references:**
    - `appvars_t` must not be a flat bag of fields. Related state must be grouped into dedicated sub-structs with `_t` suffix. Severity: **major** per ungrouped domain
@@ -160,7 +163,7 @@ Reads `app_ai_template.h` and verifies the game code against **everything** docu
 | Category | Max | What to check |
 |----------|-----|---------------|
 | **api_correctness** | 40 | Every API call matches the template's Declaration, Comment, Critical Comment, and Warn annotations |
-| **platform_constraints** | 30 | All rules from the template's INSTRUCTIONS block and platform-specific comments: TL macro, gObjects[0] reserved, SPRITES_CAP, explicit casts, fixed-width types, all 5 handlers, no GAP in OCT_add |
+| **platform_constraints** | 30 | All rules from the template's INSTRUCTIONS block and platform-specific comments: TL macro, gObjects[0] reserved, SPRITES_CAP, explicit casts, fixed-width types, all 7 handlers (incl. the `on_shake`/`on_proc_draw` stubs), no GAP in OCT_add. **Upscale-aware coordinates:** regular sprites are authored at HALF resolution and the engine upscales them x2 at draw time, so all layout/collision math (positioning, centering, edge/screen-fit, movement bounds, hitboxes, spacing, grid steps) MUST use each sprite's on-screen extent = 2x its authored size in the 240x240 space. Flag any code that uses the authored (half) sprite size for coordinates or collision — that makes objects half the drawn size and breaks gameplay. **Exception:** ANY FULLSIZE sprite (manifest `flags.fullsize` — palette fullsize or full-color fullsize alike; the engine draws every FULLSIZE sprite at zoom 1) renders 1:1 with no x2 upscale, so for those sprites the native authored size IS the on-screen extent — do not flag native-size coordinate math for FULLSIZE sprites of either color |
 | **code_quality** | 30 | No copied demo code or internal comments; modular struct organization (related state grouped into sub-structs, not flat); sprite references as `appObject_t*` pointers not raw indices; small focused functions; named constants |
 
 ### Prompt Template

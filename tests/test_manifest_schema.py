@@ -90,7 +90,9 @@ def test_reserved_name_rejected(tmp_manifest, reserved):
 
 # ── Size limits ────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("bad_size", [[0, 32], [32, 0], [241, 32], [32, 241]])
+# Sprites are authored at half resolution (engine upscales x2), so the max
+# authored side is 120; 121+ must be rejected, and 120 (full screen) accepted.
+@pytest.mark.parametrize("bad_size", [[0, 32], [32, 0], [121, 32], [32, 121]])
 def test_sprite_size_out_of_range(tmp_manifest, bad_size):
     data = {
         "game": "demo", "schema_version": 1,
@@ -99,6 +101,17 @@ def test_sprite_size_out_of_range(tmp_manifest, bad_size):
     }
     errors = validate(load_manifest(tmp_manifest(data)))
     assert any("size" in e.lower() for e in errors)
+
+
+def test_sprite_size_full_screen_ok(tmp_manifest):
+    """A full-screen sprite authored at 120x120 (the max) is valid."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [120, 120], "description": "d"}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert not any("size" in e.lower() for e in errors)
 
 
 # ── Duplicates ─────────────────────────────────────────────────────────
@@ -237,3 +250,173 @@ def test_empty_gen_prompt_rejected(tmp_manifest, bad):
 def test_minimal_manifest_has_no_errors(tmp_manifest, minimal_manifest):
     errors = validate(load_manifest(tmp_manifest(minimal_manifest)))
     assert errors == []
+
+
+# ── color field (v2: full-color RAW565 sprites) ────────────────────────
+
+def test_fullcolor_sprite_accepted(tmp_manifest):
+    """color=full at native 240x240 with flags.fullsize (and no alpha) is valid."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "splash", "size": [240, 240], "description": "d",
+                     "color": "full", "flags": {"alpha": False, "fullsize": True}}],
+        "sounds": [],
+    }
+    m = load_manifest(tmp_manifest(data))
+    assert m.sprites[0].color == "full"
+    assert validate(m) == []
+
+
+def test_fullcolor_native_240_requires_fullsize(tmp_manifest):
+    """color=full at 240x240 WITHOUT flags.fullsize must be rejected with a fullsize hint."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "splash", "size": [240, 240], "description": "d",
+                     "color": "full", "flags": {"alpha": False}}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert any("fullsize" in e.lower() for e in errors)
+
+
+def test_fullcolor_rejects_alpha(tmp_manifest):
+    """RAW565 full-color sprites have no transparency; alpha must be rejected."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "splash", "size": [64, 64], "description": "d",
+                     "color": "full", "flags": {"alpha": True}}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert any("alpha" in e.lower() or "transparen" in e.lower() for e in errors)
+
+
+def test_fullcolor_small_without_fullsize_ok(tmp_manifest):
+    """A small opaque full-color sprite (no fullsize) draws at 2x like any other sprite."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "gem", "size": [64, 64], "description": "d",
+                     "color": "full", "flags": {"alpha": False}}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert errors == []
+
+
+def test_palette_sprite_still_capped_at_120(tmp_manifest):
+    """Existing behaviour preserved: default (palette) sprites cap at 120 per side."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [121, 121], "description": "d"}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert any("size" in e.lower() for e in errors)
+
+
+def test_palette_fullsize_240_accepted(tmp_manifest):
+    """Tier 2 (palette fullsize): a palette sprite at native 240x240 with
+    flags.fullsize draws 1:1 (no x2 upscale) and must validate."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "backdrop", "size": [240, 240], "description": "d",
+                     "flags": {"fullsize": True}}],
+        "sounds": [],
+    }
+    m = load_manifest(tmp_manifest(data))
+    assert m.sprites[0].flags.fullsize is True
+    assert validate(m) == []
+
+
+def test_palette_240_without_fullsize_rejected_with_hint(tmp_manifest):
+    """A palette sprite over 120 without flags.fullsize must be rejected,
+    and the error must point at flags.fullsize as the fix."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "backdrop", "size": [240, 240], "description": "d"}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert any("fullsize" in e.lower() for e in errors)
+
+
+def test_palette_fullsize_keeps_alpha(tmp_manifest):
+    """The alpha ban is full-color-only: a palette fullsize sprite keeps
+    transparency via palette index 0, so alpha stays legal on it."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "overlay", "size": [240, 240], "description": "d",
+                     "flags": {"fullsize": True, "alpha": True}}],
+        "sounds": [],
+    }
+    assert validate(load_manifest(tmp_manifest(data))) == []
+
+
+def test_fullsize_over_240_still_rejected(tmp_manifest):
+    """flags.fullsize lifts the cap to 240, not beyond."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [241, 240], "description": "d",
+                     "flags": {"fullsize": True}}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert any("size" in e.lower() for e in errors)
+
+
+def test_color_defaults_to_palette(tmp_manifest):
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [32, 32], "description": "d"}],
+        "sounds": [],
+    }
+    m = load_manifest(tmp_manifest(data))
+    assert m.sprites[0].color == "palette"
+
+
+def test_dither_parsed_and_valid_on_fullcolor(tmp_manifest):
+    """dither: true on a full-color sprite parses and validates clean."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "photo", "size": [240, 240], "description": "d",
+                     "color": "full", "dither": True,
+                     "flags": {"alpha": False, "fullsize": True}}],
+        "sounds": [],
+    }
+    m = load_manifest(tmp_manifest(data))
+    assert m.sprites[0].dither is True
+    assert validate(m) == []
+
+
+def test_dither_defaults_false(tmp_manifest):
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [32, 32], "description": "d"}],
+        "sounds": [],
+    }
+    assert load_manifest(tmp_manifest(data)).sprites[0].dither is False
+
+
+def test_dither_on_palette_sprite_rejected(tmp_manifest):
+    """dither is a full-color (RGB565) knob; palette sprites are quantized
+    by the palette codec instead, so dither+palette must be rejected."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [32, 32], "description": "d",
+                     "dither": True}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert any("dither" in e.lower() and "full" in e.lower() for e in errors)
+
+
+def test_color_invalid_value_rejected(tmp_manifest):
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [32, 32], "description": "d",
+                     "color": "rgb"}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert any("color" in e.lower() and ("palette" in e.lower() or "full" in e.lower())
+               for e in errors)

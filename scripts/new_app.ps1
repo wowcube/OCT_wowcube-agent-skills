@@ -9,9 +9,10 @@
       1. Copy templates/app_ai_template -> <workspace>/app_<name>
       2. Rename the .target marker and the game/ids headers to app_<name>*
       3. Replace every name-bearing reference (app.h, app_<name>.h)
-      4. Guarantee app.h defines APP_VERSION (the template omits it -> sim won't compile)
-      5. Pack art assets with the pure-Python packer (scripts/pack.py --emit-raw),
-         which writes the generated _ids.h straight into src/
+      4. Guarantee the full beta define set in app.h (APP_VERSION, APP_TITLE,
+         APP_GUID1 randomized, APP_CATEGORIES, APP_COLORS)
+      5. Pack art assets with the pure-Python packer (scripts/pack.py, beta
+         container), which writes the generated _ids.h straight into src/
       6. Smoke-build the simulator (octavios/apps/build_sim.cmd) -- simulator ONLY,
          never the ARM/device target
       7. (optional) launch the .exe briefly to confirm it does not crash on start
@@ -131,35 +132,67 @@ Get-ChildItem $AppDir -Recurse -File -Include *.h, *.txt | ForEach-Object {
     }
 }
 
-# --- 4. Guarantee APP_VERSION in app.h (template omits it) ----------------
+# --- 4. Guarantee the full beta define set in app.h ------------------------
 $appH = Join-Path $AppDir 'src\app.h'
 if (-not (Test-Path $appH)) { Fail "expected $appH after clone" }
 $appHraw = Get-Content $appH -Raw
-if ($appHraw -notmatch 'APP_VERSION') {
-    Step "Adding missing APP_VERSION to src/app.h"
-    $lines = Get-Content $appH
+
+# Random non-zero 64-bit GUID for this app
+$bytes = [byte[]]::new(8)
+[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($bytes)
+$guid = '0x{0:X16}ULL' -f [System.BitConverter]::ToUInt64($bytes, 0)
+
+# Replace the template's zero GUID placeholder if present
+if ($appHraw -match '0x0000000000000000ULL') {
+    $appHraw = $appHraw -replace '0x0000000000000000ULL', $guid
+    Step "Set APP_GUID1 = $guid"
+}
+
+$required = [ordered]@{
+    'APP_VERSION'    = '#define APP_VERSION 100 //v1.00'
+    'APP_TITLE'      = "#define APP_TITLE `"$app`""
+    'APP_GUID1'      = "#define APP_GUID1 $guid"
+    'APP_CATEGORIES' = '#define APP_CATEGORIES (APP_CATEGORY_GAME)'
+    'APP_COLORS'     = '#define APP_COLORS 0x00000000'
+}
+$missing = $required.Keys | Where-Object { $appHraw -notmatch "define\s+$_" }
+if ($missing) {
+    Step "Adding missing defines to src/app.h: $($missing -join ', ')"
+    $lines = $appHraw -split "`r?`n"
     $out = foreach ($l in $lines) {
         $l
-        if ($l -match '^\s*#include\s+"app_') { '#define APP_VERSION 100 //v1.00' }
+        if ($l -match '^\s*#include\s+"app_') {
+            foreach ($k in $missing) { $required[$k] }
+        }
     }
-    $out | Set-Content $appH -Encoding utf8
+    $appHraw = $out -join "`r`n"
 }
+Set-Content -Path $appH -Value $appHraw -Encoding UTF8
 
 # --- 5. Pack assets (pure-Python packer; same on Windows and Linux) -------
 # Replaces the legacy art/!pack.bat (psd.exe + utils.exe). The canonical packer
 # is scripts/pack.py; it
 # exports the PSD + fonts, builds the palette, writes art/packed/*.png and the
-# decoded art/packed/*.raw the simulator loads, and emits _ids.h straight into
+# beta art/packed/*.raw the simulator loads, and emits _ids.h straight into
 # src/ via --ids-output (no separate sync step needed).
 $artDir = Join-Path $AppDir 'art'
 $packPy = Join-Path $PSScriptRoot 'pack.py'
 if (Test-Path $packPy) {
-    Step "Packing assets (pack.py --emit-raw)"
+    Step "Packing assets (pack.py beta container)"
+    # Beta container args: pack.py emits <AppDir>/index.bin,
+    # art/packed/*.{raw,pal} and the kind-aware src/<app>_ids.h. No manifest
+    # exists at scaffold time (full-color sprites come later); the launcher
+    # icon ships with the template at art/icon.png. The legacy --emit-raw
+    # phase is deliberately NOT passed: the beta sim doesn't read legacy
+    # .raw files, and --beta-app-dir writes beta-format .raw into art/packed.
+    $betaArgs = @('--beta-app-dir', $AppDir, '--app-name', $app)
+    $iconPng = Join-Path $artDir 'icon.png'
+    if (Test-Path $iconPng) { $betaArgs += @('--icon', $iconPng) }
     Push-Location $AppDir
-    python $packPy --export --build-palette --build-ids --emit-raw `
+    python $packPy --export --build-palette --build-ids `
         --art-dir art --exported-dir art\exported `
-        --packed-dir art\packed --output-dir art\packed --raw-dir art\packed `
-        --ids-output "src\${app}_ids.h" --assets assets | Out-Host
+        --packed-dir art\packed --output-dir art\packed `
+        --ids-output "src\${app}_ids.h" --assets assets @betaArgs | Out-Host
     $packCode = $LASTEXITCODE
     Pop-Location
     if ($packCode -ne 0) { Fail "asset packing failed (pack.py exit $packCode)" }
@@ -167,7 +200,12 @@ if (Test-Path $packPy) {
     $packed = Join-Path $artDir 'packed'
     $rawCount = (Get-ChildItem $packed -Filter *.raw -ErrorAction SilentlyContinue | Measure-Object).Count
     if ($rawCount -eq 0) { Fail "packing produced no .raw assets in $packed" }
-    Write-Host "    packed $rawCount .raw assets; ids -> src/${app}_ids.h"
+    if (-not (Test-Path (Join-Path $AppDir 'index.bin'))) {
+        # em-dash built via [char]0x2014: a literal one would turn to mojibake
+        # under Windows PowerShell 5.1, which reads no-BOM files as ANSI.
+        Fail "beta pack incomplete: index.bin missing $([char]0x2014) the simulator cannot load this app"
+    }
+    Write-Host "    packed $rawCount .raw assets; index.bin ok; ids -> src/${app}_ids.h"
 } else {
     Write-Host "    (scripts/pack.py not found at $packPy - skipping pack)" -ForegroundColor Yellow
 }

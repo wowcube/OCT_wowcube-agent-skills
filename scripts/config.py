@@ -228,4 +228,3 @@ PIVOT_HALFPIX  = 0.5             # + half-pixel offset (used by ATLAS mode)
 NUMBER_FIELD_MASK = 0x7FFF       # 15-bit Number field in octPlace_t
 BYTES_PER_RGBA  = 4              # RGBA PNG container stride
 WORD_BITS       = 32
-# (config rev 2026-04-29: a

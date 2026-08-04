@@ -16,7 +16,14 @@ sim.pdb
 /build/*
 /art/exported
 /art/packed
-/sound/assets
+/sound/assets/*
+# The template's own demo sounds ship tracked so a fresh scaffold has a
+# non-silent demo; generated assets a real app drops into sound/assets/
+# stay ignored (the pattern above excludes the directory's contents, not
+# the directory itself, so these negations can still reach inside it).
+!/sound/assets/digit_merge0.mp3
+!/sound/assets/digit_merge1.mp3
+!/sound/assets/digit_merge2.mp3
 *.log
 *.oct
 *.rar
