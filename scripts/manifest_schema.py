@@ -242,21 +242,41 @@ def validate(m: Manifest) -> list[str]:
 
     for anim, members in anim_frames.items():
         frames = sorted(f for f, _ in members)
-        if frames[0] != 0:
+        if frames[0] not in (0, 1):
             errors.append(
-                f"anim {anim!r}: sequence must start at frame 0 "
-                f"(named _00 in file) — found first frame {frames[0]}"
+                f"anim {anim!r}: sequence must start at frame 0 or 1 "
+                f"(named _00../_01.. in file) — found first frame {frames[0]}"
             )
         if frames != list(range(frames[0], frames[-1] + 1)):
             errors.append(
                 f"anim {anim!r}: frames must be contiguous, found {frames}"
             )
+
+        # Name must be "<anim>_<digits>" with the digits parsing back to the
+        # declared frame number, using 2 or more digits — the packer's
+        # _seq_frame_groups (pack_beta.py) only recognizes a 2+ digit _NN..
+        # suffix as an animation frame, so a shorter or malformed suffix
+        # would silently fail to chain at pack time even though it validates
+        # here otherwise. Width (2-digit vs 3-digit) must stay consistent
+        # across the whole sequence.
+        name_re = re.compile(rf"^{re.escape(anim)}_(\d{{2,}})$")
+        widths: set[int] = set()
         for f, n in members:
-            expected = f"{anim}_{f:02d}"
-            if n != expected:
+            name_match = name_re.match(n)
+            if not name_match or int(name_match.group(1)) != f:
                 errors.append(
-                    f"anim {anim!r} frame {f}: expected name {expected!r}, got {n!r}"
+                    f"anim {anim!r} frame {f}: name {n!r} must be "
+                    f"'{anim}_' followed by the frame number zero-padded "
+                    f"to 2 or more digits (e.g. {anim}_{f:02d}) — the "
+                    f"packer only chains frame suffixes of 2+ digits"
                 )
+                continue
+            widths.add(len(name_match.group(1)))
+        if len(widths) > 1:
+            errors.append(
+                f"anim {anim!r}: frame suffix digit width must be "
+                f"consistent across the sequence, found widths {sorted(widths)}"
+            )
 
     sound_names: list[str] = []
     for snd in m.sounds:

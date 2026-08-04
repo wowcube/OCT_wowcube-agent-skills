@@ -8,6 +8,7 @@ from manifest_schema import (
     load_manifest, validate, ValidationError,
     NAME_RE,
 )
+from gen_sprites import _derived_group
 
 
 def test_minimal_manifest_parses(tmp_manifest, minimal_manifest):
@@ -153,20 +154,75 @@ def test_sound_duration_over_cap_rejected(tmp_manifest):
 
 
 # ── Animation sequence ─────────────────────────────────────────────────
+#
+# Both zero-based (_00, _01…) and one-based (_01…, _001…) contiguous frame
+# groups are accepted — the packer (pack_beta._seq_frame_groups) chains
+# both, so the manifest-level validator mirrors it (spec §12).
 
-def test_animation_not_starting_at_00_rejected(tmp_manifest):
+def test_animation_starting_at_2_rejected(tmp_manifest):
+    """Neither zero- nor one-based: a sequence may not start at frame 2."""
     data = {
         "game": "demo", "schema_version": 1,
         "sprites": [
-            {"name": "run_01", "size": [32, 32], "description": "d",
-             "anim": "run", "frame": 1},
             {"name": "run_02", "size": [32, 32], "description": "d",
              "anim": "run", "frame": 2},
+            {"name": "run_03", "size": [32, 32], "description": "d",
+             "anim": "run", "frame": 3},
         ],
         "sounds": [],
     }
     errors = validate(load_manifest(tmp_manifest(data)))
-    assert any("_00" in e for e in errors)
+    assert any("0 or 1" in e for e in errors)
+
+
+def test_animation_one_based_two_digit_accepted(tmp_manifest):
+    """hero_01/hero_02: one-based, 2-digit suffix groups and validates."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [
+            {"name": "hero_01", "size": [32, 32], "description": "d",
+             "anim": "hero", "frame": 1},
+            {"name": "hero_02", "size": [32, 32], "description": "d",
+             "anim": "hero", "frame": 2},
+        ],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert errors == []
+
+
+def test_animation_one_based_three_digit_accepted(tmp_manifest):
+    """boom_001..003: one-based, 3-digit suffix groups and validates."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [
+            {"name": "boom_001", "size": [32, 32], "description": "d",
+             "anim": "boom", "frame": 1},
+            {"name": "boom_002", "size": [32, 32], "description": "d",
+             "anim": "boom", "frame": 2},
+            {"name": "boom_003", "size": [32, 32], "description": "d",
+             "anim": "boom", "frame": 3},
+        ],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert errors == []
+
+
+def test_animation_zero_based_two_frame_accepted(tmp_manifest):
+    """hero_00/hero_01: the classic zero-based 2-digit group still validates."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [
+            {"name": "hero_00", "size": [32, 32], "description": "d",
+             "anim": "hero", "frame": 0},
+            {"name": "hero_01", "size": [32, 32], "description": "d",
+             "anim": "hero", "frame": 1},
+        ],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert errors == []
 
 
 def test_animation_non_contiguous_rejected(tmp_manifest):
@@ -184,9 +240,108 @@ def test_animation_non_contiguous_rejected(tmp_manifest):
     assert any("contiguous" in e.lower() or "missing" in e.lower() for e in errors)
 
 
+def test_animation_one_based_gap_rejected(tmp_manifest):
+    """boom_001/boom_003 (missing _002) is a gap even though it starts at 1."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [
+            {"name": "boom_001", "size": [32, 32], "description": "d",
+             "anim": "boom", "frame": 1},
+            {"name": "boom_003", "size": [32, 32], "description": "d",
+             "anim": "boom", "frame": 3},
+        ],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert any("contiguous" in e.lower() or "missing" in e.lower() for e in errors)
+
+
+def test_animation_mixed_digit_width_rejected(tmp_manifest):
+    """A sequence may not mix 2-digit and 3-digit frame suffixes."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [
+            {"name": "run_00", "size": [32, 32], "description": "d",
+             "anim": "run", "frame": 0},
+            {"name": "run_001", "size": [32, 32], "description": "d",
+             "anim": "run", "frame": 1},
+        ],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert any("width" in e.lower() for e in errors)
+
+
+def test_animation_single_digit_suffix_rejected(tmp_manifest):
+    """A single-digit suffix ('_1') never chains at pack time, so it's
+    rejected here rather than silently failing to chain later."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [
+            {"name": "run_0", "size": [32, 32], "description": "d",
+             "anim": "run", "frame": 0},
+            {"name": "run_1", "size": [32, 32], "description": "d",
+             "anim": "run", "frame": 1},
+        ],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert any("2 or more digits" in e or "2+ digits" in e for e in errors)
+
+
+def test_bare_numeric_suffix_without_anim_field_stays_standalone(tmp_manifest):
+    """A plain sprite named '..._05' with no anim/frame declared is just a
+    static sprite -- a stray single frame stays static, exactly like the
+    packer's own _seq_frame_groups (no _00/_01 sibling means no chain), and
+    the new frame/width checks (which only run for declared anim groups)
+    must not fire on it."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [
+            {"name": "boom_05", "size": [32, 32], "description": "d"},
+        ],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert errors == []
+
+
 def test_valid_animation_passes(tmp_manifest, animation_manifest):
     errors = validate(load_manifest(tmp_manifest(animation_manifest)))
     assert errors == []
+
+
+# ── gen_sprites._derived_group (implicit grouping by name suffix) ──────
+
+def test_derived_group_strips_two_digit_suffix():
+    s = Sprite(name="hero_00", size=(32, 32), description="d")
+    assert _derived_group(s) == "hero"
+    s = Sprite(name="hero_01", size=(32, 32), description="d")
+    assert _derived_group(s) == "hero"
+
+
+def test_derived_group_strips_three_digit_suffix():
+    s = Sprite(name="boom_001", size=(32, 32), description="d")
+    assert _derived_group(s) == "boom"
+    s = Sprite(name="boom_002", size=(32, 32), description="d")
+    assert _derived_group(s) == "boom"
+
+
+def test_derived_group_explicit_group_wins(tmp_manifest):
+    s = Sprite(name="hero_00", size=(32, 32), description="d", group="explicit")
+    assert _derived_group(s) == "explicit"
+
+
+def test_derived_group_no_suffix_returns_name():
+    s = Sprite(name="coin", size=(32, 32), description="d")
+    assert _derived_group(s) == "coin"
+
+
+def test_derived_group_single_digit_suffix_not_stripped():
+    """A single trailing digit is not a frame suffix to the packer either
+    (_RE_SEQ_FRAME requires 2+ digits), so _derived_group leaves it attached."""
+    s = Sprite(name="x_5", size=(32, 32), description="d")
+    assert _derived_group(s) == "x_5"
 
 
 # ── Unknown event_type ─────────────────────────────────────────────────
