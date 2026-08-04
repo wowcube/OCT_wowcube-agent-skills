@@ -425,6 +425,14 @@ Practical consequences:
 
 **Tier promises are absolute.** Each tier is a commitment: fast (palette ×2), mid (palette fullsize — native sharpness, keeps alpha), fat (full-color — uncompromised color). **Maximum quality = `color: "full"` + `flags.fullsize` + `dither: true` and nothing else** — nearest-level RGB565, Floyd–Steinberg dithering, lossless RLE; no smoothing or lossy steps ever (a degraded full-color sprite ≈ a palette-fullsize sprite at twice the bytes — pointless). Never trade tier-3 fidelity for pack size unless the user explicitly asks to shrink the pack.
 
+**Animation guidelines (owner's rules — hold across Stage 1/2/3/4).**
+- **20 fps is the hardware cap.** The engine ticks 20 times/second; reject or push back on any design/prompt that implies faster animation.
+- **Default clip length is ≤5 s** — longer is technically possible (only app size limits it), but 5 s is the guideline default `cube_game-designer` and `technical_prompter` should both follow.
+- **Prefer Palette (tier-1) animations** — the cheapest render path; only escalate tier when the design genuinely needs it.
+- **Fullsize animations must stay short and careful** — they load the cube harder than regular sprites; a frametime above **70 ms** is a bad sign (cut frames, size, or tier).
+- **Full-color (tier-3) animations only on an explicit user request**, and must carry a "handle VERY carefully" warning in the GDD/manifest.
+- **At most one animated picture per physical module** — a face's four screens sit on four different modules; adjacent faces share exactly two of them (their common edge); opposite faces share none. `cube_game-designer` validates placement when writing the GDD; `cube_verifier`'s Template Agent re-checks it against the implementation.
+
 ### Step 3.0: Choose the asset source (before any generation or packing)
 
 - **Autonomous mode (default):** do NOT ask here — the decision was made at intake (`## Run Modes` → One-time intake). A resolved, validated image provider → **Path A** (AI generation). No provider (the user answered «не знаю», validation failed twice, or `YOLO` token with nothing configured) → **Path A with agent-drawn placeholder art**: `cube_asset-builder` authors every sprite itself per its placeholder-art section, and the final report carries the one placeholder line. Use **Path B** only if a complete self-supplied asset set is already on disk (the completeness check in 3.B2 still applies).
@@ -453,7 +461,7 @@ Placeholder-art sets skip this review — they are not judged for AI art cohesio
 The user makes the art by hand (or with their own tools) from the GDD. The orchestrator's job is to make the spec unambiguous, then refuse to pack an incomplete set.
 
 **3.B1 Hand the user the exact asset spec** (derive entirely from `plans/<game>_assets.json` + GDD §1 art style):
-- **Sprites** → drop into `assets/art/`. For each: filename **`<name>.png`** (verbatim, lowercase), exact size **`[w, h]`** in pixels, RGBA, transparent background (unless `flags.bg` is set, or the sprite is `color: "full"` — full-color art is always opaque), plus the `description` (and `gen_prompt` if present) as the visual brief. Animation frames must be the full contiguous `_00.._NN` set.
+- **Sprites** → drop into `assets/art/`. For each: filename **`<name>.png`** (verbatim, lowercase), exact size **`[w, h]`** in pixels, RGBA, transparent background (unless `flags.bg` is set, or the sprite is `color: "full"` — full-color art is always opaque), plus the `description` (and `gen_prompt` if present) as the visual brief. Animation frames must be the full contiguous set as named in the manifest (zero- or one-based, 2- or 3-digit, e.g. `_00.._NN` or `_001.._NNN`).
 - **Sounds** → drop into `assets/wav/`. For each: **`<name>.wav`**, ≤ `duration_ms`. (Packing encodes it to `sound/assets/<name>.mp3` automatically — the user supplies only the source `.wav`.)
 - The reserved **`0.png` is auto-created by the packer** — the user must NOT make it.
 - Stress that the **GDD's global art style applies to every file** so the set stays cohesive.

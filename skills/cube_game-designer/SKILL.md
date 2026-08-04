@@ -32,6 +32,7 @@ Do not trigger this skill directly for "make a game" / "design a game" requests 
 The GDD must account for these device characteristics (expressed in player-friendly terms, never as code):
 
 - **The cube has 6 faces**, each with **4 small screens** (24 screens total)
+- **Each screen sits on its own physical module.** A face's four screens live on four *different* modules; two adjacent faces share exactly two of those modules (the ones along their common edge); opposite faces share none. This matters for animation placement — see the Assets section below.
 - **Screens are 240x240 pixels** with a **physical gap** (border) between them
 - **Sprites are authored at HALF the on-screen size** — the engine applies a software ×2 upscale at draw time. So **authored size = intended on-screen size ÷ 2**, with a hard maximum of **120×120** (a full-screen sprite). A quarter-screen object is 30×30, etc. Whenever the GDD states a sprite size, it MUST be the authored (pre-upscale) size, never the on-screen size. The one exception: art explicitly marked **fullsize** draws 1:1 (no upscale) and may be authored at native resolution up to 240×240 — as **palette fullsize** (keeps transparency) or **full-color fullsize** (real color depth, fully opaque). See the Assets section below.
 - **Player interactions**: twist a face row (full or half twist), tap a face, tilt the cube
@@ -40,7 +41,7 @@ The GDD must account for these device characteristics (expressed in player-frien
 - **Taps** are detected per face (not per screen)
 - **Tilt/gravity** detects which face is on top or bottom
 - The cube can display on all 24 screens simultaneously — not all are visible to the player at once
-- **~20 frames per second** tick rate — animations should be simple and clear
+- **Hardware cap: 20 fps.** The engine ticks 20 times per second — never design (or describe to the player) an animation faster than that. Keep clips to **≤5 seconds** as the default guideline (longer is technically possible, limited only by app size, but 5 s keeps clips readable and packs lean) — see the Assets section for the full animation guidance.
 - **Maximum ~400 sprites** on screen at once across all faces — this is a hard budget
 
 ## Workflow
@@ -223,6 +224,30 @@ There is no hard limit on total art size (a game is bounded only by the cube's f
 flash space), but prefer the cheapest tier that achieves the look — don't make
 everything fullsize just because the option exists.
 
+**Animation guidance.** Whenever the design calls for an animated sprite (a walk
+cycle, an effect, anything with more than one frame):
+
+- **Hardware cap: 20 fps.** Never describe or plan an animation faster than the
+  engine's 20 ticks/second.
+- **Default clip length: ≤5 seconds.** Longer clips are technically possible —
+  only the app's total size limits it — but 5 s is the right default for both
+  attention span and pack size; only go longer with a specific reason.
+- **Prefer Regular (tier-1) animations.** They're the cheapest to render, so
+  reach for them first and only escalate tier when the design truly needs it.
+- **Fullsize animations must be short and used carefully** — they load the cube
+  harder than regular sprites. Keep them brief; if the resulting frametime would
+  rise above **~70 ms**, that's a bad sign — cut frames, shrink the size, or drop
+  a tier instead.
+- **Full-color (tier-3) animations only when the user explicitly asks for one.**
+  If the GDD includes one, flag it in the Assets section with a **"handle VERY
+  carefully"** warning — it's the heaviest tier the engine has.
+- **At most one animated picture per physical module.** Because a face's four
+  screens sit on four different modules (and adjacent faces share two of them
+  along their common edge — see Device Essentials above), never place two
+  different animations on screens that share a module. When the design uses
+  more than one animation, note in the GDD which screen each one occupies so
+  this can be checked.
+
 Total sprite assets: N
 
 ### Sounds
@@ -307,6 +332,7 @@ Before finalizing, verify:
 11. The GDD contains zero technical implementation details — no code, no API names, no engine internals
 12. **MVP scope items are grouped** by area (foundation/core/secondary/ui/audio) and each item is a discrete testable behavior
 13. **Game flow states** are named clearly and all transitions are defined
+14. **Animation placement** — if the design uses more than one animated sprite, no two of them sit on screens that share a physical module (a face's four screens are four different modules; adjacent faces share two, opposite faces share none — see Device Essentials); every full-color (tier-3) animation was explicitly requested by the user and carries a "handle VERY carefully" warning; no animation implies a rate faster than 20 fps or a clip longer than 5 s without a stated reason
 
 ## Important: Assets Are Created Downstream (Not by This Skill)
 
