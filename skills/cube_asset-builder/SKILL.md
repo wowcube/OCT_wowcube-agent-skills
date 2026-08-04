@@ -64,6 +64,27 @@ Xing header, no metadata. The pack stage copies those mp3s into
 > the job (the table is ordered cheapest-first): there is no hard packer-side
 > cap on pack size — only the cube's flash software region (contiguous free
 > 512 KB cells) bounds it — but lean packs are good practice.
+>
+> **The canonical MAXIMUM-QUALITY recipe (no compromises) is exactly:**
+> `color: "full"` + `flags.fullsize` + `dither: true`. The pipeline applies
+> nearest-level RGB565 rounding + Floyd–Steinberg dithering, then the plain
+> lossless RLE — and **nothing else**. No smoothing, no pre-filtering, no
+> lossy "optimizations" of any kind: the only loss between the source PNG and
+> the cube's screen is the display's own 16-bit format. When the user asks
+> for "maximum quality", this recipe IS the answer — never add smoothing
+> (`smooth_rows`-style texel snapping exists in `pack_beta.py` strictly as an
+> opt-in size tool for noisy video sources and is NEVER applied by default or
+> in the name of quality), never trade fidelity for pack size unless the user
+> explicitly asks to shrink the pack.
+>
+> Why this is absolute: a smoothed/degraded full-color sprite looks about the
+> same as a 256-color palette fullsize sprite — at twice the bytes. Degrading
+> tier 3 collapses it into tier 2 and makes it pointless. So the three tiers
+> are really three commitments: **fast** (palette + ×2 upscale — cheapest to
+> render and store), **mid** (palette fullsize — native sharpness, 1 byte-class
+> payload, keeps alpha), **fat** (full-color fullsize — uncompromised color,
+> 2 bytes/texel). Pick by the art's needs; once picked, deliver the tier's
+> full promise.
 
 **Core principle:** every asset name that appears in a prompt must exist as a
 file after this skill runs. The manifest is the contract. No placeholder text

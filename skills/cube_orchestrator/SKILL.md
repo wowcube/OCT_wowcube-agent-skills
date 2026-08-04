@@ -405,6 +405,8 @@ Practical consequences:
 
 **Pack size:** there is no hard packer-side cap — a pack is bounded only by the cube's flash software region (contiguous free 512 KB cells). Keep packs lean as good practice anyway: pick the **cheapest tier that does the job** (that is exactly what the table above orders, top to bottom), and never default art to fullsize/full-color just because 240×240 is available.
 
+**Tier promises are absolute.** Each tier is a commitment: fast (palette ×2), mid (palette fullsize — native sharpness, keeps alpha), fat (full-color — uncompromised color). **Maximum quality = `color: "full"` + `flags.fullsize` + `dither: true` and nothing else** — nearest-level RGB565, Floyd–Steinberg dithering, lossless RLE; no smoothing or lossy steps ever (a degraded full-color sprite ≈ a palette-fullsize sprite at twice the bytes — pointless). Never trade tier-3 fidelity for pack size unless the user explicitly asks to shrink the pack.
+
 ### Step 3.0: Choose the asset source (ASK FIRST — before any generation or packing)
 
 Before touching `cube_asset-builder`, present the choice with the **Agent tool's `AskUserQuestion`** (or a short bullet list + wait). Do NOT pick for the user.
