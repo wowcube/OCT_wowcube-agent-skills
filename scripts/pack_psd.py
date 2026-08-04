@@ -494,12 +494,26 @@ def export_all_python(art_dir: str, exported_dir: str,
 
     # Recreate and clean the exported directory
     os.makedirs(exported_dir, exist_ok=True)
+    removed_pngs = 0
     for pattern in ('*.png', '*.psl', '*.csv', '*.log'):
         for f in Path(exported_dir).glob(pattern):
             try:
                 f.unlink()
+                if pattern == '*.png':
+                    removed_pngs += 1
             except OSError:
                 pass
+
+    # The exported dir is a build product of the PSD/FNT sources in art_dir.
+    # If it held PNGs but there is no PSD to re-export, the caller almost
+    # certainly pre-placed plain-PNG sprites there and did NOT want --export
+    # to destroy them - say so loudly (the pack phase will then fail on the
+    # empty palette).
+    if removed_pngs and not sorted(Path(art_dir).glob('*.psd')):
+        print(f"  WARNING: --export cleaned {removed_pngs} PNG(s) out of "
+              f"{exported_dir}/ but {art_dir}/ has no .psd to re-export. "
+              f"If those PNGs were your sprites, restore them and re-run "
+              f"WITHOUT --export (plain-PNG workflows never need it).")
 
     # Reserved placeholder: BMP_0 / BMP_none - must always exist in slot 0.
     # Auto-create in art_dir if missing, then copy into exported_dir.

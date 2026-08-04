@@ -352,12 +352,28 @@ def _phase_pack_sprites(
     map_skip_names: set[str],
     sprite_pivots: dict[str, tuple[float, float]],
     has_palette: bool,
-) -> None:
+) -> int:
+    """Pack every sprite PNG. Returns the number of per-sprite errors."""
     ok = skip = err = 0
     total_orig = total_packed = 0
 
     if not has_palette and not args.build_palette:
-        return  # nothing to pack
+        return 0  # nothing to pack
+
+    packable = [f for f in files
+                if f.suffix.lower() == '.png'
+                and f.stem != PALETTE_SPRITE_NAME
+                and f.stem not in map_skip_names]
+    if packable and not palettes:
+        print(f"Error: no palette groups exist, but {len(packable)} PNG(s) "
+              f"need packing from {args.exported_dir}/.")
+        print("  --build-palette found no sprites to build a palette from "
+              "(is the exported dir empty apart from the reserved 0.png?).")
+        print("  NOTE: --export rebuilds the exported dir from --art-dir "
+              "PSDs/FNTs and DELETES any pre-placed PNGs there. For sprites "
+              "that are plain PNGs (no PSD), put them in --exported-dir and "
+              "run WITHOUT --export.")
+        sys.exit(1)
 
     for fpath in files:
         name = fpath.stem
@@ -436,6 +452,7 @@ def _phase_pack_sprites(
         ratio = total_packed / total_orig
         print(f"  Raw RGBA: {total_orig:,} bytes -> Packed: {total_packed:,} bytes "
               f"(ratio {ratio:.3f}x, saved {100*(1-ratio):.1f}%)")
+    return err
 
 
 def _phase_pack_maps(args: argparse.Namespace,
@@ -673,10 +690,16 @@ def main() -> None:
     if sprite_pivots:
         print(f"  Loaded pivot data for {len(sprite_pivots)} sprites from CSVs")
 
-    _phase_pack_sprites(
+    sprite_errors = _phase_pack_sprites(
         args, files, sprite_assignments, palettes,
         map_skip_names, sprite_pivots, has_palette,
     )
+    if sprite_errors:
+        # A sprite that failed to pack means a missing .raw in the container;
+        # never report success (exit 0) over an incomplete pack.
+        print(f"Error: {sprite_errors} sprite(s) failed to pack (see [ERR] "
+              f"lines above) - aborting before maps/ids/beta emit.")
+        sys.exit(1)
 
     map_names = _phase_pack_maps(args, asset_names_set)
 

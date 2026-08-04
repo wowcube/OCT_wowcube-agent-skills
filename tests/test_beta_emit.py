@@ -572,6 +572,69 @@ def test_pack_py_beta_overwrites_legacy_emit_raw(tmp_path, monkeypatch):
     assert (hdr.w, hdr.h) == (8, 8)
 
 
+def test_pack_py_export_wipe_of_png_workflow_fails_loudly(tmp_path, monkeypatch, capsys):
+    """The classic plain-PNG-workflow trap: sprites pre-placed in the exported
+    dir, then --export (which is PSD-only) wipes them. This must fail with
+    exit 1 and actionable text, not 'succeed' (exit 0) over an empty pack —
+    that silent success is exactly what stranded agents on the palette path."""
+    import pack
+
+    exported = tmp_path / "exported"
+    exported.mkdir()
+    Image.new("RGBA", (8, 8), (250, 200, 20, 255)).save(exported / "coin.png")
+
+    art = tmp_path / "art"   # no .psd here — nothing for --export to export
+    art.mkdir()
+
+    monkeypatch.setattr(sys, "argv", [
+        "pack.py", "--export", "--build-palette",
+        "--exported-dir", str(exported),
+        "--packed-dir", str(tmp_path / "packed"),
+        "--output-dir", str(tmp_path / "packed"),
+        "--art-dir", str(art),
+        "--assets", "assets",
+    ])
+    with pytest.raises(SystemExit) as exc:
+        pack.main()
+    assert exc.value.code == 1
+
+    out = capsys.readouterr().out
+    # export phase warns that it destroyed pre-placed PNGs...
+    assert "WARNING: --export cleaned" in out
+    # ...and the pack phase names the fix instead of raising StopIteration
+    assert "WITHOUT --export" in out
+    assert "StopIteration" not in out
+
+
+def test_pack_py_sprite_error_exits_nonzero(tmp_path, monkeypatch):
+    """A sprite that fails to pack means a missing .raw in the container:
+    pack.py must exit non-zero, not print [ERR] and report success."""
+    import pack
+
+    exported = tmp_path / "exported"
+    exported.mkdir()
+    Image.new("RGBA", (8, 8), (250, 200, 20, 255)).save(exported / "coin.png")
+
+    art = tmp_path / "art"
+    art.mkdir()
+
+    def boom(*a, **kw):
+        raise ValueError("synthetic pack failure")
+
+    monkeypatch.setattr(pack, "pack_sprite", boom)
+    monkeypatch.setattr(sys, "argv", [
+        "pack.py", "--build-palette",
+        "--exported-dir", str(exported),
+        "--packed-dir", str(tmp_path / "packed"),
+        "--output-dir", str(tmp_path / "packed"),
+        "--art-dir", str(art),
+        "--assets", "assets",
+    ])
+    with pytest.raises(SystemExit) as exc:
+        pack.main()
+    assert exc.value.code == 1
+
+
 # ── build_pipeline wiring ────────────────────────────────────────────────────
 
 def test_build_pipeline_passes_beta_args(tmp_path, monkeypatch):
