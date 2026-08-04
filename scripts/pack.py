@@ -562,7 +562,7 @@ def _phase_emit_beta(
              | (pack_beta.OCT_FLAG_ADDITIVE if s.flags.additive else 0) \
              | (pack_beta.OCT_FLAG_BG if s.flags.bg else 0)
 
-    full_specs: list[tuple[str, Path, tuple[int, int], int]] = []
+    full_specs: list[tuple[str, Path, tuple[int, int], int, bool]] = []
     full_names: set[str] = set()
     palette_extra_flags: dict[str, int] = {}
     manifest = None
@@ -578,7 +578,8 @@ def _phase_emit_beta(
                 raise FileNotFoundError(
                     f"full-color sprite '{s.name}': {png} not found "
                     f"(generate/export assets first)")
-            full_specs.append((s.name, png, s.size, _manifest_flag_bits(s)))
+            full_specs.append((s.name, png, s.size, _manifest_flag_bits(s),
+                               s.dither))
             full_names.add(s.name)
 
     # Palette-sprite blobs = the packed containers just written to output-dir

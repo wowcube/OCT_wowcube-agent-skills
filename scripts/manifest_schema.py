@@ -20,6 +20,12 @@ field plus `flags.fullsize`:
 every FULLSIZE sprite at zoom 1); the alpha ban is full-color-only. A
 sprite without `flags.fullsize` -- palette or full-color -- draws at 2x
 and is capped at 120.
+
+Full-color sprites additionally accept `dither: true` -- Floyd-Steinberg
+error diffusion to the RGB565 lattice during conversion (before the
+lossless RLE encode). Recommended for photographic art with smooth
+gradients; meaningless for palette sprites, which are quantized by the
+palette codec instead, so dither+palette is a validation error.
 """
 from __future__ import annotations
 
@@ -75,6 +81,7 @@ class Sprite:
     pivot: tuple[int, int] = (0, 0)
     flags: Flags = field(default_factory=Flags)
     color: str = "palette"
+    dither: bool = False
 
 
 @dataclass(frozen=True)
@@ -120,6 +127,7 @@ def _parse_sprite(raw: dict) -> Sprite:
         pivot=(int(pivot[0]), int(pivot[1])),
         flags=_parse_flags(raw.get("flags")),
         color=raw.get("color", "palette"),
+        dither=bool(raw.get("dither", False)),
     )
 
 
@@ -183,6 +191,14 @@ def validate(m: Manifest) -> list[str]:
                 f"sprite {s.name!r}: color 'full' (RAW565) sprites have no "
                 f"transparency (0x0000 is opaque black, not transparent) -- "
                 f"clear flags.alpha, or use color 'palette' for transparency"
+            )
+
+        if s.dither and s.color != "full":
+            errors.append(
+                f"sprite {s.name!r}: dither is only for color 'full' sprites "
+                f"(Floyd-Steinberg dithering to the RGB565 lattice) -- "
+                f"palette sprites are quantized by the palette codec instead, "
+                f"so drop dither or set color 'full'"
             )
 
         w, h = s.size

@@ -121,6 +121,7 @@ Naming rules — ENFORCED by `cube_asset-builder`'s validator:
   - `"full"` = full-color RGB565 with **NO transparency** — 0x0000 renders as opaque black, so the **alpha flag is forbidden** on full-color sprites (palette sprites, fullsize or not, keep alpha).
   - Any side > 120 **requires** `flags.fullsize` (any color). A `fullsize` sprite draws **1:1 (no ×2 upscale)**, so its `size` is the **native on-screen size, up to `[240, 240]`**.
   - A small full-color sprite (each side ≤ 120, no `fullsize`) is legal but still draws at ×2 — its `size` follows the ÷2 rule like any palette sprite.
+  - Sprite `dither` (optional, full-color only): `true` runs the RGB565 conversion through Floyd–Steinberg error diffusion. **Recommended for photographic full-color art** (smooth gradients, photos — kills 565 banding); skip it for flat-color art. Costs a slightly larger RLE payload. Setting `dither` on a `"palette"` sprite is a validation error.
   - Use `"full"` for opaque backgrounds, tiles, and full-screen art; anything that needs transparency stays `"palette"` (fullsize if it must be native-resolution).
   - Pick the **cheapest tier that does the job** (the table is ordered cheapest-first). There is no hard packer-side cap on total pack size — it is bounded only by the cube's flash software region (contiguous free 512 KB cells) — but lean packs are good practice; don't bloat every sprite to fullsize just because 240×240 exists.
 - Sound `duration_ms`: 1..2000 (default 500 if omitted).

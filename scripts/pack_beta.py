@@ -123,7 +123,51 @@ def smooth_rows(texels, width, height, threshold):
     return out.tobytes()
 
 
-def to_rgb565(image, size):
+def _floyd_steinberg(channel, levels):
+    """Serpentine Floyd-Steinberg error diffusion of one 0..255 channel.
+
+    Quantizes to ``levels + 1`` evenly spaced values (the 5- or 6-bit RGB565
+    lattice) and returns the integer level indices as an (h, w) uint16 array.
+    Works in level space so the lattice points are exactly the integers; the
+    scan alternates direction per row (serpentine), which breaks up the
+    diagonal worm artifacts of a fixed left-to-right scan.
+
+    Deliberately a plain python loop: FS error diffusion is sequential per
+    pixel (each result feeds the next pixel's input), so rows cannot be
+    vectorized the way rle_tokens vectorizes runs. 240x240 is ~58k pixels
+    per channel, well inside interactive time.
+    """
+    h, w = channel.shape
+    buf = (channel * (levels / 255.0)).tolist()   # plain lists: fast scalar access
+    out = [[0] * w for _ in range(h)]
+    for y in range(h):
+        row = buf[y]
+        nxt = buf[y + 1] if y + 1 < h else None
+        rightward = not (y & 1)
+        step = 1 if rightward else -1
+        for x in (range(w) if rightward else range(w - 1, -1, -1)):
+            old = row[x]
+            q = int(old + 0.5)          # buf can dip slightly negative,
+            if q < 0:                   # so clamp after rounding
+                q = 0
+            elif q > levels:
+                q = levels
+            out[y][x] = q
+            err = old - q
+            ahead = x + step
+            behind = x - step
+            if 0 <= ahead < w:
+                row[ahead] += err * 0.4375          # 7/16
+            if nxt is not None:
+                if 0 <= behind < w:
+                    nxt[behind] += err * 0.1875     # 3/16
+                nxt[x] += err * 0.3125              # 5/16
+                if 0 <= ahead < w:
+                    nxt[ahead] += err * 0.0625      # 1/16
+    return np.asarray(out, dtype=np.uint16)
+
+
+def to_rgb565(image, size, dither=False):
     """Convert a PIL image to little-endian RGB565 texels.
 
     ``size`` as an int centre-crops the image to a square and resizes to
@@ -131,6 +175,13 @@ def to_rgb565(image, size):
     resizes straight to exactly w x h. Alpha (or any transparency info) is
     always flattened onto black before conversion, since RGB565 carries no
     alpha channel. Returns ``width * height * 2`` bytes.
+
+    Each 8-bit channel maps to the NEAREST 5/6-bit level -- truncation
+    (``>> 3``) would bias dark and band on smooth gradients. With
+    ``dither=True`` the per-channel quantization error is Floyd-Steinberg
+    diffused instead, trading banding for high-frequency noise: right for
+    photographic art, pointless for flat-color sprites (a color already on
+    the lattice comes out identical either way).
     """
     # RGB565 carries no alpha, so flatten onto black instead of letting the undefined colour under fully transparent pixels through
     if image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info:
@@ -160,10 +211,19 @@ def to_rgb565(image, size):
         if image.size != (side, side):
             image = image.resize((side, side), Image.LANCZOS)
 
-    pixels = np.asarray(image, dtype=np.uint16)
-    red = (pixels[:, :, 0] >> 3) << 11
-    green = (pixels[:, :, 1] >> 2) << 5
-    blue = pixels[:, :, 2] >> 3
+    if dither:
+        pixels = np.asarray(image, dtype=np.float64)
+        red = _floyd_steinberg(pixels[:, :, 0], 31) << 11
+        green = _floyd_steinberg(pixels[:, :, 1], 63) << 5
+        blue = _floyd_steinberg(pixels[:, :, 2], 31)
+    else:
+        # (v * levels + 127) // 255 is exact round-to-nearest for integer v:
+        # the remainder is an integer, so the +127 bias tips exactly the
+        # values whose fractional part is >= 128/255 > 0.5 upward
+        pixels = np.asarray(image, dtype=np.uint32)
+        red = ((pixels[:, :, 0] * 31 + 127) // 255).astype(np.uint16) << 11
+        green = ((pixels[:, :, 1] * 63 + 127) // 255).astype(np.uint16) << 5
+        blue = ((pixels[:, :, 2] * 31 + 127) // 255).astype(np.uint16)
 
     return (red | green | blue).astype("<u2").tobytes()
 
@@ -464,16 +524,16 @@ def _write_raw(path: Path, blob: bytes) -> None:
     path.write_bytes(blob + b"\0" * ((-len(blob)) & 3))
 
 
-def _load_rgb565(image, size) -> bytes:
+def _load_rgb565(image, size, dither=False) -> bytes:
     """to_rgb565 for a Path or an already-open PIL image.
 
     Only images this function opened get closed; a caller-supplied Image
     stays usable after the call.
     """
     if isinstance(image, Image.Image):
-        return to_rgb565(image, size)
+        return to_rgb565(image, size, dither=dither)
     with Image.open(image) as img:
-        return to_rgb565(img, size)
+        return to_rgb565(img, size, dither=dither)
 
 
 def generate_beta_ids_h(records: list[tuple[int, str]]) -> str:
@@ -582,8 +642,11 @@ def emit_beta_layout(
                        ORs OCT_FLAG_* bits into the beta Flags byte, which
                        is how manifest flags.fullsize/additive/bg reach a
                        palette sprite's header.
-      full_sprites:    iterable of (name, png_path_or_image, (w, h), flags) -
-                       flags WITHOUT OCT_FLAG_RAW565 (ORed in automatically).
+      full_sprites:    iterable of (name, png_path_or_image, (w, h), flags)
+                       or (..., dither) - flags WITHOUT OCT_FLAG_RAW565
+                       (ORed in automatically); dither (default False) runs
+                       the RGB565 conversion through Floyd-Steinberg error
+                       diffusion (see to_rgb565).
       icon:            source image for the launcher icon, or None.
       sounds:          mp3 basenames; None scans <app_dir>/sound/assets/.
 
@@ -597,7 +660,9 @@ def emit_beta_layout(
     # normalize (name, blob) / (name, blob, extra_flags) to 3-tuples
     palette_sprites = [(t[0], t[1], t[2] if len(t) > 2 else 0)
                        for t in palette_sprites]
-    full_sprites = list(full_sprites)
+    # normalize (name, image, size, flags) / (..., dither) to 5-tuples
+    full_sprites = [(t[0], t[1], t[2], t[3], t[4] if len(t) > 4 else False)
+                    for t in full_sprites]
 
     if sounds is None:
         snd_dir = app_dir / "sound" / "assets"
@@ -626,7 +691,7 @@ def emit_beta_layout(
     for name, _blob, _extra in palette_sprites:
         sprite_ids[name] = len(records)
         records.append((KIND_SPRITE, name))
-    for name, _image, _size, _flags in full_sprites:
+    for name, _image, _size, _flags, _dither in full_sprites:
         sprite_ids[name] = len(records)
         records.append((KIND_SPRITE, name))
 
@@ -697,8 +762,8 @@ def emit_beta_layout(
                                         seq_id=seq.get(name, 0),
                                         extra_flags=extra_flags))
 
-    for name, image, (w, h), flags in full_sprites:
-        texels = _load_rgb565(image, (w, h))
+    for name, image, (w, h), flags, dither in full_sprites:
+        texels = _load_rgb565(image, (w, h), dither=dither)
         _write_raw(packed_dir / f"{name}.raw",
                    build_raw565_sprite(texels, w, h, flags=flags,
                                        seq=seq.get(name, 0)))

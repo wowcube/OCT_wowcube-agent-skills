@@ -293,6 +293,36 @@ def test_full_sprite_payload_decodes(emitted):
     assert texels == expected
 
 
+def _decoded_texels(raw: bytes) -> bytes:
+    hdr = parse_bmp_header(raw)
+    payload = raw[48:]
+    if hdr.compression == pack_beta.RAW565_RLE:
+        return pack_beta.rle_decode(payload, hdr.w, hdr.h)
+    return payload[:hdr.w * hdr.h * 2]
+
+
+def test_emit_full_sprite_dither_wiring(tmp_path):
+    """A 5th full-sprite tuple element turns on Floyd-Steinberg dithering;
+    4-tuples keep the plain nearest-level conversion."""
+    png = tmp_path / "grad.png"
+    grad = Image.new("RGB", (32, 32))
+    grad.putdata([(x * 8 + 3, y * 8 + 3, 128) for y in range(32) for x in range(32)])
+    grad.save(png)
+
+    app = tmp_path / "app_dith"
+    pack_beta.emit_beta_layout(
+        app, "app_dith",
+        full_sprites=[("plain", png, (32, 32), 0),
+                      ("dithered", png, (32, 32), 0, True)],
+    )
+    plain = _decoded_texels((_packed(app) / "plain.raw").read_bytes())
+    dithered = _decoded_texels((_packed(app) / "dithered.raw").read_bytes())
+    with Image.open(png) as img:
+        assert plain == pack_beta.to_rgb565(img, (32, 32))
+        assert dithered == pack_beta.to_rgb565(img, (32, 32), dither=True)
+    assert plain != dithered
+
+
 # ── sounds ───────────────────────────────────────────────────────────────────
 
 def test_sound_record(emitted):
@@ -424,7 +454,7 @@ def test_pack_py_emits_beta_container(tmp_path, monkeypatch):
         '{"name": "coin", "size": [8, 8], "description": "coin"},'
         '{"name": "panel", "size": [8, 8], "description": "palette fullsize",'
         ' "flags": {"fullsize": true, "additive": true}},'
-        '{"name": "bg", "size": [16, 16], "description": "bg",'
+        '{"name": "bg", "size": [16, 16], "description": "bg", "dither": true,'
         ' "color": "full", "flags": {"alpha": false, "fullsize": false}}'
         '], "sounds": [{"name": "blip", "description": "b"}]}',
         encoding="utf-8")
@@ -473,10 +503,16 @@ def test_pack_py_emits_beta_container(tmp_path, monkeypatch):
     assert not panel_hdr.flags & OCT_FLAG_RAW565    # still palette-encoded
 
     # full-color sprite is RAW565 at manifest size, not palette-packed
-    bg_hdr = parse_bmp_header((packed_dir / "bg.raw").read_bytes())
+    bg_raw = (packed_dir / "bg.raw").read_bytes()
+    bg_hdr = parse_bmp_header(bg_raw)
     assert bg_hdr.flags & OCT_FLAG_RAW565
     assert (bg_hdr.w, bg_hdr.h) == (16, 16)
     assert not bg_hdr.flags & OCT_FLAG_FULLSIZE
+
+    # ...and the manifest's "dither": true reached to_rgb565 through pack.py
+    with Image.open(exported / "bg.png") as bg_img:
+        expected = pack_beta.to_rgb565(bg_img, (16, 16), dither=True)
+    assert _decoded_texels(bg_raw) == expected
 
     # icon maps point at ico_idle
     ico = (packed_dir / "ico.raw").read_bytes()

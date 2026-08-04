@@ -374,6 +374,42 @@ def test_color_defaults_to_palette(tmp_manifest):
     assert m.sprites[0].color == "palette"
 
 
+def test_dither_parsed_and_valid_on_fullcolor(tmp_manifest):
+    """dither: true on a full-color sprite parses and validates clean."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "photo", "size": [240, 240], "description": "d",
+                     "color": "full", "dither": True,
+                     "flags": {"alpha": False, "fullsize": True}}],
+        "sounds": [],
+    }
+    m = load_manifest(tmp_manifest(data))
+    assert m.sprites[0].dither is True
+    assert validate(m) == []
+
+
+def test_dither_defaults_false(tmp_manifest):
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [32, 32], "description": "d"}],
+        "sounds": [],
+    }
+    assert load_manifest(tmp_manifest(data)).sprites[0].dither is False
+
+
+def test_dither_on_palette_sprite_rejected(tmp_manifest):
+    """dither is a full-color (RGB565) knob; palette sprites are quantized
+    by the palette codec instead, so dither+palette must be rejected."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [32, 32], "description": "d",
+                     "dither": True}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert any("dither" in e.lower() and "full" in e.lower() for e in errors)
+
+
 def test_color_invalid_value_rejected(tmp_manifest):
     data = {
         "game": "demo", "schema_version": 1,

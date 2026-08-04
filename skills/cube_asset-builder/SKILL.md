@@ -55,7 +55,12 @@ Xing header, no metadata. The pack stage copies those mp3s into
 > `flags.alpha` is forbidden on `"full"` sprites (0x0000 is opaque black, not
 > transparent); palette sprites keep index-0 transparency in both tiers. A
 > `"full"` sprite without `flags.fullsize` still draws at ×2 and is capped at
-> 120, same as a default palette sprite. Prefer the cheapest tier that does
+> 120, same as a default palette sprite. Full-color sprites also accept
+> `dither: true` — Floyd–Steinberg dithering to the RGB565 lattice, applied
+> during conversion, before the lossless RLE encode. Recommended for
+> photographic art and smooth gradients (kills banding); pointless for
+> flat-color art, and it costs a somewhat larger RLE payload (dither noise
+> breaks up runs). Prefer the cheapest tier that does
 > the job (the table is ordered cheapest-first): there is no hard packer-side
 > cap on pack size — only the cube's flash software region (contiguous free
 > 512 KB cells) bounds it — but lean packs are good practice.
