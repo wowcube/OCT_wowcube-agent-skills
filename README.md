@@ -2,6 +2,8 @@
 
 A knowledge base and skill set for LLM-powered coding agents (Kilo Code, Claude Code, Cursor, GitHub Copilot, etc.) that enables them to design and implement games for the WowCube platform — a 2×2×2 puzzle cube with 24 physical screens.
 
+`cube_orchestrator` runs the whole pipeline **autonomously by default** — one request in, a verified device `.oct` out, with no approval stops unless the user opts into stepwise/checkpoint mode (see `skills/cube_orchestrator/SKILL.md` for the run-mode rules). AI sprite generation is multi-provider: OpenRouter, OpenAI, xAI/Grok, Gemini, or a local Stable Diffusion endpoint, auto-detected from whichever key/URL is configured (falls back to agent-drawn placeholder art with none configured).
+
 ## 📂 Repository Structure
 
 ```
@@ -39,6 +41,7 @@ A knowledge base and skill set for LLM-powered coding agents (Kilo Code, Claude 
 | `skills/cube_asset-builder/SKILL.md` | Stage 3 component — turns the asset manifest into the packed beta container (`index.bin`, `art/packed/`, `sound/assets/`) and `_ids.h` |
 | `skills/wowcube-boilerplate/SKILL.md` | Infra gate + Stage 5 component — scaffolds `app_<game>/`, verifies the simulator build, and produces the device-loadable `.oct` |
 | `skills/cube_verifier/SKILL.md` | Stage 4 component — Requirements Agent + Template Agent that score a coder agent's implementation |
+| `scripts/repack_app.py` | One-command "assets/code changed — repack it" cycle: repack, auto-bump `APP_VERSION`'s patch digit, rebuild + verify the device `.oct` (`--skip-device` to stop after the version bump) |
 | `templates/app_ai_template/src/app_ai_template.h` | Annotated OctaviOS API reference — the authoritative guide for all WowCube C/C++ code |
 | `templates/app_ai_template/src/app_ai_template_ids.h` | Asset ID header (BMP enum pattern) |
 | `src/app_structure_example.h` | Clean project skeleton for new games |
