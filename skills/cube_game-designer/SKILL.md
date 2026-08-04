@@ -33,7 +33,7 @@ The GDD must account for these device characteristics (expressed in player-frien
 
 - **The cube has 6 faces**, each with **4 small screens** (24 screens total)
 - **Screens are 240x240 pixels** with a **physical gap** (border) between them
-- **Sprites are authored at HALF the on-screen size** — the engine applies a software ×2 upscale at draw time. So **authored size = intended on-screen size ÷ 2**, with a hard maximum of **120×120** (a full-screen sprite). A quarter-screen object is 30×30, etc. Whenever the GDD states a sprite size, it MUST be the authored (pre-upscale) size, never the on-screen size. The one exception: fully opaque **full-color** art (backdrops, full-screen scenes) may be authored at native resolution up to 240×240 — but full-color art has no transparency, so anything that needs a see-through background follows the half-size rule. See the Assets section below.
+- **Sprites are authored at HALF the on-screen size** — the engine applies a software ×2 upscale at draw time. So **authored size = intended on-screen size ÷ 2**, with a hard maximum of **120×120** (a full-screen sprite). A quarter-screen object is 30×30, etc. Whenever the GDD states a sprite size, it MUST be the authored (pre-upscale) size, never the on-screen size. The one exception: art explicitly marked **fullsize** draws 1:1 (no upscale) and may be authored at native resolution up to 240×240 — as **palette fullsize** (keeps transparency) or **full-color fullsize** (real color depth, fully opaque). See the Assets section below.
 - **Player interactions**: twist a face row (full or half twist), tap a face, tilt the cube
 - **Twists** rotate a row of 4 screens — this is the primary input for most games
 - **Half-twists** shift screens partially — useful for fine movement
@@ -195,10 +195,10 @@ Mark any input as "not used" if the game does not use it.
 - `<snake_case_name>` — description and approximate **authored** size.
 
 **Sprite sizes are authored (pre-upscale) sizes — always ≤ 120×120, unless the
-sprite is a full-color fullsize sprite — see the exception below.** The engine
-upscales every sprite ×2 at draw time, so the size written here is *half* how big
+sprite is marked fullsize — see the tier table below.** The engine
+upscales every regular sprite ×2 at draw time, so the size written here is *half* how big
 the sprite appears on the 240×240 screen: **authored size = intended on-screen size ÷ 2.**
-- Full screen → `120x120` (the maximum; never write a size larger than 120 in either dimension, unless the sprite is a full-color fullsize sprite — see the exception below)
+- Full screen → `120x120` (the maximum; never write a size larger than 120 in either dimension, unless the sprite is marked fullsize — see the tier table below)
 - Half the screen (each side) → `60x60`
 - A quarter of the screen (each side) → `30x30`
 - A small icon/item → size it down proportionally the same way
@@ -206,12 +206,22 @@ the sprite appears on the 240×240 screen: **authored size = intended on-screen 
 Example: `hero — small character, occupies about a quarter of a screen → 30x30px`.
 Do NOT write the on-screen size (e.g. `60x60` for a quarter-screen sprite) — halve it.
 
-**Full-color exception:** a sprite that is fully opaque and fills its whole rectangle
-(a backdrop, tile set, or full-screen scene) may be marked **full-color** and listed at
-its **native on-screen size, up to 240×240** (e.g. `background — full-screen night sky,
-full-color → 240x240px`). Full-color art has NO transparency, so anything that needs a
-see-through background (characters, items, icons, effects) must stay a regular sprite
-at the halved size.
+**Art tiers.** The engine offers three sprite complexity tiers. The default (regular)
+tier is right for almost everything; mark a sprite **fullsize** (and optionally
+**full-color**) only when the design truly needs native-resolution art:
+
+| Tier | Listed size | Colors & transparency | Drawn at | Use for |
+|------|-------------|-----------------------|----------|---------|
+| Regular (default) | ≤ 120×120 (= on-screen ÷ 2) | shared palette, transparent background supported | ×2 upscale | characters, items, icons, effects — anything |
+| Palette fullsize | native, up to 240×240 | shared palette, transparency KEPT | 1:1, no upscale | crisp native-resolution art that still needs a see-through background (detailed overlays, fine UI) |
+| Full-color fullsize | native, up to 240×240 | full color depth, NO transparency | 1:1, no upscale | fully opaque backdrops, photographic full-screen scenes |
+
+E.g. `background — full-screen night sky, full-color fullsize → 240x240px`. Full-color
+art has NO transparency, so anything that needs a see-through background must be a
+regular sprite at the halved size or a palette fullsize sprite at native size.
+There is no hard limit on total art size (a game is bounded only by the cube's free
+flash space), but prefer the cheapest tier that achieves the look — don't make
+everything fullsize just because the option exists.
 
 Total sprite assets: N
 
@@ -289,7 +299,7 @@ Before finalizing, verify:
 4. Asset names are unique, descriptive, and use `snake_case`
 5. The game is feasible given the device constraints (sprite count, screen count, input types)
 6. **Sprite budget** — worst-case total sprites <= 400
-6a. **Sprite sizes are authored sizes** — every sprite size in §7 is ≤ 120×120 (full-screen = 120×120) and equals the intended on-screen size ÷ 2 (e.g. a quarter-screen object is 30×30, not 60×60). Any size > 120, or any size written in on-screen pixels, is wrong — fix it. The one exception: a sprite explicitly marked **full-color** (opaque backdrop/full-screen art) may be listed at native size up to 240×240; a full-color sprite that needs transparency is a design error.
+6a. **Sprite sizes are authored sizes** — every sprite size in §7 is ≤ 120×120 (full-screen = 120×120) and equals the intended on-screen size ÷ 2 (e.g. a quarter-screen object is 30×30, not 60×60). Any size > 120, or any size written in on-screen pixels, is wrong — fix it. The one exception: a sprite explicitly marked **fullsize** (palette fullsize or full-color fullsize — see the §7 tier table) draws 1:1 and may be listed at native size up to 240×240; a **full-color** sprite that needs transparency is a design error (use palette fullsize instead).
 7. The controls summary matches the mechanics described in the gameplay section
 8. The document is understandable by someone who has never seen WowCube code
 9. All user answers from the discovery interview are reflected in the document

@@ -39,20 +39,26 @@ Xing header, no metadata. The pack stage copies those mp3s into
 > a correct manifest from `technical_prompter` already encodes this. If you ever
 > see a sprite `size` > 120 (or a size that reads like on-screen pixels), it is a
 > manifest sizing error: delegate it back to `technical_prompter` rather than
-> packing it. The one exception is `color: "full"` sprites with `flags.fullsize`
-> set (see below) — those are authored at native resolution up to 240×240.
+> packing it. The one exception is sprites with `flags.fullsize` set — any
+> color (see the tier table below) — those are authored at native resolution
+> up to 240×240.
 
-> **`color` picks the sprite's encoding — `"palette"` (default) or `"full"`.**
-> `"palette"` sprites are quantized into the shared palette (index 0
-> transparent) and always follow the ½-resolution / cap-120 rule above — use
-> this whenever the sprite needs transparency (characters, icons, HUD
-> elements). `"full"` sprites are RGB565, 2 bytes/texel, with **no
-> transparency** (`flags.alpha` is forbidden on them) — use this for opaque
-> backgrounds, tiles, and other fullscreen art where you want real color depth
-> and don't need alpha. A `"full"` sprite with `flags.fullsize` set draws 1:1
-> (no ×2 upscale) and may be authored up to 240×240 native; without
-> `flags.fullsize` it still draws at ×2 and is capped at 120, same as a
-> palette sprite.
+> **`color` picks the sprite's encoding — `"palette"` (default) or `"full"` —
+> and together with `flags.fullsize` selects one of three art tiers:**
+>
+> | Tier | Manifest | `size` (authored) | Colors / transparency | Drawn at | Use for |
+> |------|----------|-------------------|-----------------------|----------|---------|
+> | Palette (default) | `color: "palette"` | ≤ `[120, 120]` (= on-screen ÷ 2) | shared quantized palette, index 0 transparent | ×2 upscale | characters, icons, HUD — anything needing transparency |
+> | Palette fullsize | `color: "palette"` + `flags.fullsize` | native, up to `[240, 240]` | shared palette, transparency KEPT | 1:1 | native-resolution art that still needs alpha |
+> | Full-color fullsize | `color: "full"` + `flags.fullsize` | native, up to `[240, 240]` | RGB565, 2 bytes/texel, **no transparency** | 1:1 | opaque backgrounds, tiles, photographic full-screen art |
+>
+> `flags.alpha` is forbidden on `"full"` sprites (0x0000 is opaque black, not
+> transparent); palette sprites keep index-0 transparency in both tiers. A
+> `"full"` sprite without `flags.fullsize` still draws at ×2 and is capped at
+> 120, same as a default palette sprite. Prefer the cheapest tier that does
+> the job (the table is ordered cheapest-first): there is no hard packer-side
+> cap on pack size — only the cube's flash software region (contiguous free
+> 512 KB cells) bounds it — but lean packs are good practice.
 
 **Core principle:** every asset name that appears in a prompt must exist as a
 file after this skill runs. The manifest is the contract. No placeholder text
@@ -175,7 +181,9 @@ python OCT_wowcube-agent-skills/scripts/build_pipeline.py \
 `--app-dir` you only get the legacy `assets/packed/*.png` + `pal.png`
 intermediates, not the container the simulator/`.oct` actually load.
 `--manifest` is what lets `color: "full"` sprites be RAW565-encoded into the
-container instead of run through the palette codec. Under the hood this
+container instead of run through the palette codec, and what carries each
+palette sprite's manifest flags (`fullsize`/`additive`/`bg`) into its packed
+header. Under the hood this
 drives `scripts/pack.py --export --build-palette --build-ids --emit-raw
 --beta-app-dir <app-dir> --app-name app_<game> --manifest <manifest-path>`.
 

@@ -1,18 +1,25 @@
 """Load and validate plans/<game>_assets.json (schema_version 1).
 
-Sprites support two color encodings, selected by the per-sprite `color`
-field:
+Sprites come in three complexity tiers, selected by the per-sprite `color`
+field plus `flags.fullsize`:
 
-- "palette" (default): quantized-palette sprites, index 0 is transparent.
-  Authored at HALF resolution; the engine upscales x2 at draw time, so the
-  on-screen size is 2x the authored size. Max authored side is 120.
-- "full": full-color RAW565 sprites (RGB565, 2 bytes/texel). No
-  transparency support -- 0x0000 is opaque black, not transparent -- so
-  `flags.alpha` must not be set. With `flags.fullsize` the sprite draws
-  1:1 (no 2x upscale), so full-screen art is authored at native
-  resolution, up to 240 per side. Without `flags.fullsize`, a full-color
-  sprite still draws at 2x like any other sprite and is capped at 120,
-  same as palette sprites.
+- Palette 120 (default, cheapest): `color: "palette"`, quantized-palette
+  sprites, index 0 is transparent. Authored at HALF resolution; the engine
+  upscales x2 at draw time, so the on-screen size is 2x the authored size.
+  Max authored side is 120.
+- Palette fullsize (middle): `color: "palette"` + `flags.fullsize`. Still
+  palette-encoded, and transparency via index 0 is KEPT, but the sprite
+  draws 1:1 (no 2x upscale), so it is authored at native resolution, up to
+  240 per side. This is the same mode the engine's fonts use.
+- Full-color fullsize (max): `color: "full"` + `flags.fullsize`. RAW565
+  (RGB565, 2 bytes/texel), no palette and no transparency -- 0x0000 is
+  opaque black, not transparent -- so `flags.alpha` must not be set on any
+  full-color sprite. Draws 1:1 at native resolution, up to 240 per side.
+
+`flags.fullsize` lifts the 120 cap to 240 for ANY color (the engine draws
+every FULLSIZE sprite at zoom 1); the alpha ban is full-color-only. A
+sprite without `flags.fullsize` -- palette or full-color -- draws at 2x
+and is capped at 120.
 """
 from __future__ import annotations
 
@@ -30,11 +37,11 @@ RESERVED_NAMES = frozenset({
 # Sprites are authored at HALF resolution; the engine upscales them x2 at draw
 # time, so the on-screen size is 2x the authored size. A full-screen sprite is
 # authored at 120x120 (-> 240x240 on screen), which is the hard maximum.
-# This cap applies to "palette" sprites always, and to "full" (RAW565)
-# sprites unless flags.fullsize is set -- see SPRITE_MAX_SIDE_FULLSIZE.
+# This cap applies to every sprite WITHOUT flags.fullsize, regardless of
+# color -- see SPRITE_MAX_SIDE_FULLSIZE.
 SPRITE_MAX_SIDE = 120
-# color="full" sprites with flags.fullsize draw 1:1 (no 2x upscale), so
-# full-screen full-color art is authored at native resolution, up to 240.
+# flags.fullsize sprites (any color) draw 1:1 (no 2x upscale), so fullsize
+# art is authored at native resolution, up to 240.
 SPRITE_MAX_SIDE_FULLSIZE = 240
 ALLOWED_SPRITE_COLORS = frozenset({"palette", "full"})
 SOUND_MAX_DURATION_MS = 2000
@@ -179,16 +186,16 @@ def validate(m: Manifest) -> list[str]:
             )
 
         w, h = s.size
-        is_native_fullsize = s.color == "full" and s.flags.fullsize
+        is_native_fullsize = s.flags.fullsize
         max_side = SPRITE_MAX_SIDE_FULLSIZE if is_native_fullsize else SPRITE_MAX_SIDE
         if not (1 <= w <= max_side) or not (1 <= h <= max_side):
-            if s.color == "full" and not s.flags.fullsize and (
+            if not s.flags.fullsize and (
                 w > SPRITE_MAX_SIDE or h > SPRITE_MAX_SIDE
             ):
                 errors.append(
                     f"sprite {s.name!r}: size {s.size} out of range -- "
                     f"sides over {SPRITE_MAX_SIDE} need flags.fullsize "
-                    f"(draws 1:1) and color 'full'"
+                    f"(draws 1:1, works for any color)"
                 )
             else:
                 errors.append(

@@ -377,7 +377,7 @@ Reached when the GDD, prompts, and manifest exist but `assets/packed/` or `src/a
 The two facts below are the authoritative sizing rule for all WowCube assets. Honor them whenever gating the manifest (Step 3.A1), generating (Path A), validating self-supplied art (Path B), or reviewing sizes — and surface them to the user whenever sprite dimensions come up.
 
 1. **The physical screen (quadrant) is 240×240 px.** That is the hardware resolution of one of the cube's 24 displays.
-2. **But every palette sprite is authored/generated at HALF resolution, because the engine applies a software ×2 upscale at draw time.** (Full-color sprites are the one exception — see below.) The governing formula for palette assets (not just backgrounds) is:
+2. **But every regular sprite is authored/generated at HALF resolution, because the engine applies a software ×2 upscale at draw time.** (`flags.fullsize` sprites are the one exception — see the art-tier table below.) The governing formula for regular assets (not just backgrounds) is:
 
    > **authored size = intended on-screen size ÷ 2**
 
@@ -389,11 +389,21 @@ This applies to **every** asset, sized proportionally to how much of the screen 
 - **Any other sprite** → take its target footprint on the 240×240 screen and halve both dimensions.
 
 Practical consequences:
-- **Never generate or request a sprite larger than 120×120**, and for every smaller asset compute its authored size as (intended on-screen px ÷ 2) — apply this to characters, items, UI elements, effects, everything, not only fullsize/`bg` sprites.
+- **Never generate or request a sprite larger than 120×120 unless it sets `flags.fullsize`**, and for every smaller asset compute its authored size as (intended on-screen px ÷ 2) — apply this to characters, items, UI elements, effects, everything, not only `bg` sprites.
 - Manifest `size` values (`plans/<game>_assets.json`) are in **authored (pre-upscale) pixels**: full-screen = `[120, 120]`, quarter-screen character = `[30, 30]`, etc.
-- If a manifest sprite's `size` looks like it was set in on-screen pixels (e.g. a quarter-screen sprite at `[60, 60]`, or anything > 120), treat it as a sizing error: return to Stage 2 (`technical_prompter`) to halve it rather than generating it — unless the sprite is a full-color fullsize sprite, per the exception below.
+- If a manifest sprite's `size` looks like it was set in on-screen pixels (e.g. a quarter-screen sprite at `[60, 60]`, or anything > 120), treat it as a sizing error: return to Stage 2 (`technical_prompter`) to halve it rather than generating it — unless the sprite sets `flags.fullsize`, per the art-tier table below.
 
-**Full-color exception (beta).** A manifest sprite may set `color: "full"` — full-color RGB565 (2 bytes/texel) with **NO transparency** (0x0000 draws as opaque black, so the alpha flag is forbidden). Combined with `flags.fullsize`, a full-color sprite draws **1:1 with no ×2 upscale** and is therefore authored at its **native on-screen size, up to the full 240×240**. Use full-color for backgrounds, tile sheets, and full-screen art only; anything that needs transparency stays a palette sprite under the ½-resolution rule above. A small full-color sprite (each side ≤ 120, no `fullsize`) is also legal, but it still draws at ×2 like every other sprite — so its `size` still follows the ÷2 formula.
+**Art tiers (beta).** The engine has three sprite complexity tiers, selected by the manifest `color` field plus `flags.fullsize`:
+
+| Tier | Manifest | Authored size | Colors / transparency | Drawn at | Use for |
+|------|----------|---------------|-----------------------|----------|---------|
+| Palette (default) | `color: "palette"` | ≤ 120×120 (= on-screen ÷ 2) | shared palette, index 0 transparent | ×2 upscale | characters, items, HUD — anything needing transparency |
+| Palette fullsize | `color: "palette"` + `flags.fullsize` | native, up to 240×240 | shared palette, transparency KEPT | 1:1 | native-resolution art that still needs a see-through background |
+| Full-color fullsize | `color: "full"` + `flags.fullsize` | native, up to 240×240 | RGB565 (2 B/texel), **NO transparency** | 1:1 | opaque backdrops, tile sheets, photographic full-screen scenes |
+
+`flags.fullsize` is what lifts the 120 cap and disables the ×2 upscale — for **any** color. The alpha ban is full-color-only: `color: "full"` has no transparency (0x0000 draws as opaque black, so the alpha flag is forbidden on it), while a palette fullsize sprite keeps index-0 transparency. A small full-color sprite (each side ≤ 120, no `fullsize`) is also legal, but it still draws at ×2 like every other sprite — so its `size` still follows the ÷2 formula.
+
+**Pack size:** there is no hard packer-side cap — a pack is bounded only by the cube's flash software region (contiguous free 512 KB cells). Keep packs lean as good practice anyway: pick the **cheapest tier that does the job** (that is exactly what the table above orders, top to bottom), and never default art to fullsize/full-color just because 240×240 is available.
 
 ### Step 3.0: Choose the asset source (ASK FIRST — before any generation or packing)
 
@@ -425,7 +435,7 @@ This is a quality gate, not a replacement for the human checkpoint. Path A then 
 The user makes the art by hand (or with their own tools) from the GDD. The orchestrator's job is to make the spec unambiguous, then refuse to pack an incomplete set.
 
 **3.B1 Hand the user the exact asset spec** (derive entirely from `plans/<game>_assets.json` + GDD §1 art style):
-- **Sprites** → drop into `assets/art/`. For each: filename **`<name>.png`** (verbatim, lowercase), exact size **`[w, h]`** in pixels, RGBA, transparent background (unless `flags.bg`/`flags.fullsize`), plus the `description` (and `gen_prompt` if present) as the visual brief. Animation frames must be the full contiguous `_00.._NN` set.
+- **Sprites** → drop into `assets/art/`. For each: filename **`<name>.png`** (verbatim, lowercase), exact size **`[w, h]`** in pixels, RGBA, transparent background (unless `flags.bg` is set, or the sprite is `color: "full"` — full-color art is always opaque), plus the `description` (and `gen_prompt` if present) as the visual brief. Animation frames must be the full contiguous `_00.._NN` set.
 - **Sounds** → drop into `assets/wav/`. For each: **`<name>.wav`**, ≤ `duration_ms`. (Packing encodes it to `sound/assets/<name>.mp3` automatically — the user supplies only the source `.wav`.)
 - The reserved **`0.png` is auto-created by the packer** — the user must NOT make it.
 - Stress that the **GDD's global art style applies to every file** so the set stays cohesive.

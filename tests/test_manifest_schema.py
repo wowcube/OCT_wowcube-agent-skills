@@ -314,6 +314,56 @@ def test_palette_sprite_still_capped_at_120(tmp_manifest):
     assert any("size" in e.lower() for e in errors)
 
 
+def test_palette_fullsize_240_accepted(tmp_manifest):
+    """Tier 2 (palette fullsize): a palette sprite at native 240x240 with
+    flags.fullsize draws 1:1 (no x2 upscale) and must validate."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "backdrop", "size": [240, 240], "description": "d",
+                     "flags": {"fullsize": True}}],
+        "sounds": [],
+    }
+    m = load_manifest(tmp_manifest(data))
+    assert m.sprites[0].flags.fullsize is True
+    assert validate(m) == []
+
+
+def test_palette_240_without_fullsize_rejected_with_hint(tmp_manifest):
+    """A palette sprite over 120 without flags.fullsize must be rejected,
+    and the error must point at flags.fullsize as the fix."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "backdrop", "size": [240, 240], "description": "d"}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert any("fullsize" in e.lower() for e in errors)
+
+
+def test_palette_fullsize_keeps_alpha(tmp_manifest):
+    """The alpha ban is full-color-only: a palette fullsize sprite keeps
+    transparency via palette index 0, so alpha stays legal on it."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "overlay", "size": [240, 240], "description": "d",
+                     "flags": {"fullsize": True, "alpha": True}}],
+        "sounds": [],
+    }
+    assert validate(load_manifest(tmp_manifest(data))) == []
+
+
+def test_fullsize_over_240_still_rejected(tmp_manifest):
+    """flags.fullsize lifts the cap to 240, not beyond."""
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [241, 240], "description": "d",
+                     "flags": {"fullsize": True}}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert any("size" in e.lower() for e in errors)
+
+
 def test_color_defaults_to_palette(tmp_manifest):
     data = {
         "game": "demo", "schema_version": 1,

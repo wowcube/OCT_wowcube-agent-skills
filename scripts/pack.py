@@ -552,39 +552,49 @@ def _phase_emit_beta(
     else:
         pal_groups = {pidx: _to_565(pal) for pidx, pal in palettes.items()}
 
-    # Manifest full-color sprites bypass the palette codec entirely
+    # Manifest full-color sprites bypass the palette codec entirely; manifest
+    # palette sprites contribute their flag bits (fullsize/additive/bg) so
+    # patch_palette_sprite can OR them into the beta header -- a PALETTE
+    # sprite with flags.fullsize (tier 2) draws 1:1 exactly like a full-color
+    # fullsize one, and keeps its index-0 transparency.
+    def _manifest_flag_bits(s) -> int:
+        return (pack_beta.OCT_FLAG_FULLSIZE if s.flags.fullsize else 0) \
+             | (pack_beta.OCT_FLAG_ADDITIVE if s.flags.additive else 0) \
+             | (pack_beta.OCT_FLAG_BG if s.flags.bg else 0)
+
     full_specs: list[tuple[str, Path, tuple[int, int], int]] = []
     full_names: set[str] = set()
+    palette_extra_flags: dict[str, int] = {}
     manifest = None
     if args.manifest:
         from manifest_schema import load_manifest
         manifest = load_manifest(args.manifest)
         for s in manifest.sprites:
             if s.color != 'full':
+                palette_extra_flags[s.name] = _manifest_flag_bits(s)
                 continue
             png = Path(args.exported_dir) / f'{s.name}.png'
             if not png.is_file():
                 raise FileNotFoundError(
                     f"full-color sprite '{s.name}': {png} not found "
                     f"(generate/export assets first)")
-            flags = (pack_beta.OCT_FLAG_FULLSIZE if s.flags.fullsize else 0) \
-                  | (pack_beta.OCT_FLAG_ADDITIVE if s.flags.additive else 0) \
-                  | (pack_beta.OCT_FLAG_BG if s.flags.bg else 0)
-            full_specs.append((s.name, png, s.size, flags))
+            full_specs.append((s.name, png, s.size, _manifest_flag_bits(s)))
             full_names.add(s.name)
 
     # Palette-sprite blobs = the packed containers just written to output-dir
     # (decoded strip bytes ARE the legacy octBmp_t + payload). pal.png, the
     # legacy 0 placeholder, map containers and full-color sprites are not
-    # palette sprites.
+    # palette sprites. Without a manifest every extra_flags is 0, so the
+    # legacy no-manifest output is byte-identical to before.
     skip = {PALETTE_SPRITE_NAME, PLACEHOLDER_SPRITE_NAME} \
         | set(map_names) | full_names
-    palette_blobs: list[tuple[str, bytes]] = []
+    palette_blobs: list[tuple[str, bytes, int]] = []
     for png in sorted(Path(args.output_dir).glob('*.png')):
         if png.stem in skip:
             continue
         with Image.open(png) as img:
-            palette_blobs.append((png.stem, img.convert('RGBA').tobytes()))
+            palette_blobs.append((png.stem, img.convert('RGBA').tobytes(),
+                                  palette_extra_flags.get(png.stem, 0)))
 
     icon = Path(args.icon) if args.icon else None
     if icon is None:

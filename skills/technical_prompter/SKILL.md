@@ -109,12 +109,20 @@ Naming rules — ENFORCED by `cube_asset-builder`'s validator:
 
 - Names match `[a-z0-9_]+`. No uppercase, no `-`, space, or `% & = # $ !`.
 - Animation frames: zero-padded 2-digit suffix starting at `_00` (e.g. `hero_idle_00`, `hero_idle_01`). Set `anim: "<base>"` and `frame: <N>` (0-based).
-- Sprite `size`: **authored (pre-upscale) pixels, both dimensions 1..120** for palette sprites. The engine upscales every palette sprite ×2 at draw time, so `size` is HALF the on-screen size: **authored size = intended on-screen size ÷ 2**, with a hard max of **120×120** (a full-screen sprite). Examples: full screen → `[120, 120]`; half the screen each side → `[60, 60]`; a quarter of the screen each side → `[30, 30]`. Never write the on-screen size (e.g. a quarter-screen sprite as `[60, 60]`) — halve it. A `flags.bg`/`flags.fullsize` **palette** background is `[120, 120]`, NOT `[240, 240]`. (The only sprites authored above 120 are full-color `fullsize` sprites — see the `color` rule below.)
-- Sprite `color` (optional): `"palette"` (default) or `"full"`.
-  - `"full"` = full-color RGB565 (2 bytes/texel) with **NO transparency** — 0x0000 renders as opaque black, so the **alpha flag is forbidden** on full-color sprites.
-  - Any side > 120 **requires** both `color: "full"` and `flags.fullsize`. A `fullsize` full-color sprite draws **1:1 (no ×2 upscale)**, so its `size` is the **native on-screen size, up to `[240, 240]`**.
+- Sprite `size`: **authored (pre-upscale) pixels, both dimensions 1..120** unless `flags.fullsize` is set. The engine upscales every non-fullsize sprite ×2 at draw time, so `size` is HALF the on-screen size: **authored size = intended on-screen size ÷ 2**, with a hard max of **120×120** (a full-screen sprite). Examples: full screen → `[120, 120]`; half the screen each side → `[60, 60]`; a quarter of the screen each side → `[30, 30]`. Never write the on-screen size (e.g. a quarter-screen sprite as `[60, 60]`) — halve it. A `flags.bg` background without `fullsize` is `[120, 120]`, NOT `[240, 240]`. (The only sprites authored above 120 are `flags.fullsize` sprites — see the tier table below.)
+- Sprite `color` (optional): `"palette"` (default) or `"full"`. Together with `flags.fullsize` it selects one of the engine's three art tiers:
+
+  | Tier | Manifest | `size` (authored) | Colors / transparency | Drawn at | Use for |
+  |------|----------|-------------------|-----------------------|----------|---------|
+  | Palette (default) | `color: "palette"` | ≤ `[120, 120]` (= on-screen ÷ 2) | shared palette, index 0 transparent | ×2 upscale | characters, items, HUD — anything needing transparency |
+  | Palette fullsize | `color: "palette"` + `flags.fullsize` | native, up to `[240, 240]` | shared palette, transparency KEPT | 1:1 | native-resolution art that still needs a see-through background |
+  | Full-color fullsize | `color: "full"` + `flags.fullsize` | native, up to `[240, 240]` | RGB565 (2 bytes/texel), **NO transparency** | 1:1 | opaque backdrops, tiles, photographic full-screen art |
+
+  - `"full"` = full-color RGB565 with **NO transparency** — 0x0000 renders as opaque black, so the **alpha flag is forbidden** on full-color sprites (palette sprites, fullsize or not, keep alpha).
+  - Any side > 120 **requires** `flags.fullsize` (any color). A `fullsize` sprite draws **1:1 (no ×2 upscale)**, so its `size` is the **native on-screen size, up to `[240, 240]`**.
   - A small full-color sprite (each side ≤ 120, no `fullsize`) is legal but still draws at ×2 — its `size` follows the ÷2 rule like any palette sprite.
-  - Use `"full"` for backgrounds, tiles, and full-screen art; anything that needs transparency must stay `"palette"`.
+  - Use `"full"` for opaque backgrounds, tiles, and full-screen art; anything that needs transparency stays `"palette"` (fullsize if it must be native-resolution).
+  - Pick the **cheapest tier that does the job** (the table is ordered cheapest-first). There is no hard packer-side cap on total pack size — it is bounded only by the cube's flash software region (contiguous free 512 KB cells) — but lean packs are good practice; don't bloat every sprite to fullsize just because 240×240 exists.
 - Sound `duration_ms`: 1..2000 (default 500 if omitted).
 - Reserved names forbidden: `pal`, `0`, `icon`, `bmp_none`, `bmp_last`, `bmp_0`, `map_none`, `map_last`.
 - `description` is a short placeholder-generator hint (color, shape, mood).
@@ -138,8 +146,8 @@ Each sprite manifest entry MUST carry a `gen_prompt` — a complete, standalone 
 1. **Subject** — what the object is, from its GDD description (e.g. "a small round blue hero with two eyes").
 2. **Art style** — the GDD's global style verbatim (e.g. "flat pixel-art", "minimal vector", "soft cartoon"). Keep it identical across all sprites.
 3. **Palette & mood** — the GDD's colors/mood, narrowed to this object's colors.
-4. **Exact dimensions** — "exactly WxH pixels" from `size` (the authored, pre-upscale size — the engine upscales palette sprites ×2 at draw time, so a full-screen palette sprite is generated at 120×120, never 240×240; the exception is a `color: "full"` + `flags.fullsize` sprite, which draws 1:1 and is generated at its native size, up to 240×240). The cube's screens are tiny and palette sprites are authored at half resolution, so add "single centered object, no padding, readable at small size, high contrast, bold simple shapes, no fine detail".
-5. **Background** — "transparent background" by default (alpha sprite). Only say "fills the whole frame" when `flags.bg` or `flags.fullsize` is set. For a `color: "full"` sprite the prompt MUST instead state the art is **opaque and fills the whole rectangular frame** — full-color sprites have no transparency, so never request a transparent background for them.
+4. **Exact dimensions** — "exactly WxH pixels" from `size` (the authored, pre-upscale size — the engine upscales non-fullsize sprites ×2 at draw time, so a full-screen sprite is generated at 120×120, never 240×240; the exception is a `flags.fullsize` sprite of either color, which draws 1:1 and is generated at its native size, up to 240×240). The cube's screens are tiny and regular sprites are authored at half resolution, so add "single centered object, no padding, readable at small size, high contrast, bold simple shapes, no fine detail".
+5. **Background** — "transparent background" by default (alpha sprite, including palette fullsize sprites). Only say "fills the whole frame" when `flags.bg` is set or the sprite is a full-frame backdrop. For a `color: "full"` sprite the prompt MUST instead state the art is **opaque and fills the whole rectangular frame** — full-color sprites have no transparency, so never request a transparent background for them.
 6. **Framing** — "centered, object fills most of the frame, no cropping, no drop shadow beyond the sprite bounds".
 7. **Negative constraints** — "no text, no watermark, no border, no UI frame, no background scenery".
 
@@ -293,12 +301,12 @@ Before finalizing, verify:
     - Animation frames are zero-padded and contiguous from `_00`.
     - No duplicate names within sprites or within sounds.
     - No reserved names (see Step 4).
-    - **No palette sprite larger than 120×120** (authored sizes; the engine upscales ×2 at draw time). A full-screen/`bg`/`fullsize` palette sprite is `[120, 120]`. Any size > 120, or a size that looks like on-screen pixels (e.g. a quarter-screen sprite at `[60, 60]` instead of `[30, 30]`), is a sizing error — halve it. The one exception: a `color: "full"` + `flags.fullsize` sprite is authored at native size, up to `[240, 240]`.
-    - **Full-color constraints**: every sprite with a side > 120 has both `color: "full"` and `flags.fullsize`; no `color: "full"` sprite carries the alpha flag (full-color has no transparency); its `gen_prompt` describes opaque, frame-filling art.
+    - **No non-fullsize sprite larger than 120×120** (authored sizes; the engine upscales ×2 at draw time). A full-screen/`bg` sprite without `fullsize` is `[120, 120]`. Any size > 120, or a size that looks like on-screen pixels (e.g. a quarter-screen sprite at `[60, 60]` instead of `[30, 30]`), is a sizing error — halve it. The one exception: a `flags.fullsize` sprite (any color) draws 1:1 and is authored at native size, up to `[240, 240]`.
+    - **Tier constraints**: every sprite with a side > 120 has `flags.fullsize`; no `color: "full"` sprite carries the alpha flag (full-color has no transparency — palette fullsize keeps it); every `color: "full"` sprite's `gen_prompt` describes opaque, frame-filling art.
     - No sound longer than 2000 ms.
 13. **Generation-prompt coverage** (see Step 4a):
     - Every sprite has a non-empty `gen_prompt`.
-    - Each `gen_prompt` states the subject, the GDD's global art style, palette/mood, exact `WxH` dimensions, and background (transparent unless `flags.bg`/`flags.fullsize`).
+    - Each `gen_prompt` states the subject, the GDD's global art style, palette/mood, exact `WxH` dimensions, and background (transparent unless `flags.bg` is set or the sprite is `color: "full"`, which is always opaque).
     - Across one animation, all frames share identical style/palette/scale/dimensions and differ only in the described pose/phase.
     - The art style string is identical across all sprites (cohesive set).
 

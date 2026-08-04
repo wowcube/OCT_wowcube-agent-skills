@@ -135,6 +135,39 @@ def test_patched_header_preserves_legacy_fields(emitted):
     assert raw[48:len(original)] == original[48:]
 
 
+def test_patch_palette_sprite_extra_flags():
+    """extra_flags ORs manifest flag bits into the beta Flags byte (@44)
+    without disturbing the legacy bits already there; the default of 0
+    keeps the byte untouched (legacy no-manifest behaviour)."""
+    blob = legacy_sprite_blob(6, 6, 0, flags=OCT_FLAG_ALPHA)
+    patched = pack_beta.patch_palette_sprite(
+        blob, pal_id=1, seq_id=0, extra_flags=OCT_FLAG_FULLSIZE)
+    hdr = parse_bmp_header(patched)
+    assert hdr.flags == OCT_FLAG_ALPHA | OCT_FLAG_FULLSIZE
+    default = parse_bmp_header(pack_beta.patch_palette_sprite(blob, pal_id=1))
+    assert default.flags == OCT_FLAG_ALPHA
+
+
+def test_emit_palette_sprite_with_extra_flags(tmp_path):
+    """A (name, blob, extra_flags) palette-sprite triple carries the extra
+    flag bits into the written header — tier 2 (palette fullsize) wiring."""
+    app = tmp_path / "app_pf"
+    records = pack_beta.emit_beta_layout(
+        app, "app_pf",
+        palettes={0: PAL_A},
+        palette_sprites=[
+            ("panel", legacy_sprite_blob(8, 8, 0), OCT_FLAG_FULLSIZE),
+            ("coin", legacy_sprite_blob(6, 6, 0)),   # 2-tuples still work
+        ],
+    )
+    panel = parse_bmp_header((_packed(app) / "panel.raw").read_bytes())
+    assert panel.flags & OCT_FLAG_FULLSIZE
+    assert panel.flags & OCT_FLAG_ALPHA            # legacy bit preserved
+    assert records[panel.pidx][0] == KIND_PAL
+    coin = parse_bmp_header((_packed(app) / "coin.raw").read_bytes())
+    assert not coin.flags & OCT_FLAG_FULLSIZE
+
+
 # ── icon assets ──────────────────────────────────────────────────────────────
 
 def test_icon_assets(emitted):
@@ -379,6 +412,7 @@ def test_pack_py_emits_beta_container(tmp_path, monkeypatch):
             coin.putpixel((x, y), (250, 200, 20, 255))
     coin.save(exported / "coin.png")
     Image.new("RGB", (16, 16), (30, 60, 200)).save(exported / "bg.png")
+    Image.new("RGBA", (8, 8), (60, 90, 120, 255)).save(exported / "panel.png")
 
     art = tmp_path / "art"
     art.mkdir()
@@ -388,6 +422,8 @@ def test_pack_py_emits_beta_container(tmp_path, monkeypatch):
     manifest.write_text(
         '{"game": "tiny", "schema_version": 1, "sprites": ['
         '{"name": "coin", "size": [8, 8], "description": "coin"},'
+        '{"name": "panel", "size": [8, 8], "description": "palette fullsize",'
+        ' "flags": {"fullsize": true, "additive": true}},'
         '{"name": "bg", "size": [16, 16], "description": "bg",'
         ' "color": "full", "flags": {"alpha": false, "fullsize": false}}'
         '], "sounds": [{"name": "blip", "description": "b"}]}',
@@ -426,6 +462,15 @@ def test_pack_py_emits_beta_container(tmp_path, monkeypatch):
     # palette sprite got its Pidx patched to a PAL asset id
     coin_hdr = parse_bmp_header((packed_dir / "coin.raw").read_bytes())
     assert records[coin_hdr.pidx][0] == KIND_PAL
+    # ...and no manifest flags leak onto a sprite that didn't ask for any
+    assert not coin_hdr.flags & pack_beta.OCT_FLAG_FULLSIZE
+
+    # manifest flags.fullsize/additive reach the PALETTE sprite's beta header
+    panel_hdr = parse_bmp_header((packed_dir / "panel.raw").read_bytes())
+    assert records[panel_hdr.pidx][0] == KIND_PAL
+    assert panel_hdr.flags & pack_beta.OCT_FLAG_FULLSIZE
+    assert panel_hdr.flags & pack_beta.OCT_FLAG_ADDITIVE
+    assert not panel_hdr.flags & OCT_FLAG_RAW565    # still palette-encoded
 
     # full-color sprite is RAW565 at manifest size, not palette-packed
     bg_hdr = parse_bmp_header((packed_dir / "bg.raw").read_bytes())

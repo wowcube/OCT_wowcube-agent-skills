@@ -335,6 +335,7 @@ emits the beta container the simulator/`.oct` actually load: `index.bin`,
 the pre-beta Linux sim reads — the beta sim never does — and if combined with
 `--beta-app-dir` into the same folder, the beta `.raw` files overwrite the
 legacy ones. Add `--manifest
-plans/<game>_assets.json` if any sprite uses `color: "full"`, so it gets
-RAW565-encoded instead of run through the palette codec. Identical on Windows
+plans/<game>_assets.json` if any sprite uses `color: "full"` (so it gets
+RAW565-encoded instead of run through the palette codec) or carries flags
+like `fullsize` (so they reach the packed palette-sprite header). Identical on Windows
 and Linux — Python only, no `.exe`/`.bat`/Wine.

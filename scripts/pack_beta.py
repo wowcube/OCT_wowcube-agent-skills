@@ -367,7 +367,8 @@ def read_pal(path: Path) -> list[int]:
     return out
 
 
-def patch_palette_sprite(blob: bytes, *, pal_id: int, seq_id: int = 0) -> bytes:
+def patch_palette_sprite(blob: bytes, *, pal_id: int, seq_id: int = 0,
+                         extra_flags: int = 0) -> bytes:
     """Convert a legacy packed-sprite blob into a beta one, payload untouched.
 
     The legacy octBmp_t (pack_codec.build_header) and the beta octBmp_t
@@ -383,12 +384,18 @@ def patch_palette_sprite(blob: bytes, *, pal_id: int, seq_id: int = 0) -> bytes:
     Beta Pidx/Seq are ASSET IDS (index.bin record indices), not the legacy
     palette-group / sibling-sprite indices, so the caller supplies them.
     The legacy Rate byte is preserved by moving it into the beta slot.
+
+    `extra_flags` ORs additional OCT_FLAG_* bits into the Flags byte @44 --
+    the seam that lets manifest flags (fullsize/additive/bg) reach a palette
+    sprite's beta header. The legacy bits already present (ALPHA) are kept;
+    the default of 0 leaves the byte exactly as the legacy packer wrote it.
     """
     if len(blob) < BMP_SIZE:
         raise ValueError(f"sprite blob is {len(blob)} bytes, needs at least {BMP_SIZE}")
     hdr = bytearray(blob[:BMP_SIZE])
     rate, = struct.unpack_from("<b", hdr, 47)
     struct.pack_into("<HH", hdr, 0, pal_id, seq_id)
+    hdr[44] |= extra_flags & 0xFF
     struct.pack_into("<bBB", hdr, 45, rate, 0, 0)
     return bytes(hdr) + blob[BMP_SIZE:]
 
@@ -568,9 +575,13 @@ def emit_beta_layout(
     Arguments:
       palettes:        {legacy_pidx: [rgb565, ...]} - keyed by whatever Pidx
                        values the legacy sprite headers actually carry.
-      palette_sprites: iterable of (name, legacy_blob) - 48-byte legacy
+      palette_sprites: iterable of (name, legacy_blob) or
+                       (name, legacy_blob, extra_flags) - 48-byte legacy
                        octBmp_t + opaque payload, as read from the current
-                       packer's output containers.
+                       packer's output containers. extra_flags (default 0)
+                       ORs OCT_FLAG_* bits into the beta Flags byte, which
+                       is how manifest flags.fullsize/additive/bg reach a
+                       palette sprite's header.
       full_sprites:    iterable of (name, png_path_or_image, (w, h), flags) -
                        flags WITHOUT OCT_FLAG_RAW565 (ORed in automatically).
       icon:            source image for the launcher icon, or None.
@@ -583,7 +594,9 @@ def emit_beta_layout(
     """
     app_dir = Path(app_dir)
     palettes = dict(palettes or {})
-    palette_sprites = list(palette_sprites)
+    # normalize (name, blob) / (name, blob, extra_flags) to 3-tuples
+    palette_sprites = [(t[0], t[1], t[2] if len(t) > 2 else 0)
+                       for t in palette_sprites]
     full_sprites = list(full_sprites)
 
     if sounds is None:
@@ -610,7 +623,7 @@ def emit_beta_layout(
                 f"{EXT_MAX_DESCS} descriptors the launcher can see")
 
     sprite_ids: dict[str, int] = {}
-    for name, _blob in palette_sprites:
+    for name, _blob, _extra in palette_sprites:
         sprite_ids[name] = len(records)
         records.append((KIND_SPRITE, name))
     for name, _image, _size, _flags in full_sprites:
@@ -656,7 +669,7 @@ def emit_beta_layout(
         _write_raw(packed_dir / "ahover.raw",
                    build_map(ico_idle_id, icon_side, icon_side, looped=True))
 
-    for name, blob in palette_sprites:
+    for name, blob, extra_flags in palette_sprites:
         if len(blob) < BMP_SIZE:
             raise ValueError(f"sprite '{name}': blob is {len(blob)} bytes, "
                              f"needs at least {BMP_SIZE}")
@@ -681,7 +694,8 @@ def emit_beta_layout(
                   f"(PAL asset id {pal_id})")
         _write_raw(packed_dir / f"{name}.raw",
                    patch_palette_sprite(blob, pal_id=pal_id,
-                                        seq_id=seq.get(name, 0)))
+                                        seq_id=seq.get(name, 0),
+                                        extra_flags=extra_flags))
 
     for name, image, (w, h), flags in full_sprites:
         texels = _load_rgb565(image, (w, h))
