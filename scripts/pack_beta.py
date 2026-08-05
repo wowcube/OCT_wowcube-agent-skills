@@ -634,8 +634,10 @@ def emit_beta_layout(
     palettes: dict[int, list[int]] | None = None,
     palette_sprites=(),
     full_sprites=(),
-    icon: str | Path | Image.Image | None = None,
+    icon: str | Path | Image.Image | bytes | None = None,
     icon_side: int = 160,
+    icon_dither: bool = False,
+    icon_palette: list[int] | None = None,
     sounds: list[str] | None = None,
     ids_path: str | Path | None = None,
 ) -> list[tuple[int, str]]:
@@ -646,11 +648,14 @@ def emit_beta_layout(
     index in index.bin == runtime asset id, in this fixed order:
 
       0. ("zero", SPRITE)     - reserved empty sprite, 48-byte zero header
-      1. one PAL per palette group, named "1", "2", ...
+      1. one PAL per palette group, named "1", "2", ...; when the icon is
+         palette-encoded (`icon_palette` given) its dedicated pal follows as
+         the next numeric name
       2. icon assets (only when `icon` is given): ico_idle SPRITE (RAW565
-         icon at icon_side²) + "ico"/"ahover" MAPs pointing at it - the
-         launcher looks these up by name within the first EXT_MAX_DESCS
-         descriptors (mirrors app_hulk's videopack.build_icon_assets)
+         icon at icon_side², or the palette-encoded blob when `icon_palette`
+         is given) + "ico"/"ahover" MAPs pointing at it - the launcher looks
+         these up by name within the first EXT_MAX_DESCS descriptors
+         (mirrors app_hulk's videopack.build_icon_assets)
       3. every palette sprite, header patched from legacy to beta layout
          (Pidx -> pal ASSET id, Seq -> next-frame asset id for _NN chains)
       4. every full-color sprite, RAW565-encoded at its target size
@@ -671,7 +676,21 @@ def emit_beta_layout(
                        (ORed in automatically); dither (default False) runs
                        the RGB565 conversion through Floyd-Steinberg error
                        diffusion (see to_rgb565).
-      icon:            source image for the launcher icon, or None.
+      icon:            source image for the launcher icon, or None. With
+                       `icon_palette` set it is instead the icon's
+                       pre-encoded LEGACY palette-sprite blob (bytes, 48-byte
+                       legacy octBmp_t + payload, as pack_codec.pack_sprite
+                       returns) - the palette-icon tiers.
+      icon_side:       full-color icon target side (square). Ignored for a
+                       palette icon: its dimensions live in the blob header.
+      icon_dither:     full-color icon only - Floyd-Steinberg dithering,
+                       exactly like a full sprite's dither flag.
+      icon_palette:    the palette icon's OWN colors ([rgb565, ...]). Emitted
+                       as a dedicated KIND_PAL record (next numeric name
+                       after the palette groups) that ico_idle's Pidx points
+                       at. FULLSIZE is derived from the blob dimensions:
+                       a side over 120 draws 1:1 (240 tier), 120 and under
+                       draws at x2 (cheap tier).
       sounds:          mp3 basenames; None scans <app_dir>/sound/assets/.
 
     Legacy PSD maps are NOT emitted: their embedded bmp indices are legacy
@@ -688,6 +707,20 @@ def emit_beta_layout(
     full_sprites = [(t[0], t[1], t[2], t[3], t[4] if len(t) > 4 else False)
                     for t in full_sprites]
 
+    if icon_palette is not None and not isinstance(icon, (bytes, bytearray)):
+        raise TypeError(
+            "icon_palette means the icon is a pre-encoded legacy "
+            "palette-sprite blob (bytes), but icon is "
+            f"{type(icon).__name__} - encode the PNG through "
+            "pack_codec first (see pack.py's palette-icon path)")
+    if isinstance(icon, (bytes, bytearray)):
+        if icon_palette is None:
+            raise TypeError("a bytes icon (palette-encoded blob) needs its "
+                            "icon_palette colors")
+        if len(icon) < BMP_SIZE:
+            raise ValueError(f"palette icon blob is {len(icon)} bytes, "
+                             f"needs at least {BMP_SIZE}")
+
     if sounds is None:
         snd_dir = app_dir / "sound" / "assets"
         sounds = sorted(p.stem for p in snd_dir.glob("*.mp3")) if snd_dir.is_dir() else []
@@ -699,6 +732,12 @@ def emit_beta_layout(
     for n, legacy_pidx in enumerate(sorted(palettes), start=1):
         pal_asset_id[legacy_pidx] = len(records)
         records.append((KIND_PAL, str(n)))
+
+    icon_pal_id = None
+    if icon is not None and icon_palette is not None:
+        # the palette icon's dedicated pal: next numeric name in the row
+        icon_pal_id = len(records)
+        records.append((KIND_PAL, str(len(pal_asset_id) + 1)))
 
     ico_idle_id = None
     if icon is not None:
@@ -745,18 +784,33 @@ def emit_beta_layout(
         (packed_dir / f"{pal_name}.pal").write_bytes(build_pal(palettes[legacy_pidx]))
 
     if icon is not None:
-        texels = _load_rgb565(icon, icon_side)
-        _write_raw(packed_dir / "ico_idle.raw",
-                   build_raw565_sprite(texels, icon_side, icon_side,
-                                       flags=OCT_FLAG_FULLSIZE))
+        if icon_pal_id is not None:
+            # palette-icon tiers: dedicated pal + header patched to beta
+            # layout with Pidx -> the icon's own pal asset id. FULLSIZE by
+            # blob dimensions: over 120 is the 1:1 (240) tier, at or under
+            # 120 is the cheap x2-upscale tier.
+            _kind, icon_pal_name = records[icon_pal_id]
+            (packed_dir / f"{icon_pal_name}.pal").write_bytes(
+                build_pal(icon_palette))
+            icon_w, icon_h = struct.unpack_from("<hh", icon, 36)
+            fullsize = OCT_FLAG_FULLSIZE if max(icon_w, icon_h) > 120 else 0
+            _write_raw(packed_dir / "ico_idle.raw",
+                       patch_palette_sprite(bytes(icon), pal_id=icon_pal_id,
+                                            extra_flags=fullsize))
+        else:
+            icon_w = icon_h = icon_side
+            texels = _load_rgb565(icon, icon_side, dither=icon_dither)
+            _write_raw(packed_dir / "ico_idle.raw",
+                       build_raw565_sprite(texels, icon_side, icon_side,
+                                           flags=OCT_FLAG_FULLSIZE))
         # both maps point at the same static sprite (Seq=0 stops the chain
         # walk, so the icon just holds either way), but ahover is the hover
         # ANIMATION map and the real toolchain packs it looped (PLACE_LOOPED,
         # see golden app_hulk ahover.raw) while ico stays static
         _write_raw(packed_dir / "ico.raw",
-                   build_map(ico_idle_id, icon_side, icon_side))
+                   build_map(ico_idle_id, icon_w, icon_h))
         _write_raw(packed_dir / "ahover.raw",
-                   build_map(ico_idle_id, icon_side, icon_side, looped=True))
+                   build_map(ico_idle_id, icon_w, icon_h, looped=True))
 
     for name, blob, extra_flags in palette_sprites:
         if len(blob) < BMP_SIZE:

@@ -575,3 +575,100 @@ def test_color_invalid_value_rejected(tmp_manifest):
     errors = validate(load_manifest(tmp_manifest(data)))
     assert any("color" in e.lower() and ("palette" in e.lower() or "full" in e.lower())
                for e in errors)
+
+
+# ── icon object (launcher-icon art tiers) ──────────────────────────────
+
+def _icon_manifest(icon: dict | None) -> dict:
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "coin", "size": [32, 32], "description": "d"}],
+        "sounds": [],
+    }
+    if icon is not None:
+        data["icon"] = icon
+    return data
+
+
+def test_icon_absent_defaults_to_none(tmp_manifest):
+    m = load_manifest(tmp_manifest(_icon_manifest(None)))
+    assert m.icon is None
+    assert validate(m) == []
+
+
+def test_icon_empty_object_gets_defaults(tmp_manifest):
+    """{} keeps today's behaviour exactly: full-color, side 160, no dither."""
+    m = load_manifest(tmp_manifest(_icon_manifest({})))
+    assert m.icon is not None
+    assert m.icon.color == "full"
+    assert m.icon.side == 160
+    assert m.icon.dither is False
+    assert validate(m) == []
+
+
+def test_icon_all_fields_parse(tmp_manifest):
+    m = load_manifest(tmp_manifest(_icon_manifest(
+        {"color": "full", "side": 240, "dither": True})))
+    assert (m.icon.color, m.icon.side, m.icon.dither) == ("full", 240, True)
+    assert validate(m) == []
+
+
+@pytest.mark.parametrize("side", [120, 240])
+def test_icon_palette_proven_sides_accepted(tmp_manifest, side):
+    m = load_manifest(tmp_manifest(_icon_manifest(
+        {"color": "palette", "side": side})))
+    assert validate(m) == []
+
+
+def test_icon_palette_dither_rejected(tmp_manifest):
+    """dither is an RGB565 knob; a palette icon is quantized instead."""
+    errors = validate(load_manifest(tmp_manifest(_icon_manifest(
+        {"color": "palette", "side": 120, "dither": True}))))
+    assert any("icon" in e.lower() and "dither" in e.lower() for e in errors)
+
+
+@pytest.mark.parametrize("side", [100, 160, 200, 1])
+def test_icon_palette_unproven_side_rejected(tmp_manifest, side):
+    """Palette icons only ship in the two device-proven shapes; the error
+    must name both valid sides so the fix is actionable."""
+    errors = validate(load_manifest(tmp_manifest(_icon_manifest(
+        {"color": "palette", "side": side}))))
+    assert any("icon" in e.lower() and "120" in e and "240" in e for e in errors)
+
+
+@pytest.mark.parametrize("side", [0, 241, -1])
+def test_icon_full_side_out_of_range_rejected(tmp_manifest, side):
+    errors = validate(load_manifest(tmp_manifest(_icon_manifest(
+        {"color": "full", "side": side}))))
+    assert any("icon" in e.lower() and "side" in e.lower() for e in errors)
+
+
+@pytest.mark.parametrize("side", [1, 160, 240])
+def test_icon_full_side_in_range_accepted(tmp_manifest, side):
+    assert validate(load_manifest(tmp_manifest(_icon_manifest(
+        {"color": "full", "side": side})))) == []
+
+
+def test_icon_invalid_color_rejected(tmp_manifest):
+    errors = validate(load_manifest(tmp_manifest(_icon_manifest(
+        {"color": "rgb"}))))
+    assert any("icon" in e.lower() and "color" in e.lower() for e in errors)
+
+
+def test_icon_full_dither_accepted(tmp_manifest):
+    m = load_manifest(tmp_manifest(_icon_manifest({"dither": True})))
+    assert m.icon.dither is True
+    assert validate(m) == []
+
+
+def test_validate_icon_standalone():
+    """validate_icon is the shared checker pack.py runs on the CLI-resolved
+    icon config (CLI overrides can produce combos no manifest ever held)."""
+    from manifest_schema import Icon, validate_icon
+    assert validate_icon(Icon()) == []
+    assert validate_icon(Icon(color="palette", side=120)) == []
+    assert validate_icon(Icon(color="palette", side=240)) == []
+    assert validate_icon(Icon(color="palette", side=160)) != []
+    assert validate_icon(Icon(color="palette", side=120, dither=True)) != []
+    assert validate_icon(Icon(color="full", side=241)) != []
+    assert validate_icon(Icon(color="nope")) != []

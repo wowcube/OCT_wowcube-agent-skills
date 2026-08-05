@@ -95,6 +95,24 @@ of the art path.
 > payload, keeps alpha), **fat** (full-color fullsize — uncompromised color,
 > 2 bytes/texel). Pick by the art's needs; once picked, deliver the tier's
 > full promise.
+>
+> **The launcher icon supports the same three tiers**, configured by the
+> optional top-level `icon` object in the manifest —
+> `{"color": "palette"|"full", "side": N, "dither": true|false}` — or
+> overridden per-invocation by `pack.py --icon-color/--icon-side/--icon-dither`:
+>
+> | Icon tier | Manifest `icon` | `side` | Encoding | Drawn at |
+> |-----------|-----------------|--------|----------|----------|
+> | Palette 120 (cheap) | `"color": "palette", "side": 120` | 120 only | quantized into its **own dedicated `.pal`**, index 0 transparent | ×2 upscale → 240 |
+> | Palette 240 | `"color": "palette", "side": 240` | 240 only | own dedicated `.pal`, transparency kept, FULLSIZE | 1:1 |
+> | Full-color (default) | `"color": "full"` (or no `icon` object) | 1..240 (default 160) | RAW565, FULLSIZE, optional `dither` | 1:1 |
+>
+> Palette icons ship only in the two device-proven shapes (120 or 240 — the
+> validator rejects anything else), keep the PNG's transparency for the hex
+> icon shape via palette index 0, and do NOT join the sprites' shared palette
+> groups: the icon gets its own `KIND_PAL` record. `dither` is full-color
+> only (palette + dither is a validation error). Omitting the `icon` object
+> entirely keeps today's default exactly: full-color, 160×160, no dither.
 
 **Core principle:** every asset name that appears in a prompt must exist as a
 file after this skill runs. The manifest is the contract. No placeholder text
@@ -395,6 +413,11 @@ python scripts/pack.py --build-palette --build-ids \
     --beta-app-dir <app-dir> --app-name app_<game> \
     --manifest plans/<game>_assets.json --icon <icon.png>
 ```
+
+The launcher icon's art tier comes from the manifest `icon` object (see the
+icon tier table above); `--icon-color palette|full`, `--icon-side N`, and
+`--icon-dither` override it per invocation. Without either, the icon packs
+as today's default: full-color RAW565 at 160×160, no dither.
 
 **Never add `--export` to a PNG-only invocation.** `--export` means "rebuild
 the exported dir from `--art-dir` PSD/FNT *sources*" — it deletes every

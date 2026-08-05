@@ -93,6 +93,7 @@ Required format (see [cube_asset-builder spec](../cube_asset-builder/SKILL.md) f
 {
   "game": "<game>",
   "schema_version": 1,
+  "icon": {"color": "full", "side": 160, "dither": false},
   "sprites": [
     {"name": "hero_idle_00", "size": [64, 64], "description": "...",
      "gen_prompt": "Pixel-art sprite of a small round blue hero standing idle, ...",
@@ -127,6 +128,7 @@ Naming rules — ENFORCED by `cube_asset-builder`'s validator:
   - Pick the **cheapest tier that does the job** (the table is ordered cheapest-first). There is no hard packer-side cap on total pack size — it is bounded only by the cube's flash software region (contiguous free 512 KB cells) — but lean packs are good practice; don't bloat every sprite to fullsize just because 240×240 exists.
   - **Animation timing:** the hardware caps every animation at **20 fps** (the engine ticks 20 times/second) — never write a prompt or manifest entry that implies faster motion. Default clip length is **≤5 s** (longer is technically fine — only app size limits it — but 5 s is the right default). Prefer **Palette (default)** animations — the cheapest tier — and escalate only when the design needs it. A **fullsize** animation must stay short and light: it loads the cube harder than a regular sprite, and a resulting frametime above **~70 ms** is a bad sign — cut frames, size, or tier. A **full-color fullsize** animation is written only when the user explicitly asked for one, and its manifest/GDD entry must carry a **"handle VERY carefully"** warning.
   - **One animated picture per physical module:** a face's four screens sit on four different modules; adjacent faces share exactly two of those modules (their common edge); opposite faces share none. Never assign two different animations to screens that land on the same module — placement is validated by `cube_game-designer` at design time and re-checked by `cube_verifier`.
+- Top-level `icon` (optional object): the launcher icon's art tier, mirroring the sprite tiers — `{"color": "palette"|"full" (default "full"), "side": <int> (default 160), "dither": true|false (default false)}`. `"full"` is RAW565 (fullsize, drawn 1:1), any side 1..240, optional `dither` (Floyd–Steinberg, recommended for photographic icons). `"palette"` quantizes the icon into its **own dedicated palette** (transparency kept via index 0 — the launcher's hex icon shape needs it) and allows only the two device-proven sides: **120** (drawn ×2 → 240 on screen, the cheap tier) or **240** (fullsize, 1:1). `dither` on a palette icon is a validation error. Omit the object entirely for today's default (full-color, 160, no dither).
 - Sound `duration_ms`: 1..2000 (default 500 if omitted).
 - Reserved names forbidden: `pal`, `0`, `icon`, `bmp_none`, `bmp_last`, `bmp_0`, `map_none`, `map_last`.
 - `description` is a short placeholder-generator hint (color, shape, mood).

@@ -395,6 +395,15 @@ RAW565-encoded instead of run through the palette codec) or carries flags
 like `fullsize` (so they reach the packed palette-sprite header). Identical on Windows
 and Linux — Python only, no `.exe`/`.bat`/Wine.
 
+The launcher icon defaults to full-color RAW565 at 160×160; the manifest's
+optional top-level `icon` object (`{"color": "palette"|"full", "side": N,
+"dither": true}`) or the `pack.py` overrides `--icon-color`, `--icon-side`,
+and `--icon-dither` select the icon's art tier instead — palette icons
+(side 120 drawn ×2, or 240 fullsize; the only two valid palette sides) are
+quantized into their own dedicated `.pal` record and keep the PNG's
+transparency; `--icon-dither` applies Floyd–Steinberg on the full-color
+tier. See the icon tier table in `cube_asset-builder`.
+
 **Packing plain-PNG palette sprites by hand (no PSD): drop `--export`, keep
 `--build-palette`.** `--export` exists solely to regenerate the exported dir
 from PSD/FNT *sources* in `--art-dir` — as its first act it DELETES every
