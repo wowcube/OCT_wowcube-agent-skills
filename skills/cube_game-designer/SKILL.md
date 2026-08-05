@@ -13,7 +13,7 @@ description: >-
 
 Create a non-technical Game Design Document (GDD) from a user's game idea, accounting for WowCube hardware and interaction specifics. The GDD is the Stage 1 artifact; `cube_orchestrator` checkpoints it with the user and then drives Stage 2 (`technical_prompter`).
 
-**Core principle:** To produce a high-quality GDD, the agent MUST first ask as many clarifying questions as needed to fully understand the user's vision. Never guess — always ask. The discovery conversation is not optional; it is the most important part of the process.
+**Core principle:** To produce a high-quality GDD, the agent MUST first ask as many clarifying questions as needed to fully understand the user's vision. Never guess — always ask **in stepwise mode**. In autonomous mode (see `cube_orchestrator` Run Modes) this interview does not run — the orchestrator's one-time intake concept question (or the `YOLO` token / «на твой вкус») already supplied a concept fragment, and this skill expands it using its own design judgment instead of interviewing. The discovery conversation is not optional in stepwise mode; it is the most important part of the process there.
 
 ## When to Use
 
@@ -46,7 +46,14 @@ The GDD must account for these device characteristics (expressed in player-frien
 
 ## Workflow
 
-### Step 1: Discovery Interview (MANDATORY)
+### Step 1: Discovery Interview (MANDATORY in stepwise mode)
+
+**Run-mode note:** in autonomous mode the interview below is replaced by the
+single intake concept answer the orchestrator already collected (a genre,
+theme, or mechanic fragment in the prompt — or, under the `YOLO` token /
+«на твой вкус», the designer's own judgment). Expand that into the GDD
+directly; do not stop to ask questions. The MUSTs in this step apply in
+**stepwise mode**.
 
 **Do NOT write the GDD until you have asked the user enough questions to fully understand their game idea.**
 
@@ -61,7 +68,7 @@ There is no fixed list of questions. Instead, the agent must:
 
 #### Interview Rules
 
-- **Ask every question you have.** Group related questions together for efficiency (2-4 rounds of questions is typical), but do not hold back questions to be polite. More questions upfront = better GDD.
+- **Ask every question you have (stepwise mode).** Group related questions together for efficiency (2-4 rounds of questions is typical), but do not hold back questions to be polite. More questions upfront = better GDD. (In autonomous mode, per the run-mode note above, skip this entirely and expand the intake concept yourself.)
 - **Acknowledge the idea first** — briefly restate what you understood from the user's prompt to confirm alignment before asking questions.
 - **After receiving answers, check for gaps** — if answers raise new questions or leave things ambiguous, ask follow-up questions. Continue until you are confident you understand the full game design.
 - **Confirm understanding** — before proceeding to write the GDD, summarize the complete game concept back to the user and get their approval.

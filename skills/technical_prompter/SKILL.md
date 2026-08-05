@@ -12,7 +12,7 @@ description: >-
 
 > **This skill is Stage 2 of the `cube_orchestrator` pipeline.** The orchestrator invokes it (via the Skill tool) when a GDD exists but `plans/<game>_prompts.md` / `plans/<game>_assets.json` do not. It is not a user-facing entry point — the user enters through `cube_orchestrator`, which routes here.
 
-Decompose a Game Design Document into the smallest possible vertical-slice implementation prompts, where each prompt produces a testable increment. The prompts and asset manifest are the Stage 2 artifacts; `cube_orchestrator` checkpoints them with the user and then drives Stage 3 (`cube_asset-builder`).
+Decompose a Game Design Document into the smallest possible vertical-slice implementation prompts, where each prompt produces a testable increment. The prompts and asset manifest are the Stage 2 artifacts; `cube_orchestrator` checkpoints them with the user (stepwise mode; auto-accepted in autonomous) and then drives Stage 3 (`cube_asset-builder`).
 
 ## When to Use
 
@@ -347,6 +347,6 @@ After writing, provide a summary:
 - Any GDD gaps or ambiguities resolved with assumptions
 - Estimated complexity (sprite count, function count)
 
-Then **return control to `cube_orchestrator`** — do NOT invoke `cube_asset-builder` yourself. The orchestrator will run the Stage 2→3 boundary checkpoint with the user and route to Stage 3 when approved.
+Then **return control to `cube_orchestrator`** — do NOT invoke `cube_asset-builder` yourself. The orchestrator will run the Stage 2→3 boundary checkpoint with the user (stepwise mode; auto-accepted in autonomous) and route to Stage 3 when approved.
 
-**Why `gen_prompt` quality is non-negotiable.** At Stage 3 the orchestrator gates on this manifest before generating: it refuses to proceed unless (a) every sprite carries a non-empty `gen_prompt` (a blank one makes `gen_sprites.py` fail) and (b) `OPENROUTER_API_KEY` is set. After the external image model renders the sprites, the orchestrator runs an **asset-consistency review subagent** that compares the rendered set against the GDD's global art style and each `gen_prompt`, and forces a `regen` of any group that drifts. The single canonical art-style sentence you reuse verbatim across every `gen_prompt` (validation rule 13) is exactly the cohesion contract that reviewer keys on — so keep it identical, concrete, and GDD-derived.
+**Why `gen_prompt` quality is non-negotiable.** At Stage 3 the orchestrator gates on this manifest before generating: it refuses to proceed unless every sprite carries a non-empty `gen_prompt` (a blank one makes `gen_sprites.py` fail). The image-provider side is not a hard gate — `image_providers.resolve_provider()` walks its chain across all five supported providers (OpenRouter, OpenAI, xAI, Gemini, or a local Stable Diffusion URL), and in autonomous mode a run with none configured never blocks: Stage 3 routes to agent-drawn placeholder art instead. After the sprites are rendered (AI or placeholder), the orchestrator runs an **asset-consistency review subagent** that compares the rendered set against the GDD's global art style and each `gen_prompt`, and forces a `regen` of any group that drifts. The single canonical art-style sentence you reuse verbatim across every `gen_prompt` (validation rule 13) is exactly the cohesion contract that reviewer keys on — so keep it identical, concrete, and GDD-derived.

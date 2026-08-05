@@ -8,7 +8,7 @@ description: >-
   multi-provider adapter (OpenRouter, OpenAI, xAI, Gemini, or local Stable
   Diffusion) when a provider is configured, or agent-authored placeholder art
   when none is — and synthesised WAV sounds (encoded to beta mp3), pauses for
-  user review, then packs them into the beta container: `app_<game>/index.bin`,
+  user review in stepwise mode, then packs them into the beta container: `app_<game>/index.bin`,
   `art/packed/*.raw` + `*.pal`, `sound/assets/*.mp3`, and `src/app_<game>_ids.h`.
 ---
 
@@ -20,8 +20,9 @@ Drive the asset pipeline from a structured manifest. This skill never writes
 game code and never creates prompts — it exists solely to turn a validated
 `<game>_assets.json` into a runnable set of packed sprites and sound files that
 `cube_orchestrator`'s coder agents can reference. The packed assets are the
-Stage 3 artifact; `cube_orchestrator` checkpoints them with the user and then
-runs Stage 4 (implementation).
+Stage 3 artifact; `cube_orchestrator` checkpoints them with the user (stepwise
+mode; auto-accepted in autonomous mode once the consistency review passes) and
+then runs Stage 4 (implementation).
 
 Sprites are generated from each sprite's `gen_prompt` (written by
 `technical_prompter`, Step 4a). When an image provider is configured — any of
@@ -290,7 +291,13 @@ Exit codes:
 
 On success, the driver prints a summary: PNG count, WAV count, group names.
 
-### Step 3: User checkpoint — MANDATORY
+### Step 3: User checkpoint — MANDATORY in stepwise mode
+
+**In autonomous mode** (see `cube_orchestrator` Run Modes) there is no one to
+wait for: once the asset-consistency review subagent passes the generated
+set, the review is auto-accepted and the run continues straight to Step 4
+(pack) without printing this checkpoint or pausing. The STOP below applies in
+**stepwise mode**.
 
 **STOP. Do NOT proceed to the pack stage.** Print the summary and wait for
 user input. Offer these options verbatim:
@@ -310,7 +317,7 @@ user input. Offer these options verbatim:
 >   that sprite. (Sizes are authored, pre-upscale pixels — keep `W` and `H`
 >   ≤ 120; full screen is `120x120`, since the engine upscales ×2 on draw.)
 
-Wait for an explicit reply. Never auto-continue.
+Wait for an explicit reply. Never auto-continue in stepwise mode.
 
 For `regen <group>` — re-run the generate command with `--group <name>`.
 
@@ -426,8 +433,8 @@ more line so the fact reaches the orchestrator's final report to the user:
 
 Then **return control to `cube_orchestrator`**. Do NOT start implementation
 yourself. The orchestrator will run the Stage 3→4 boundary checkpoint with the
-user and begin the implementation workflow (coder/verifier/fixer subagents) when
-approved.
+user (stepwise mode; auto-accepted in autonomous mode) and begin the
+implementation workflow (coder/verifier/fixer subagents) when approved.
 
 ## Constraints
 
@@ -443,8 +450,9 @@ approved.
   placeholder path) encodes (via `ffmpeg`) to the beta mp3 the engine
   actually decodes (22050 Hz mono CBR 32k); only the mp3 is copied into
   `sound/assets/` and indexed in `index.bin`. Either way the user must
-  approve before packing. Never silently replace a file the user provided by
-  hand unless they explicitly said `regen`.
+  approve before packing in stepwise mode (auto-accepted in autonomous mode
+  once the consistency review passes). Never silently replace a file the user
+  provided by hand unless they explicitly said `regen`.
 - **Per-sprite `gen_prompt` (plus `description`) is the source of the art,
   whichever path produces it.** `technical_prompter` (Step 4a) writes a
   ready-to-run image-generation prompt into every sprite entry; the AI

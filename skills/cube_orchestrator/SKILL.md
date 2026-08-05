@@ -66,9 +66,9 @@ If the user writes "стоп" (or an equivalent halt) at any point mid-run, fini
 Both are asked once, at intake (before going silent), never mid-run. Everything else — GDD content, prompts, asset acceptance, per-prompt results — is decided autonomously and only reported at the end. (Mode Detection's disambiguation rules — which game, Build vs Mod — are entry-time routing safeguards, resolved before the run goes silent; they are not mid-run checkpoints and this section does not override them.)
 
 1. **Game concept — only if the prompt carries none at all.** Ask: «Про что игра? Одним предложением — или скажи „на твой вкус“.» Any concept fragment in the prompt — a genre, a theme, a mechanic — means NO question: `cube_game-designer` expands what is there. (`YOLO` token: never ask — the designer invents a concept.)
-2. **Image API key — only if no provider is configured anywhere.** Check with `resolve_provider()` from `scripts/image_providers.py`; it walks the chain `OPENROUTER_API_KEY` env → `IMAGE_API` env → `~\.wowcube\image_api.json` and returns `None` when nothing is configured. Only on `None`, ask the user for a key/URL and **WAIT for the answer** — this is a real block, the one place autonomous mode stops for input. Outcomes:
-   - **The user pastes something** → `save_provider(<value>)` persists it to `~\.wowcube\image_api.json` (so the question never repeats), then `validate(config)` runs the cheapest authenticated call. Valid → the run proceeds with AI art. Unknown pattern (`UnknownProviderError`) or failed validation (`ProviderValidationError`) → ask ONCE more, naming the supported forms — OpenRouter key (`sk-or-...`), OpenAI key (`sk-...`), xAI key (`xai-...`), Google Gemini key (`AIza...`), or a local Stable Diffusion URL (`http(s)://...`); if the second answer also fails, proceed with placeholder art.
-   - **«не знаю» / «нет ключа» / anything conveying no key** → the run proceeds with **agent-drawn placeholder art** (the asset-builder authors every sprite itself — see `cube_asset-builder`), and the final report says exactly one line about it: «Графика временная — добавь ключ (файл `~\.wowcube\image_api.json`) и скажи «перегенери графику».»
+2. **Image API key — only if no provider is configured anywhere.** Check with `resolve_provider()` from `scripts/image_providers.py`; it walks the chain `OPENROUTER_API_KEY` env → `IMAGE_API` env → `~/.wowcube/image_api.json` and returns `None` when nothing is configured. Only on `None`, ask the user for a key/URL and **WAIT for the answer** — this is a real block, the one place autonomous mode stops for input. Outcomes:
+   - **The user pastes something** → `save_provider(<value>)` persists it to `~/.wowcube/image_api.json` (so the question never repeats), then `validate(config)` runs the cheapest authenticated call. Valid → the run proceeds with AI art. Unknown pattern (`UnknownProviderError`) or failed validation (`ProviderValidationError`) → ask ONCE more, naming the supported forms — OpenRouter key (`sk-or-...`), OpenAI key (`sk-...`), xAI key (`xai-...`), Google Gemini key (`AIza...`), or a local Stable Diffusion URL (`http(s)://...`); if the second answer also fails, proceed with placeholder art.
+   - **«не знаю» / «нет ключа» / anything conveying no key** → the run proceeds with **agent-drawn placeholder art** (the asset-builder authors every sprite itself — see `cube_asset-builder`), and the final report says exactly one line about it: «Графика временная — добавь ключ (файл `~/.wowcube/image_api.json`) и скажи «перегенери графику».»
    - (`YOLO` token: never ask — on `resolve_provider() == None` go straight to placeholder art.)
 
 A provider that validates at intake but fails mid-run degrades exactly like "no key": placeholder art for the remaining sprites plus the same one report line — never a mid-run question or stall.
@@ -124,7 +124,7 @@ One genuine hard stop remains, in every mode: a **Stage 5 ARM build failure** (m
 **Final report** — plain user language, no pipeline jargon:
 1. Absolute path to the verified `app_<game>/app_<game>.oct` and how to load it onto the cube.
 2. What was cut or simplified (Failure policy above) — every item, one line each.
-3. The placeholder-art line, if the run used placeholders: «Графика временная — добавь ключ (файл `~\.wowcube\image_api.json`) и скажи «перегенери графику».»
+3. The placeholder-art line, if the run used placeholders: «Графика временная — добавь ключ (файл `~/.wowcube/image_api.json`) и скажи «перегенери графику».»
 4. Playtime hints: what to try first, the controls (taps/twists), anything the user should know to enjoy the game.
 
 ### Stepwise mode (opt-in)
@@ -446,7 +446,7 @@ Route to the chosen path below.
 
 **3.A1 Pre-generation gates** (both must pass; if either fails, do NOT generate):
 1. **`gen_prompt` coverage.** Load `plans/<game>_assets.json` and confirm **every sprite** has a non-empty `gen_prompt`. (Sounds do NOT need one.) A blank `gen_prompt` makes `gen_sprites.py` fail with `ValueError`. If any sprite is missing it, **return to Stage 2 (`technical_prompter`)** — do not patch the manifest yourself.
-2. **Image provider resolved.** AI generation needs a configured provider: `resolve_provider()` in `scripts/image_providers.py` walks the chain `OPENROUTER_API_KEY` env → `IMAGE_API` env → `~\.wowcube\image_api.json` (any supported provider: OpenRouter, OpenAI, xAI, Gemini, or a local Stable Diffusion URL). In autonomous mode this was settled at intake — `None` here means the intake already chose placeholder art, so run the placeholder flow instead of blocking. In stepwise mode, if nothing resolves, ask the user for a key/URL now (persist with `save_provider`, check with `validate`) before proceeding. Never hardcode a key; never commit one.
+2. **Image provider resolved.** AI generation needs a configured provider: `resolve_provider()` in `scripts/image_providers.py` walks the chain `OPENROUTER_API_KEY` env → `IMAGE_API` env → `~/.wowcube/image_api.json` (any supported provider: OpenRouter, OpenAI, xAI, Gemini, or a local Stable Diffusion URL). In autonomous mode this was settled at intake — `None` here means the intake already chose placeholder art, so run the placeholder flow instead of blocking. In stepwise mode, if nothing resolves, ask the user for a key/URL now (persist with `save_provider`, check with `validate`) before proceeding. Never hardcode a key; never commit one.
 
 **3.A2 Generate.** Invoke `cube_asset-builder` (Skill tool). With a provider it runs `build_pipeline.py generate` → `gen_sprites.generate()` → `genimg.generate_image(gen_prompt, size)` per sprite (via the resolved provider) → PNGs in `assets/art/`; without one, it authors placeholder PNGs itself per its placeholder-art section. Sounds are synthesised as placeholders into `assets/wav/` either way. AI output is non-deterministic across runs.
 
@@ -775,14 +775,15 @@ After all prompts are executed (stepwise: and the final checkpoint passes):
    scripts/build_device.sh --app-dir <workspace>/app_<game>
    ```
 
-   That compiles the ARM target (`out/app_<game>.bin`), has the simulator pack
-   assets + sounds + ARM code into `app_<game>/app_<game>.oct`, and **verifies the
-   ARM code is actually embedded** (it fails loudly on an asset-only pack). The
-   task is not complete until this exits 0. If the ARM toolchain is missing, that
-   is a `wowcube-boilerplate` toolchain problem (`check_env.ps1` / `check_env.sh`)
-   to resolve — not a reason to ship the sim-only `.oct`. (This Stage 5
-   verification is a hard invariant in every run mode — a sim-only `.oct` is
-   never delivered.)
+   That compiles the ARM target (`out/app_<game>.bin`), then packs assets +
+   sounds + the ARM binary into `app_<game>/app_<game>.oct` via the pure-Python
+   builder (`python scripts/pack_beta.py --build-oct`) — no simulator, no MSVC
+   involved — and **verifies the ARM code is actually embedded** (it fails
+   loudly on an asset-only pack). The task is not complete until this exits 0.
+   If the ARM toolchain is missing, that is a `wowcube-boilerplate` toolchain
+   problem (`check_env.ps1` / `check_env.sh`) to resolve — not a reason to ship
+   the sim-only `.oct`. (This Stage 5 verification is a hard invariant in every
+   run mode — a sim-only `.oct` is never delivered.)
 
    **Critical ordering:** the simulator rewrites `app_<game>.oct` as an
    asset-only pack on *every* launch, so all per-prompt sim testing (Stage 4)

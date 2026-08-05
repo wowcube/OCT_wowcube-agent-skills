@@ -93,7 +93,7 @@ Component invoked by the orchestrator. At completion it runs the mandatory devic
 
 > "I want to make a WowCube game where the player catches falling stars by twisting the cube. Stars appear on random faces and fall toward the bottom plane. The player twists to move a basket between faces to catch them."
 
-The **Cube Orchestrator** runs stage detection, sees there is no GDD yet, and drives **Stage 1** (Game Designer) to interview you and produce the GDD. After you approve it at the stage checkpoint, the orchestrator drives **Stage 2** (Technical Prompter) for prompts + asset manifest, then **Stage 3** (Asset Builder) for AI-generated art and sound, the **infra gate** (Boilerplate) to scaffold `app_<game>/` and verify the simulator, then **Stage 4** (coder/verifier/fixer subagents) to implement the prompts one at a time (tested in the simulator), and finally **Stage 5** (Device Package) to build and verify the cube-loadable `.oct`.
+By default this runs **autonomously**: the **Cube Orchestrator** runs stage detection, sees there is no GDD yet, and drives **Stage 1** (Game Designer) straight through to a GDD from your one-sentence concept (no interview). It then drives **Stage 2** (Technical Prompter) for prompts + asset manifest, **Stage 3** (Asset Builder) for AI-generated (or placeholder) art and sound, the **infra gate** (Boilerplate) to scaffold `app_<game>/` and verify the simulator, **Stage 4** (coder/verifier/fixer subagents) to implement the prompts one at a time (tested in the simulator), and finally **Stage 5** (Device Package) to build and verify the cube-loadable `.oct` — printing a one-way progress line at each stage boundary instead of stopping for approval. Ask for **«по шагам»** (or "review mode") to get the checkpointed walkthrough instead, where you approve the GDD, prompts, and each asset/prompt batch before the orchestrator proceeds.
 
 ### Resuming
 
@@ -101,7 +101,7 @@ Just ask the orchestrator to continue:
 
 > "Continue building the star catcher game."
 
-The orchestrator re-runs stage detection against `plans/`, `assets/`, and `context/<game>_context.json` and resumes from the first incomplete stage. You never invoke the component skills directly — the orchestrator routes into them and checkpoints with you at every stage boundary and after every implemented prompt.
+The orchestrator re-runs stage detection against `plans/`, `assets/`, and `context/<game>_context.json` and resumes from the first incomplete stage. You never invoke the component skills directly — the orchestrator routes into them, running straight through with progress lines by default, or checkpointing with you at every stage boundary and after every implemented prompt when you've asked for «по шагам».
 
 ## 🧊 WowCube Platform Summary
 
