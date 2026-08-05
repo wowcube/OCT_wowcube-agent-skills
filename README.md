@@ -48,7 +48,7 @@ A knowledge base and skill set for LLM-powered coding agents (Kilo Code, Claude 
 
 ## 🎮 Available Skills
 
-**`cube_orchestrator` is the single entry point.** For any WowCube game request — at any stage — the user invokes the orchestrator. It detects which pipeline stage the project is in and drives the right component skill or subagents itself, pausing for user approval at every stage boundary. The other five skills are components the orchestrator manages, not user-facing entry points.
+**`cube_orchestrator` is the single entry point.** For any WowCube game request — at any stage — the user invokes the orchestrator. It detects which pipeline stage the project is in and drives the right component skill or subagents itself — straight through to the device `.oct` by default, or pausing for user approval at every stage boundary in stepwise mode. The other five skills are components the orchestrator manages, not user-facing entry points.
 
 ### Cube Orchestrator (`cube_orchestrator`) — master controller
 
@@ -61,7 +61,7 @@ The entry point and master controller of the entire pipeline. On every entry it 
 5. All inputs present, prompts unimplemented → runs **Stage 4**: deploys coder subagents plus `cube_verifier`'s Requirements/Template agents and a fixer subagent for each prompt
 6. All prompts implemented, no verified device `.oct` → drives **Stage 5** (`wowcube-boilerplate`): builds and verifies the cube-loadable package
 
-Stages 1–3 and Stage 5 run in the main context via the Skill tool; Stage 4 dispatches subagents via the Agent tool. All inter-agent communication uses JSON. Pipeline parallelism where safe (prepare next task while verifying current). Scores below 90 trigger automatic rework (up to 5 attempts). Context accumulates in `context/<game>_context.json`. The orchestrator checkpoints with the user at every stage boundary and after every prompt.
+Stages 1–3 and Stage 5 run in the main context via the Skill tool; Stage 4 dispatches subagents via the Agent tool. All inter-agent communication uses JSON. Pipeline parallelism where safe (prepare next task while verifying current). Scores below 90 trigger automatic rework (up to 5 attempts). Context accumulates in `context/<game>_context.json`. In the default autonomous mode the orchestrator emits a one-way progress line at each stage boundary; in stepwise mode it checkpoints with the user at every stage boundary and after every prompt.
 
 ### Stage 1 — Game Designer (`cube_game-designer`)
 
@@ -73,7 +73,7 @@ Component invoked by the orchestrator. Reads the GDD and decomposes it into the 
 
 ### Stage 3 — Asset Builder (`cube_asset-builder`)
 
-Component invoked by the orchestrator. Turns the validated asset manifest into AI-generated PNGs plus synthesized WAVs encoded to beta mp3, pauses for user review, then packs them into the beta container — `app_<game>/index.bin`, `art/packed/*.raw`+`*.pal`, `sound/assets/*.mp3` — and `src/app_<game>_ids.h`.
+Component invoked by the orchestrator. Turns the validated asset manifest into AI-generated PNGs (or agent-drawn placeholders when no image provider is configured) plus synthesized WAVs encoded to beta mp3, pauses for user review in stepwise mode (auto-accepted in autonomous after the consistency review), then packs them into the beta container — `app_<game>/index.bin`, `art/packed/*.raw`+`*.pal`, `sound/assets/*.mp3` — and `src/app_<game>_ids.h`.
 
 ### Infra Gate — Boilerplate (`wowcube-boilerplate`)
 
