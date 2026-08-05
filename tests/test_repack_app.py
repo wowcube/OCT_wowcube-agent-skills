@@ -186,6 +186,70 @@ def test_detect_app_name_from_target_marker(tmp_path):
     assert cmd[cmd.index("--app-name") + 1] == "app_realname"
 
 
+# ── pipeline-workspace shape (asset-builder Stage 3 output) ────────────────
+
+def make_pipeline_app(root: Path, name: str = "app_demo", *, sprites=None,
+                      icon=True) -> Path:
+    """App built by build_pipeline.py: sprite PNGs live in assets/art/."""
+    app = make_app(root, name, sprites=sprites, icon=icon, psd=True)
+    (app / "assets" / "art").mkdir(parents=True)
+    (app / "assets" / "art" / "hero.png").write_bytes(b"\x89PNG-fake")
+    return app
+
+
+def test_detect_pipeline_shape_uses_build_pipeline(tmp_path):
+    """assets/art PNGs mark the asset-builder pipeline shape: repack must
+    re-run the canonical build_pipeline pack invocation (re-atlases the
+    workspace PNGs), NOT the scaffold pack.py call — that one would --export
+    the template art/assets.psd over the real art."""
+    app = make_pipeline_app(tmp_path, sprites=[PAL_SPRITE, FULL_SPRITE])
+    cmd, cwd = detect_pack_command(app)
+    assert cwd == app
+    assert cmd[0] == sys.executable and cmd[1].endswith("build_pipeline.py")
+    assert cmd[2] == "pack"
+    assert cmd[cmd.index("--game") + 1] == "demo"
+    assert cmd[cmd.index("--workspace") + 1] == "assets"
+    assert cmd[cmd.index("--src-dir") + 1] == "src"
+    assert cmd[cmd.index("--app-dir") + 1] == str(app)
+    assert cmd[cmd.index("--manifest") + 1] == str(
+        app / "plans" / "demo_assets.json")
+    assert cmd[cmd.index("--icon") + 1] == str(app / "art" / "icon.png")
+    assert "--export" not in cmd
+
+
+def test_detect_pipeline_shape_game_from_target_marker(tmp_path):
+    app = make_pipeline_app(tmp_path, "app_dirname", sprites=[PAL_SPRITE])
+    (app / "app_dirname.target").unlink()
+    (app / "app_realname.target").write_text("")
+    cmd, _ = detect_pack_command(app)
+    assert cmd[cmd.index("--game") + 1] == "realname"
+
+
+def test_detect_pipeline_shape_without_manifest_or_icon(tmp_path):
+    app = make_pipeline_app(tmp_path, icon=False)
+    cmd, _ = detect_pack_command(app)
+    assert cmd[1].endswith("build_pipeline.py")
+    assert "--manifest" not in cmd
+    assert "--icon" not in cmd
+
+
+def test_detect_empty_assets_art_falls_back_to_pack_py(tmp_path):
+    """assets/art exists but holds no PNGs -> not the pipeline shape."""
+    app = make_app(tmp_path, sprites=[PAL_SPRITE], psd=True)
+    (app / "assets" / "art").mkdir(parents=True)
+    cmd, _ = detect_pack_command(app)
+    assert cmd[1].endswith("pack.py")
+    assert "--export" in cmd
+
+
+def test_detect_pipeline_shape_multiple_manifests_rejected(tmp_path):
+    app = make_pipeline_app(tmp_path, sprites=[PAL_SPRITE])
+    (app / "plans" / "extra_assets.json").write_text(
+        (app / "plans" / "demo_assets.json").read_text())
+    with pytest.raises(ValueError, match="--manifest"):
+        detect_pack_command(app)
+
+
 # ── CLI stage order (mocked subprocess) ─────────────────────────────────────
 
 @pytest.fixture

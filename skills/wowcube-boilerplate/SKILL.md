@@ -304,7 +304,13 @@ python OCT_wowcube-agent-skills/scripts/repack_app.py --app-dir <workspace>/app_
 
 It auto-detects the app's canonical pack invocation from what already exists
 on disk — a `plans/*_assets.json` manifest → adds `--manifest`; `art/icon.png`
-→ adds `--icon` — so the caller never has to remember pack flags. It then:
+→ adds `--icon` — so the caller never has to remember pack flags. Apps whose
+art came through the asset-builder pipeline (`assets/art/*.png` present —
+AI-generated or agent-drawn placeholders) are repacked with the same
+`build_pipeline.py pack` invocation that built them (re-atlasing the
+workspace PNGs), so swapping a PNG in `assets/art/` and re-running this
+command is the whole art-replacement cycle; scaffold/PSD and PNG-only
+(`art/exported`) apps keep the direct `pack.py` invocation. It then:
 repacks the beta container via `pack.py`; **auto-bumps `APP_VERSION`'s patch
 digit by +1** in `src/app.h` (see "Automatic version bump" below); and,
 unless `--skip-device` is passed, runs the full device build (ARM cmake+ninja,

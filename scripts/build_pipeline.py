@@ -223,6 +223,8 @@ def do_pack(args: argparse.Namespace) -> int:
         ]
         if args.manifest:
             pack_cmd += ["--manifest", str(args.manifest)]
+        if args.icon:
+            pack_cmd += ["--icon", str(args.icon)]
     rc = _run(pack_cmd)
     if rc != 0:
         return rc
@@ -303,6 +305,9 @@ def build_parser() -> argparse.ArgumentParser:
     k.add_argument("--manifest", default=None,
                    help="Path to plans/<game>_assets.json, so color=='full' "
                         "sprites are RAW565-encoded in the beta container")
+    k.add_argument("--icon", default=None,
+                   help="Launcher icon PNG forwarded to pack.py's beta emit "
+                        "(default: pack.py auto-detects <app-dir>/art/icon.png)")
     k.set_defaults(func=do_pack)
 
     return p

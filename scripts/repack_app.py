@@ -30,6 +30,7 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PACK_PY = SCRIPT_DIR / "pack.py"
+BUILD_PIPELINE_PY = SCRIPT_DIR / "build_pipeline.py"
 
 _VERSION_RE = re.compile(
     r"^(?P<pre>\s*#\s*define\s+APP_VERSION\s+)(?P<num>\d+)(?P<tail>.*)$",
@@ -88,8 +89,19 @@ def detect_pack_command(app_dir: str | Path,
                         ) -> tuple[list[str], Path]:
     """Assemble the app's canonical pack.py invocation from what's on disk.
 
-    Returns (command, cwd). The command mirrors the scaffold-time invocation
-    (scripts/new_app.ps1 step 5) with these on-disk detection rules:
+    Returns (command, cwd). Two on-disk shapes exist:
+
+    **Pipeline shape** — `assets/art/*.png` present: the app's art was built
+    by the asset-builder pipeline (AI-generated or agent-drawn placeholder
+    PNGs in the `assets/` workspace, atlased into `assets/assets.psd` by
+    build_pipeline.py pack). The canonical invocation is that same
+    `build_pipeline.py pack` command (re-atlases the workspace PNGs, then
+    drives pack.py) — NOT the scaffold pack.py call, which would `--export`
+    the template's untouched `art/assets.psd` over the real art and fail on
+    any manifest full-color sprite.
+
+    **Scaffold/legacy shape** — everything else mirrors the scaffold-time
+    invocation (scripts/new_app.ps1 step 5) with these detection rules:
 
       *.target marker          -> --app-name (fallback: folder name)
       plans/*_assets.json      -> --manifest (exactly one match; several ->
@@ -101,6 +113,8 @@ def detect_pack_command(app_dir: str | Path,
                                   color != 'full', or no manifest at all —
                                   the legacy/scaffold shape; all-full apps
                                   like photo frames skip the palette build)
+
+    Manifest and icon detection are shared by both shapes.
     """
     app_dir = Path(app_dir).resolve()
     app = _app_name(app_dir)
@@ -128,6 +142,21 @@ def detect_pack_command(app_dir: str | Path,
         icon_path = Path(icon)
         if not icon_path.is_file():
             raise ValueError(f"icon not found: {icon_path}")
+
+    # Pipeline shape: sprite PNGs in the assets/ workspace -> re-run the
+    # canonical build_pipeline.py pack invocation from the app dir.
+    if sorted((app_dir / "assets" / "art").glob("*.png")):
+        game = app[4:] if app.startswith("app_") else app
+        cmd = [sys.executable, str(BUILD_PIPELINE_PY), "pack",
+               "--game", game,
+               "--workspace", "assets",
+               "--src-dir", "src",
+               "--app-dir", str(app_dir)]
+        if manifest_path is not None:
+            cmd += ["--manifest", str(manifest_path)]
+        if icon_path is not None:
+            cmd += ["--icon", str(icon_path)]
+        return cmd, app_dir
 
     cmd: list[str] = [sys.executable, str(PACK_PY)]
     if sorted((app_dir / "art").glob("*assets*.psd")):
