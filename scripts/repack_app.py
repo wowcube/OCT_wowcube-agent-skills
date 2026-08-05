@@ -240,10 +240,11 @@ def _cli(argv: list[str]) -> int:
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 2
-    print("==> Repacking beta container (pack.py)")
+    packer = Path(pack_cmd[1]).name if len(pack_cmd) > 1 else "packer"
+    print(f"==> Repacking beta container ({packer})")
     rc = _run(pack_cmd, cwd=cwd)
     if rc != 0:
-        print(f"ERROR: asset repack failed (pack.py exit {rc})", file=sys.stderr)
+        print(f"ERROR: asset repack failed ({packer} exit {rc})", file=sys.stderr)
         return rc or 1
 
     # --- 2. auto patch-bump (spec §9: every new device .oct bumps +1) ------
