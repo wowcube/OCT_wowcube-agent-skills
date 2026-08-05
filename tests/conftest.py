@@ -7,6 +7,11 @@ from pathlib import Path
 import pytest
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "slow: long-running test (real packing/build work)")
+
+
 @pytest.fixture
 def tmp_manifest(tmp_path: Path):
     """Factory: write a manifest dict to a JSON file in tmp_path and return the path."""

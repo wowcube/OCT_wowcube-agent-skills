@@ -123,6 +123,22 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument('--icon', default=None,
                    help='Launcher icon PNG for the beta container (default: '
                         'auto-detect icon.png in --art-dir or --beta-app-dir)')
+    p.add_argument('--icon-color', choices=('palette', 'full'), default=None,
+                   help='Launcher icon art tier, overriding the manifest '
+                        'icon object: "palette" quantizes the icon into its '
+                        'own dedicated .pal, "full" is RAW565 '
+                        '(default: manifest icon.color, else full)')
+    p.add_argument('--icon-side', type=int, default=None,
+                   help='Launcher icon side in pixels (square), overriding '
+                        'the manifest icon object. Palette icons allow only '
+                        'the proven 120 (drawn x2 -> 240) or 240 (fullsize, '
+                        '1:1); full-color allows 1..240 '
+                        '(default: manifest icon.side, else 160)')
+    p.add_argument('--icon-dither', action=argparse.BooleanOptionalAction,
+                   default=None,
+                   help='Floyd-Steinberg dithering for a full-color icon, '
+                        'overriding the manifest icon object '
+                        '(default: manifest icon.dither, else off)')
     return p
 
 
@@ -530,6 +546,40 @@ def _phase_emit_raw(args: argparse.Namespace) -> None:
     print(f"  Wrote {ok} .raw file(s)" + (f", {bad} skipped (not %4)" if bad else ""))
 
 
+def _encode_palette_icon(icon: Path, side: int) -> tuple[bytes, list[int]]:
+    """Quantize the launcher icon standalone through the pack_codec pipeline.
+
+    Same geometry as the full-color path (to_rgb565): centre-crop to a
+    square, LANCZOS-resize to side x side — but keeping RGBA so the PNG's
+    transparency survives into palette index 0. The resized PNG is then run
+    through the exact machinery every exported sprite uses
+    (build_auto_palette -> pack_sprite), yielding a legacy palette-sprite
+    blob plus the icon's own dedicated palette as RGB565 values.
+    """
+    import tempfile
+
+    from pack_codec import rgba_to_rgb565
+    with Image.open(icon) as img:
+        img = img.convert('RGBA')
+        w, h = img.size
+        if w != h:
+            edge = min(w, h)
+            left, top = (w - edge) // 2, (h - edge) // 2
+            img = img.crop((left, top, left + edge, top + edge))
+        if img.size != (side, side):
+            img = img.resize((side, side), Image.LANCZOS)
+        with tempfile.TemporaryDirectory() as td:
+            tmp_png = Path(td) / 'ico_idle.png'
+            img.save(tmp_png)
+            pal, _pal_size, sym, colors = build_auto_palette([str(tmp_png)])
+            blob = pack_sprite(str(tmp_png), pal, symbol_bitness=sym)
+    if blob is None:
+        raise ValueError(f"palette icon {icon} produced no sprite blob")
+    pal565 = [0x0000 if c[3] == 0 else rgba_to_rgb565(c[0], c[1], c[2])
+              for c in colors]
+    return blob, pal565
+
+
 def _phase_emit_beta(
     args: argparse.Namespace,
     sprite_assignments: dict[str, tuple[int, EncoderPalette, int]] | None,
@@ -623,6 +673,24 @@ def _phase_emit_beta(
                 icon = cand
                 break
 
+    # Resolve the icon art tier: CLI flags override the manifest icon object,
+    # which overrides the defaults (full / 160 / no dither == the pre-tier
+    # behaviour). The resolved combination is re-validated because CLI
+    # overrides can produce combos no manifest ever held.
+    from manifest_schema import Icon, validate_icon
+    base_icon = manifest.icon if (manifest is not None
+                                  and manifest.icon is not None) else Icon()
+    icon_cfg = Icon(
+        color=args.icon_color if args.icon_color is not None else base_icon.color,
+        side=args.icon_side if args.icon_side is not None else base_icon.side,
+        dither=args.icon_dither if args.icon_dither is not None else base_icon.dither,
+    )
+    icon_errors = validate_icon(icon_cfg)
+    if icon_errors:
+        for e in icon_errors:
+            print(f"Error: {e}")
+        sys.exit(1)
+
     # Cross-check manifest sounds against the mp3s actually present. Both
     # directions are non-fatal, but each gap gets a loud line: a missing mp3
     # means no KIND_SOUND record (SND_getAssetId returns -1 at runtime), a
@@ -641,12 +709,22 @@ def _phase_emit_beta(
                   f"manifest sound entry (stale file?) - it will still be "
                   f"packed as a KIND_SOUND record")
 
+    icon_arg: Path | bytes | None = icon
+    icon_palette = None
+    if icon is not None and icon_cfg.color == 'palette':
+        print(f"  Encoding palette icon ({icon_cfg.side}x{icon_cfg.side}, "
+              f"own dedicated pal) from {icon}")
+        icon_arg, icon_palette = _encode_palette_icon(icon, icon_cfg.side)
+
     records = pack_beta.emit_beta_layout(
         app_dir, app_name,
         palettes=pal_groups,
         palette_sprites=palette_blobs,
         full_sprites=full_specs,
-        icon=icon,
+        icon=icon_arg,
+        icon_side=icon_cfg.side,
+        icon_dither=icon_cfg.dither,
+        icon_palette=icon_palette,
     )
 
     kinds = [k for k, _n in records]
