@@ -3,7 +3,11 @@
 The beta simulator loads an app from:
   <APP_DIR>/index.bin                  - kind-tagged asset manifest; record index == asset id
   <APP_DIR>/art/packed/<name>.raw      - sprites (48B octBmp_t + payload) and maps
-  <APP_DIR>/art/packed/<name>.pal      - palettes (4 bytes per color: RGB565 twice)
+  <APP_DIR>/art/packed/<name>.pal      - palettes, 4 bytes per color in one of
+                                         two forms (see build_pal): plain
+                                         `c | c << 16` for an opaque group, or
+                                         `alpha5 << 27 | pre-spread RGB` for a
+                                         group whose sprites carry OCT_FLAG_ALPHA
   <APP_DIR>/sound/assets/<name>.mp3    - sounds (22050 Hz mono CBR 32k)
 
 Struct layouts mirror octavios/engine/oct_types.h + oct_pack.h and are pinned
@@ -12,8 +16,12 @@ utils.exe (from the app_hulk example).
 """
 from __future__ import annotations
 
+import argparse
+import ast
 import re
 import struct
+import sys
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -21,11 +29,37 @@ import numpy as np
 from PIL import Image
 
 KIND_SPRITE, KIND_SOUND, KIND_PAL, KIND_MAP = 0, 1, 2, 3
+OCT_PLACE_SIZE = 28             # sizeof(octPlace_t), oct_types.h
+OCT_PLACE_BMP_OFFSET = 16       # octPlace_t.BmpIdx (int16), within one place
+# The two map names the launcher looks up by name to draw an installed app's
+# icon: static "ico" and the hover animation "ahover" (engine oct_shell.h).
+RESERVED_LAUNCHER_MAPS = ("ico", "ahover")
 ASSET_NAME_MAXLEN = 24          # incl. NUL, oct_consts.h OCT_ASSET_NAME_MAXLEN
 ASSETS_CAP = 2048               # oct_pack.h OCT_ASSETS_CAP
 EXT_MAX_DESCS = 512             # launcher sees only the first 512 descriptors
 INDEX_RECORD = struct.Struct("<i24s")
 BMP_SIZE = 48
+
+# .oct pack layout, mirrors engine/oct_pack.h (field offsets confirmed by
+# tests against a real simulator-built pack)
+OCT_HEADER_SIZE = 232           # sizeof(octPackHeader_t)
+OCT_DESC_SIZE = 84              # sizeof(octAssetDesc_t)
+OCT_PACK_MAGIC = bytes((0xCC, 0x00, 0x00, 0xBB))
+OCT_PACK_FORMAT_SUPPORTED = 4
+OCT_ENGINE_VERSION_CURRENT = 2
+SOFTWARE_NAME_MAXLEN = 80       # oct_consts.h OCT_SOFTWARE_NAME_MAXLEN
+
+# APP_CATEGORIES macro spellings (engine/oct_consts.h) so an app.h that says
+# `(APP_CATEGORY_GAME)` resolves without a C preprocessor
+_CATEGORY_MACROS = {
+    "OCT_CAT_LAUNCHER": 1 << 0, "OCT_CAT_CHARGER": 1 << 1,
+    "OCT_CAT_SCREENSAVER": 1 << 2, "OCT_CAT_SYSTEM": 1 << 3,
+    "OCT_CAT_GETSTARTED": 1 << 4, "OCT_CAT_SLEEP": 1 << 5,
+    "APP_CATEGORY_GAME": 0,
+    "APP_CATEGORY_LAUNCHER": 1 << 0, "APP_CATEGORY_CHARGER": 1 << 1,
+    "APP_CATEGORY_SCREENSAVER": 1 << 2, "APP_CATEGORY_SYSTEM": 1 << 3,
+    "APP_CATEGORY_GETSTARTED": 1 << 4, "APP_CATEGORY_SLEEP": 1 << 5,
+}
 
 OCT_FLAG_ALPHA = 1 << 0
 OCT_FLAG_FULLSIZE = 1 << 1
@@ -34,6 +68,18 @@ OCT_FLAG_BG = 1 << 3
 OCT_FLAG_RAW565 = 1 << 7
 # octBmp_t::Compression sub-format for a RAW565 payload, mirrors engine/oct_consts.h
 RAW565_PLAIN, RAW565_RLE = 0, 1
+
+# .pal word layout for a group whose sprites carry OCT_FLAG_ALPHA, mirrors
+# engine/oct_render.h::OCT_BLEND_alpha (`alpha = pe >> 27`, `fg = pe &
+# 0x07FFFFFF`, "Already spread in pallette"). Without the flag the word is
+# plain `c | c << 16` instead -- see build_pal.
+PAL_SPREAD_MASK = 0x07E0F81F        # engine SPREAD_MASK
+PAL_ALPHA5_SHIFT = 27
+PAL_ALPHA5_MASK = 0x1F
+
+# legacy octBmp_t byte offsets, as pack_codec.build_header writes them
+HDR_OFF_FLAGS = 44
+HDR_OFF_LEGACY_PIDX = 45
 
 # RLE control-byte threshold and limits
 RAW565_RUN = 0x80
@@ -409,41 +455,153 @@ def read_index_bin(path: Path) -> list[tuple[int, str]]:
     return records
 
 
-def build_pal(colors_rgb565: list[int]) -> bytes:
-    # each entry stores the RGB565 value twice (see golden 5.pal)
-    return b"".join(struct.pack("<HH", c, c) for c in colors_rgb565)
+def pal_word_plain(rgb565: int) -> int:
+    """The opaque palette word: RGB565 duplicated into both halves.
+
+    ``OCT_BLEND_opaque`` does ``back[pix] = pal[t]`` and only the low half
+    ever reaches the framebuffer, so the duplication is free redundancy —
+    but it is what ``utils.exe`` writes, byte for byte.
+    """
+    rgb565 &= 0xFFFF
+    return (rgb565 | (rgb565 << 16)) & 0xFFFFFFFF
 
 
-def read_pal(path: Path) -> list[int]:
+def pal_word_spread(rgb565: int, alpha8: int) -> int:
+    """The alpha palette word: 5-bit alpha over pre-spread RGB.
+
+    ``OCT_BLEND_alpha`` (engine ``oct_render.h``) reads it as::
+
+        alpha = pe >> 27;              // 5 bits
+        fg    = pe & 0x07FFFFFF;       // already (fg | fg << 16) & 0x07e0f81f
+
+    i.e. green is lifted into bits 26..21 so the blend can do all three
+    channels in one 32-bit add.
+    """
+    a5 = (alpha8 >> 3) & PAL_ALPHA5_MASK
+    rgb565 &= 0xFFFF
+    return (a5 << PAL_ALPHA5_SHIFT) | ((rgb565 | (rgb565 << 16)) & PAL_SPREAD_MASK)
+
+
+def pal_is_spread(words) -> bool:
+    """True when a ``.pal`` word list is in the alpha (spread) format.
+
+    A plain palette has ``low16 == high16`` in every word; the spread form
+    scatters green into the high half and alpha above it, which no plain
+    entry can imitate.  An all-zero palette is identical in both forms and
+    reports plain (corpus group 16, ``eyes_bg*``, is exactly that).
+    """
+    return any((w & 0xFFFF) != ((w >> 16) & 0xFFFF) for w in words)
+
+
+def build_pal(colors_rgb565: list[int], alphas: list[int] | None = None) -> bytes:
+    """Serialise one palette group.
+
+    ``alphas`` is what picks the format, and the caller must derive it from
+    the group's ``OCT_FLAG_ALPHA`` bit — the two are one decision, not two
+    (see :func:`pal_word_spread`; a plain palette read by ``OCT_BLEND_alpha``
+    would use its RED channel as alpha, and a spread one read by
+    ``OCT_BLEND_opaque`` would lose green).  ``utils.exe`` keeps them in
+    lockstep for all 46 palette groups of the reference corpus.
+
+      * ``alphas is None`` — plain ``c | c << 16``, for sprites WITHOUT
+        ``OCT_FLAG_ALPHA``.
+      * ``alphas`` given (0..255 per entry) — the spread alpha format, for
+        sprites WITH it.
+
+    Index 0 is the keyed-out slot every blend routine skips
+    (``if (t == 0) continue``); it is written as all-zero in both forms.
+    """
+    if alphas is None:
+        # each entry stores the RGB565 value twice (see golden 5.pal)
+        return b"".join(struct.pack("<HH", c, c) for c in colors_rgb565)
+    if len(alphas) != len(colors_rgb565):
+        raise ValueError(
+            f"palette has {len(colors_rgb565)} colors but {len(alphas)} alphas")
+    words = [pal_word_spread(c, a) for c, a in zip(colors_rgb565, alphas)]
+    if words:
+        words[0] = 0
+    return b"".join(struct.pack("<I", w) for w in words)
+
+
+def _read_pal_words(path: Path) -> list[int]:
     blob = Path(path).read_bytes()
     if len(blob) % 4 != 0:
         raise ValueError(f"{path}: truncated .pal file, {len(blob)} bytes is not a multiple of 4")
-    out = []
-    for off in range(0, len(blob), 4):
-        a, b = struct.unpack_from("<HH", blob, off)
-        if a != b:
-            raise ValueError(f"pal entry mismatch at {off}: {a:04x} != {b:04x}")
-        out.append(a)
+    return [struct.unpack_from("<I", blob, off)[0]
+            for off in range(0, len(blob), 4)]
+
+
+def read_pal(path: Path) -> list[int]:
+    """The palette's RGB565 colors, whichever of the two formats it is in."""
+    return [c for c, _a in read_pal_rgba(path)]
+
+
+def read_pal_rgba(path: Path) -> list[tuple[int, int]]:
+    """``[(rgb565, alpha8)]``; a plain palette reads back fully opaque.
+
+    Index 0 always reads back ``(0, 0)`` — it is the transparent slot.
+    """
+    words = _read_pal_words(path)
+    out: list[tuple[int, int]] = []
+    if pal_is_spread(words):
+        for w in words:
+            a5 = (w >> PAL_ALPHA5_SHIFT) & PAL_ALPHA5_MASK
+            r5, g6, b5 = (w >> 11) & 0x1F, (w >> 21) & 0x3F, w & 0x1F
+            out.append(((r5 << 11) | (g6 << 5) | b5, (a5 << 3) | (a5 >> 2)))
+    else:
+        out = [(w & 0xFFFF, 255) for w in words]
+    if out:
+        out[0] = (0, 0)
     return out
+
+
+def split_pal_entries(entries) -> tuple[list[int], list[int]]:
+    """Normalise a palette group to ``([rgb565], [alpha8])``.
+
+    Accepts the historic ``[rgb565, ...]`` form (everything opaque) as well
+    as ``[(rgb565, alpha8), ...]``.
+    """
+    colors: list[int] = []
+    alphas: list[int] = []
+    for entry in entries:
+        if isinstance(entry, (tuple, list)):
+            color, alpha = entry
+        else:
+            color, alpha = entry, 255
+        colors.append(int(color) & 0xFFFF)
+        alphas.append(int(alpha) & 0xFF)
+    return colors, alphas
 
 
 def patch_palette_sprite(blob: bytes, *, pal_id: int, seq_id: int = 0,
                          extra_flags: int = 0) -> bytes:
-    """Convert a legacy packed-sprite blob into a beta one, payload untouched.
+    """Convert a packed-sprite blob from our intermediate layout to the beta
+    one, payload untouched.
 
-    The legacy octBmp_t (pack_codec.build_header) and the beta octBmp_t
-    (oct_types.h) are the same 48 bytes except for four fields:
+    :func:`pack_codec.build_header` writes an INTERMEDIATE header that keeps
+    the palette group and the sequence index inline, because nothing has
+    assigned asset ids yet at that point. This function is the seam that turns
+    it into the octBmp_t ``oct_types.h`` declares:
 
-        offset   legacy                     beta
+        offset   pack_codec.build_header    beta octBmp_t
         0..3     num_pixels (u32)           Pidx (u16) + Seq (u16)
         44       Flags (u8)                 Flags (u8)          (unchanged)
         45       Pidx (u8)                  Rate (i8)
         46       Seq (i8)                   Reserved = 0
         47       Rate (i8)                  Reserved = 0
 
-    Beta Pidx/Seq are ASSET IDS (index.bin record indices), not the legacy
-    palette-group / sibling-sprite indices, so the caller supplies them.
-    The legacy Rate byte is preserved by moving it into the beta slot.
+    Beta Pidx/Seq are ASSET IDS (index.bin record indices), not palette-group /
+    sibling-sprite indices, so the caller supplies them. The Rate byte is
+    preserved by moving it into the beta slot.
+
+    NOTE on the reference toolchain, measured rather than assumed: a golden
+    ``art/packed/*.raw`` written by ``utils.exe`` is ALREADY in the beta
+    layout — Pidx and Seq are asset ids at bytes 0..3 (``icon`` in ladybug
+    carries Pidx 1, the id of the ``ico*`` palette record) and Rate sits at
+    byte 45, with 46..47 zero. The three-column table above therefore
+    describes OUR intermediate format on the left, not ``utils.exe``'s output.
+    An earlier reading of byte 45 as "a Pidx placeholder that is 1 for every
+    golden sprite" was really the default Rate of 1.
 
     `extra_flags` ORs additional OCT_FLAG_* bits into the Flags byte @44 --
     the seam that lets manifest flags (fullsize/additive/bg) reach a palette
@@ -536,7 +694,51 @@ def _load_rgb565(image, size, dither=False) -> bytes:
         return to_rgb565(img, size, dither=dither)
 
 
-def generate_beta_ids_h(records: list[tuple[int, str]]) -> str:
+def remap_map_bmp_ids(blob: bytes, legacy_bmp_names: dict[int, str],
+                      sprite_ids: dict[str, int],
+                      *, what: str = "map") -> bytes:
+    """Rewrite a legacy map payload's BmpIdx fields into beta asset ids.
+
+    A map packed by ``pack_psd.pack_maps`` stores, in every 28-byte
+    octPlace_t, the sprite's index in the LEGACY alphabetical BMP enum. In the
+    beta container the same field must hold the sprite's asset id (its
+    ``index.bin`` record index), which is a completely different numbering.
+    Shipping the legacy value renders the wrong sprite at every placement -
+    structurally valid, visually nonsense.
+
+    A place pointing at something that is not a beta sprite (index 0, or a
+    name that never became an asset) is zeroed onto the reserved empty
+    sprite rather than left dangling.
+    """
+    out = bytearray(blob)
+    if len(out) < 8:
+        raise ValueError(f"{what}: payload is {len(out)} bytes, not a map")
+    _version, count = struct.unpack_from("<ii", out, 0)
+    if 8 + count * OCT_PLACE_SIZE > len(out):
+        raise ValueError(
+            f"{what}: header claims {count} places but the payload is "
+            f"{len(out)} bytes")
+    missing: set[str] = set()
+    for i in range(count):
+        off = 8 + i * OCT_PLACE_SIZE + OCT_PLACE_BMP_OFFSET
+        legacy, = struct.unpack_from("<h", out, off)
+        if legacy <= 0:
+            continue
+        name = legacy_bmp_names.get(legacy)
+        asset_id = sprite_ids.get(name, 0) if name else 0
+        if asset_id == 0 and name:
+            missing.add(name)
+        struct.pack_into("<h", out, off, asset_id)
+    if missing:
+        print(f"  WARNING: map '{what}' places reference "
+              f"{len(missing)} name(s) that are not sprites in this container "
+              f"({', '.join(sorted(missing)[:6])}"
+              f"{' ...' if len(missing) > 6 else ''}) - drawn as the empty sprite")
+    return bytes(out)
+
+
+def generate_beta_ids_h(records: list[tuple[int, str]],
+                        metadata_blocks: str = "") -> str:
     """Kind-aware ids header text for a beta record list (index == asset id).
 
     enum BMP carries every KIND_SPRITE record except the reserved slot-0
@@ -600,6 +802,9 @@ def generate_beta_ids_h(records: list[tuple[int, str]]) -> str:
     lines.append("SND_last};\n\n")
 
     lines.append("typedef enum BMP BMP;\ntypedef enum MAP MAP;\ntypedef enum SND SND;\n")
+    if metadata_blocks:
+        lines.append("\n")
+        lines.append(metadata_blocks)
     return "".join(lines)
 
 
@@ -607,13 +812,18 @@ def emit_beta_layout(
     app_dir: str | Path,
     app_name: str,
     *,
-    palettes: dict[int, list[int]] | None = None,
+    palettes: dict[int, list[int] | list[tuple[int, int]]] | None = None,
     palette_sprites=(),
     full_sprites=(),
-    icon: str | Path | Image.Image | None = None,
+    icon: str | Path | Image.Image | bytes | None = None,
     icon_side: int = 160,
+    icon_dither: bool = False,
+    icon_palette: list[int] | list[tuple[int, int]] | None = None,
     sounds: list[str] | None = None,
     ids_path: str | Path | None = None,
+    psd_maps: list[tuple[str, bytes]] | None = None,
+    legacy_bmp_names: dict[int, str] | None = None,
+    metadata_blocks: str = "",
 ) -> list[tuple[int, str]]:
     """Write the complete beta asset container for one app directory.
 
@@ -622,19 +832,31 @@ def emit_beta_layout(
     index in index.bin == runtime asset id, in this fixed order:
 
       0. ("zero", SPRITE)     - reserved empty sprite, 48-byte zero header
-      1. one PAL per palette group, named "1", "2", ...
+      1. one PAL per palette group, named "1", "2", ...; when the icon is
+         palette-encoded (`icon_palette` given) its dedicated pal follows as
+         the next numeric name
       2. icon assets (only when `icon` is given): ico_idle SPRITE (RAW565
-         icon at icon_side²) + "ico"/"ahover" MAPs pointing at it - the
-         launcher looks these up by name within the first EXT_MAX_DESCS
-         descriptors (mirrors app_hulk's videopack.build_icon_assets)
+         icon at icon_side², or the palette-encoded blob when `icon_palette`
+         is given) + "ico"/"ahover" MAPs pointing at it - the launcher looks
+         these up by name within the first EXT_MAX_DESCS descriptors
+         (mirrors app_hulk's videopack.build_icon_assets)
       3. every palette sprite, header patched from legacy to beta layout
          (Pidx -> pal ASSET id, Seq -> next-frame asset id for _NN chains)
       4. every full-color sprite, RAW565-encoded at its target size
       5. one SOUND per mp3 (payload stays in sound/assets/, nothing written)
 
     Arguments:
-      palettes:        {legacy_pidx: [rgb565, ...]} - keyed by whatever Pidx
-                       values the legacy sprite headers actually carry.
+      palettes:        {legacy_pidx: [rgb565, ...]} or
+                       {legacy_pidx: [(rgb565, alpha8), ...]} - keyed by
+                       whatever Pidx values the legacy sprite headers
+                       actually carry. Whether a group's .pal is written in
+                       the plain or the alpha (spread) format is NOT this
+                       argument's call: it follows the OCT_FLAG_ALPHA bit of
+                       the sprites that reference the group, because the two
+                       are one decision in the engine (see build_pal). The
+                       alphas are simply dropped for a group whose sprites
+                       are opaque, and default to 255 when a caller passes
+                       the bare-rgb565 form for a group that has the flag.
       palette_sprites: iterable of (name, legacy_blob) or
                        (name, legacy_blob, extra_flags) - 48-byte legacy
                        octBmp_t + opaque payload, as read from the current
@@ -647,11 +869,43 @@ def emit_beta_layout(
                        (ORed in automatically); dither (default False) runs
                        the RGB565 conversion through Floyd-Steinberg error
                        diffusion (see to_rgb565).
-      icon:            source image for the launcher icon, or None.
+      icon:            source image for the launcher icon, or None. With
+                       `icon_palette` set it is instead the icon's
+                       pre-encoded LEGACY palette-sprite blob (bytes, 48-byte
+                       legacy octBmp_t + payload, as pack_codec.pack_sprite
+                       returns) - the palette-icon tiers.
+      icon_side:       full-color icon target side (square). Ignored for a
+                       palette icon: its dimensions live in the blob header.
+      icon_dither:     full-color icon only - Floyd-Steinberg dithering,
+                       exactly like a full sprite's dither flag.
+      icon_palette:    the palette icon's OWN colors ([rgb565, ...] or
+                       [(rgb565, alpha8), ...], same rule as `palettes`).
+                       Emitted as a dedicated KIND_PAL record (next numeric
+                       name after the palette groups) that ico_idle's Pidx
+                       points at. FULLSIZE is derived from the blob dimensions:
+                       a side over 120 draws 1:1 (240 tier), 120 and under
+                       draws at x2 (cheap tier).
       sounds:          mp3 basenames; None scans <app_dir>/sound/assets/.
+      psd_maps:        (name, legacy_octPlace_blob) for every placement map
+                       the app's own -map PSDs produced. Their BmpIdx fields
+                       are legacy enum indices and are rewritten to beta
+                       asset ids (see remap_map_bmp_ids), which needs
+                       legacy_bmp_names.
+      legacy_bmp_names: {legacy_bmp_index: sprite_name}, i.e. the inverse of
+                       pack_psd.build_bmp_name_index. Required with psd_maps.
+      metadata_blocks: pre-rendered $names/%types/&groups/#tags constants
+                       (pack_psd.emit_index_blocks) appended to the ids
+                       header. An app whose maps set octObject_t.Name/.Type/
+                       .Tags needs them to compile.
 
-    Legacy PSD maps are NOT emitted: their embedded bmp indices are legacy
-    enum values, meaningless in the beta asset-id space.
+    Launcher maps: "ico" (and its hover twin "ahover") are synthesized from
+    `icon` so an app with no ico.psd still installs. An app that declares its
+    OWN -map PSDs decides the launcher set instead: only the reserved names it
+    declares are emitted (ladybug ships ico.psd and no ahover.psd, and its
+    legacy container has exactly one launcher map). Their payloads still come
+    from `icon`, because a legacy ico.psd map points into the legacy enum
+    space and the beta launcher wants the RAW565 icon; "ico" therefore stays
+    at its low, launcher-visible asset id.
 
     Returns the records written (same shape read_index_bin returns).
     """
@@ -663,6 +917,20 @@ def emit_beta_layout(
     # normalize (name, image, size, flags) / (..., dither) to 5-tuples
     full_sprites = [(t[0], t[1], t[2], t[3], t[4] if len(t) > 4 else False)
                     for t in full_sprites]
+
+    if icon_palette is not None and not isinstance(icon, (bytes, bytearray)):
+        raise TypeError(
+            "icon_palette means the icon is a pre-encoded legacy "
+            "palette-sprite blob (bytes), but icon is "
+            f"{type(icon).__name__} - encode the PNG through "
+            "pack_codec first (see pack.py's palette-icon path)")
+    if isinstance(icon, (bytes, bytearray)):
+        if icon_palette is None:
+            raise TypeError("a bytes icon (palette-encoded blob) needs its "
+                            "icon_palette colors")
+        if len(icon) < BMP_SIZE:
+            raise ValueError(f"palette icon blob is {len(icon)} bytes, "
+                             f"needs at least {BMP_SIZE}")
 
     if sounds is None:
         snd_dir = app_dir / "sound" / "assets"
@@ -676,12 +944,38 @@ def emit_beta_layout(
         pal_asset_id[legacy_pidx] = len(records)
         records.append((KIND_PAL, str(n)))
 
+    icon_pal_id = None
+    if icon is not None and icon_palette is not None:
+        # the palette icon's dedicated pal: next numeric name in the row
+        icon_pal_id = len(records)
+        records.append((KIND_PAL, str(len(pal_asset_id) + 1)))
+
+    # An app with its own -map PSDs declares which launcher maps exist; one
+    # with none at all (the AI-generated shape) gets both synthesized.
+    psd_maps = list(psd_maps or [])
+    declared_map_names = [n for n, _b in psd_maps]
+    if declared_map_names:
+        launcher_maps = [n for n in RESERVED_LAUNCHER_MAPS
+                         if n in declared_map_names]
+        if "ico" not in launcher_maps:
+            # the launcher cannot install an app without it
+            launcher_maps.insert(0, "ico")
+    else:
+        launcher_maps = list(RESERVED_LAUNCHER_MAPS)
+    # a reserved name is served by the synthesized asset, not by the PSD map
+    dropped = [n for n in declared_map_names if n in launcher_maps]
+    if dropped and icon is not None:
+        print(f"  NOTE: {', '.join(dropped)}.psd map(s) superseded by the "
+              f"launcher icon assets built from the icon image")
+    if icon is not None:
+        psd_maps = [(n, b) for n, b in psd_maps if n not in launcher_maps]
+
     ico_idle_id = None
     if icon is not None:
         ico_idle_id = len(records)
         records.append((KIND_SPRITE, "ico_idle"))
-        records.append((KIND_MAP, "ico"))
-        records.append((KIND_MAP, "ahover"))
+        for n in launcher_maps:
+            records.append((KIND_MAP, n))
         if len(records) > EXT_MAX_DESCS:
             raise ValueError(
                 f"icon assets reach id {len(records) - 1}, past the "
@@ -694,6 +988,9 @@ def emit_beta_layout(
     for name, _image, _size, _flags, _dither in full_sprites:
         sprite_ids[name] = len(records)
         records.append((KIND_SPRITE, name))
+
+    for name, _blob in psd_maps:
+        records.append((KIND_MAP, name))
 
     for name in sounds:
         records.append((KIND_SOUND, name))
@@ -716,23 +1013,58 @@ def emit_beta_layout(
     # 48-byte pure-zero zero.raw (the rate default of 1 would set byte 45)
     _write_raw(packed_dir / "zero.raw", build_bmp_header(w=0, h=0, flags=0, rate=0))
 
+    # A group's .pal format is decided by its sprites' OCT_FLAG_ALPHA bit, not
+    # by whether the palette happens to hold a non-opaque entry: utils.exe sets
+    # the flag per group from pooled anti-aliasing, and several corpus groups
+    # (cubetext_hi_*, main*) do have semi-transparent pixels yet stay opaque.
+    # Emitting the wrong form is not a rounding error -- OCT_BLEND_alpha would
+    # read a plain word's RED channel as alpha, and OCT_BLEND_opaque would
+    # write a spread word's green-less low half straight to the framebuffer.
+    pal_wants_alpha: dict[int, bool] = {}
+    for _name, blob, extra in palette_sprites:
+        legacy_pidx = blob[HDR_OFF_LEGACY_PIDX]
+        has_alpha = bool((blob[HDR_OFF_FLAGS] | extra) & OCT_FLAG_ALPHA)
+        pal_wants_alpha[legacy_pidx] = \
+            pal_wants_alpha.get(legacy_pidx, False) or has_alpha
+
     for legacy_pidx, asset_id in pal_asset_id.items():
         _kind, pal_name = records[asset_id]
-        (packed_dir / f"{pal_name}.pal").write_bytes(build_pal(palettes[legacy_pidx]))
+        colors, alphas = split_pal_entries(palettes[legacy_pidx])
+        spread = pal_wants_alpha.get(legacy_pidx, False)
+        (packed_dir / f"{pal_name}.pal").write_bytes(
+            build_pal(colors, alphas if spread else None))
 
     if icon is not None:
-        texels = _load_rgb565(icon, icon_side)
-        _write_raw(packed_dir / "ico_idle.raw",
-                   build_raw565_sprite(texels, icon_side, icon_side,
-                                       flags=OCT_FLAG_FULLSIZE))
+        if icon_pal_id is not None:
+            # palette-icon tiers: dedicated pal + header patched to beta
+            # layout with Pidx -> the icon's own pal asset id. FULLSIZE by
+            # blob dimensions: over 120 is the 1:1 (240) tier, at or under
+            # 120 is the cheap x2-upscale tier.
+            _kind, icon_pal_name = records[icon_pal_id]
+            icon_colors, icon_alphas = split_pal_entries(icon_palette)
+            (packed_dir / f"{icon_pal_name}.pal").write_bytes(
+                build_pal(icon_colors,
+                          icon_alphas if icon[HDR_OFF_FLAGS] & OCT_FLAG_ALPHA
+                          else None))
+            icon_w, icon_h = struct.unpack_from("<hh", icon, 36)
+            fullsize = OCT_FLAG_FULLSIZE if max(icon_w, icon_h) > 120 else 0
+            _write_raw(packed_dir / "ico_idle.raw",
+                       patch_palette_sprite(bytes(icon), pal_id=icon_pal_id,
+                                            extra_flags=fullsize))
+        else:
+            icon_w = icon_h = icon_side
+            texels = _load_rgb565(icon, icon_side, dither=icon_dither)
+            _write_raw(packed_dir / "ico_idle.raw",
+                       build_raw565_sprite(texels, icon_side, icon_side,
+                                           flags=OCT_FLAG_FULLSIZE))
         # both maps point at the same static sprite (Seq=0 stops the chain
         # walk, so the icon just holds either way), but ahover is the hover
         # ANIMATION map and the real toolchain packs it looped (PLACE_LOOPED,
         # see golden app_hulk ahover.raw) while ico stays static
-        _write_raw(packed_dir / "ico.raw",
-                   build_map(ico_idle_id, icon_side, icon_side))
-        _write_raw(packed_dir / "ahover.raw",
-                   build_map(ico_idle_id, icon_side, icon_side, looped=True))
+        for n in launcher_maps:
+            _write_raw(packed_dir / f"{n}.raw",
+                       build_map(ico_idle_id, icon_w, icon_h,
+                                 looped=(n == "ahover")))
 
     for name, blob, extra_flags in palette_sprites:
         if len(blob) < BMP_SIZE:
@@ -768,11 +1100,451 @@ def emit_beta_layout(
                    build_raw565_sprite(texels, w, h, flags=flags,
                                        seq=seq.get(name, 0)))
 
+    if psd_maps and legacy_bmp_names is None:
+        raise ValueError("psd_maps need legacy_bmp_names to translate their "
+                         "BmpIdx fields into beta asset ids")
+    for name, blob in psd_maps:
+        _write_raw(packed_dir / f"{name}.raw",
+                   remap_map_bmp_ids(blob, legacy_bmp_names or {},
+                                     sprite_ids, what=name))
+
     # ── index.bin + ids header ──────────────────────────────────────────────
     (app_dir / "index.bin").write_bytes(build_index_bin(records))
 
     ids_file = Path(ids_path) if ids_path else app_dir / "src" / f"{app_name}_ids.h"
     ids_file.parent.mkdir(parents=True, exist_ok=True)
-    ids_file.write_text(generate_beta_ids_h(records), encoding="ascii")
+    ids_file.write_text(generate_beta_ids_h(records, metadata_blocks),
+                        encoding="ascii")
 
     return records
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# .oct pack assembly (pure-python replacement for the simulator's
+# SIM_build_pack, octavios/sim/src/sim.h)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_c_int(token: str) -> int | None:
+    """Parse a C integer literal ('102', '001', '0xDF...', u/U/l/L suffixes).
+
+    Decimal is read base 10, not base 0: `#define APP_VERSION 001` is a real
+    app.h shape and int('001', 0) raises.  C would read a leading zero as
+    octal, but every app.h using it means plain decimal (001 == v0.01).
+    """
+    m = re.fullmatch(r"(0[xX][0-9a-fA-F]+|\d+)[uUlL]*", token)
+    if not m:
+        return None
+    lit = m.group(1)
+    return int(lit, 16) if lit[:2] in ("0x", "0X") else int(lit, 10)
+
+
+# Function-like `#define NAME(a, b) body` in the app's own app.h.  Real apps
+# define version helpers this way -- `#define APP_VERSION APP_VER(0, 1, 3)`
+# with `#define APP_VER(ma, mi, pa) (((ma) << 16) | ((mi) << 8) | (pa))` is the
+# shape shipped by OCT_get_started and app_seabattle -- so the define values
+# below cannot be read without expanding them first.
+_FUNC_MACRO_RE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+(\w+)\(([^)]*)\)[ \t]+(.+)$",
+                            re.M)
+
+# Integer operators a #define value may legally use.  Anything else (calls,
+# attributes, comparisons, names that are not known macros) is rejected: this
+# evaluates untrusted-ish source text, so the node whitelist is the guard.
+_AST_BINOPS = {ast.BitOr: lambda a, b: a | b, ast.BitAnd: lambda a, b: a & b,
+               ast.BitXor: lambda a, b: a ^ b, ast.LShift: lambda a, b: a << b,
+               ast.RShift: lambda a, b: a >> b, ast.Add: lambda a, b: a + b,
+               ast.Sub: lambda a, b: a - b, ast.Mult: lambda a, b: a * b}
+
+
+def _collect_func_macros(text: str) -> dict[str, tuple[list[str], str]]:
+    """Function-like macros defined in this header, as {name: (params, body)}."""
+    out: dict[str, tuple[list[str], str]] = {}
+    for m in _FUNC_MACRO_RE.finditer(text):
+        params = [p.strip() for p in m.group(2).split(",") if p.strip()]
+        out[m.group(1)] = (params, m.group(3).split("//", 1)[0].strip())
+    return out
+
+
+def _split_macro_args(text: str, open_idx: int) -> tuple[list[str], int] | None:
+    """Split the argument list of a call starting at text[open_idx] == '('.
+
+    Returns (args, index_just_past_the_closing_paren), or None when the parens
+    are unbalanced.  Nested parens inside an argument are preserved.
+    """
+    depth, arg, args = 0, [], []
+    for i in range(open_idx, len(text)):
+        ch = text[i]
+        if ch == "(":
+            depth += 1
+            if depth == 1:
+                continue
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                args.append("".join(arg).strip())
+                return ([a for a in args if a or len(args) > 1], i + 1)
+        elif ch == "," and depth == 1:
+            args.append("".join(arg).strip())
+            arg = []
+            continue
+        arg.append(ch)
+    return None
+
+
+def _expand_func_macros(text: str, macros: dict[str, tuple[list[str], str]],
+                        depth: int = 8) -> str:
+    """Substitute function-like macro invocations until none are left."""
+    for _ in range(depth):
+        for name, (params, body) in macros.items():
+            m = re.search(rf"\b{re.escape(name)}\s*\(", text)
+            if not m:
+                continue
+            split = _split_macro_args(text, m.end() - 1)
+            if split is None or len(split[0]) != len(params):
+                continue
+            args, end = split
+            expansion = body
+            for param, arg in zip(params, args):
+                expansion = re.sub(rf"\b{re.escape(param)}\b", f"({arg})",
+                                   expansion)
+            text = f"{text[:m.start()]}({expansion}){text[end:]}"
+            break
+        else:
+            return text
+    return text
+
+
+def _eval_int_ast(node: ast.AST, text: str, define: str) -> int:
+    if isinstance(node, ast.Expression):
+        return _eval_int_ast(node.body, text, define)
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) \
+            and not isinstance(node.value, bool):
+        return node.value
+    if isinstance(node, ast.BinOp) and type(node.op) in _AST_BINOPS:
+        return _AST_BINOPS[type(node.op)](_eval_int_ast(node.left, text, define),
+                                          _eval_int_ast(node.right, text, define))
+    if isinstance(node, ast.UnaryOp):
+        val = _eval_int_ast(node.operand, text, define)
+        if isinstance(node.op, ast.USub):
+            return -val
+        if isinstance(node.op, ast.UAdd):
+            return val
+        if isinstance(node.op, ast.Invert):
+            return ~val
+    if isinstance(node, ast.Name):
+        value = _CATEGORY_MACROS.get(node.id)
+        if value is not None:
+            return value
+        raise ValueError(f"{define}: unknown token '{node.id}' in '{text}' - "
+                         f"use an integer, an APP_CATEGORY_*/OCT_CAT_* macro, "
+                         f"or a macro defined in the same app.h")
+    raise ValueError(f"{define}: unsupported expression '{text}' - a pack "
+                     f"header define must be an integer expression")
+
+
+def _parse_int_expr(text: str, define: str,
+                    func_macros: dict[str, tuple[list[str], str]] | None = None
+                    ) -> int:
+    """Evaluate a `#define` value: integer literals, the APP_CATEGORY_*/OCT_CAT_*
+    macros, function-like macros defined in the same app.h (APP_VER(...)), and
+    the C integer operators | & ^ << >> + - *."""
+    expanded = _expand_func_macros(text, func_macros or {})
+    # single bare token fast path keeps the original error wording
+    value = _parse_c_int(expanded.strip())
+    if value is not None:
+        return value
+    # strip C integer suffixes so Python can parse the literals
+    pythonic = re.sub(r"\b(0[xX][0-9a-fA-F]+|\d+)[uUlL]+", r"\1", expanded)
+    try:
+        tree = ast.parse(pythonic, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(f"{define}: cannot parse '{text}' as an integer "
+                         f"expression ({exc.msg})") from None
+    return _eval_int_ast(tree, text, define)
+
+
+_RE_LOCAL_INCLUDE = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.M)
+
+
+def _app_header_text(app_h: Path, _depth: int = 3) -> str:
+    """``app.h`` plus every local ``#include "..."`` reachable from it.
+
+    The pack-header defines do not have to live in ``app.h``: ``OCT_ladybug``
+    keeps ``APP_VER``/``APP_VERSION``/``APP_GUID1``/``APP_TITLE``/
+    ``APP_CATEGORIES`` in ``src/config.h`` and ``app.h`` merely includes it.
+    Reading ``app.h`` alone raised "no APP_GUID1" and no ``.oct`` could be
+    built for the app at all. Only quoted (project-local) includes that
+    resolve inside the app are followed; ``<...>`` engine headers are not
+    ours to read.
+    """
+    seen: set[Path] = set()
+    chunks: list[str] = []
+
+    def visit(path: Path, depth: int) -> None:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return
+        if resolved in seen or not path.is_file():
+            return
+        seen.add(resolved)
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeDecodeError):
+            return
+        chunks.append(text)
+        if depth <= 0:
+            return
+        for m in _RE_LOCAL_INCLUDE.finditer(text):
+            visit(path.parent / m.group(1), depth - 1)
+
+    visit(Path(app_h), _depth)
+    return "\n".join(chunks)
+
+
+def read_app_defines(app_h: str | Path) -> dict:
+    """Extract the pack-header defines from an app's src/app.h.
+
+    Returns only the keys actually present: title (str), guid1, app_version,
+    categories, colors (ints). Mirrors videopack.py's read_app_guid but for
+    the whole define set the pack header needs. Reads with utf-8-sig because
+    real app.h files carry a BOM, and follows the app's own quoted includes
+    (see :func:`_app_header_text`).
+    """
+    text = _app_header_text(Path(app_h))
+    out: dict = {}
+    func_macros = _collect_func_macros(text)
+
+    def value_of(name: str) -> str | None:
+        m = re.search(rf"^\s*#\s*define\s+{name}\s+(.+)$", text, re.M)
+        if not m:
+            return None
+        return m.group(1).split("//", 1)[0].strip()
+
+    title = value_of("APP_TITLE")
+    if title is not None:
+        m = re.fullmatch(r'"((?:[^"\\]|\\.)*)"', title)
+        if not m:
+            raise ValueError(f"APP_TITLE is not a plain string literal: {title}")
+        out["title"] = m.group(1)
+
+    for define, key in (("APP_GUID1", "guid1"), ("APP_VERSION", "app_version"),
+                        ("APP_CATEGORIES", "categories"), ("APP_COLORS", "colors")):
+        raw = value_of(define)
+        if raw is not None:
+            out[key] = _parse_int_expr(raw, define, func_macros)
+    return out
+
+
+def extract_gnu_build_id(elf: bytes) -> bytes | None:
+    """20-byte GNU build-id (NT_GNU_BUILD_ID) of a little-endian ELF32 image,
+    or None. Mirrors the sim's SIM_extract_gnu_build_id
+    (octavios/sim/src/oct_elf_build_id.h): malformed input yields None."""
+    if len(elf) < 52 or elf[:4] != b"\x7fELF" or elf[4] != 1 or elf[5] != 1:
+        return None
+    sh_off, = struct.unpack_from("<I", elf, 32)
+    sh_entsize, sh_num = struct.unpack_from("<HH", elf, 46)
+    if sh_num == 0 or sh_entsize < 40 or sh_off + sh_num * sh_entsize > len(elf):
+        return None
+    for i in range(sh_num):
+        shdr = sh_off + i * sh_entsize
+        if struct.unpack_from("<I", elf, shdr + 4)[0] != 7:    # SHT_NOTE
+            continue
+        note_off, = struct.unpack_from("<I", elf, shdr + 16)
+        note_size, = struct.unpack_from("<I", elf, shdr + 20)
+        note_end = note_off + note_size
+        if note_end > len(elf):
+            continue
+        pos = note_off
+        while pos + 12 <= note_end:
+            namesz, descsz, type_ = struct.unpack_from("<III", elf, pos)
+            name_at = pos + 12
+            desc_at = name_at + ((namesz + 3) & ~3)
+            nxt = desc_at + ((descsz + 3) & ~3)
+            if nxt > note_end:
+                break
+            if (namesz == 4 and type_ == 3 and descsz == 20
+                    and elf[name_at:name_at + 4] == b"GNU\0"):
+                return elf[desc_at:desc_at + 20]
+            pos = nxt
+    return None
+
+
+def _asset_payload_path(app_dir: Path, kind: int, name: str) -> Path:
+    if kind == KIND_SOUND:
+        return app_dir / "sound" / "assets" / f"{name}.mp3"
+    if kind == KIND_PAL:
+        return app_dir / "art" / "packed" / f"{name}.pal"
+    if kind in (KIND_SPRITE, KIND_MAP):
+        return app_dir / "art" / "packed" / f"{name}.raw"
+    raise ValueError(f"index.bin has unknown asset kind {kind} for '{name}'")
+
+
+def build_oct(app_dir: str | Path, code_bin: str | Path, out_path: str | Path,
+              *, title: str | None = None, guid1: int | None = None,
+              app_version: int | None = None, categories: int | None = None,
+              colors: int | None = None) -> Path:
+    """Assemble the cube-loadable .oct pack, byte-identical to the beta
+    simulator's SIM_build_pack except BuildDateTime (the sim stamps wall-clock
+    time; this builder pins 0 so the same inputs always produce the same
+    bytes).
+
+    Layout (engine/oct_pack.h): 232-byte octPackHeader_t, then one 84-byte
+    octAssetDesc_t per index.bin record (record index == asset id; sprite
+    descs embed the payload's leading octBmp_t so the engine can cull without
+    the disk), then the payloads 4-byte aligned in id order, then the ARM
+    code as the final chunk. CRC32 over bytes 8..Size lands at offset 4.
+    BuildId is the GNU build-id of the ELF sitting next to `code_bin`
+    (out/<app>.elf), zeros when absent - same telemetry contract as the sim.
+
+    `title`/`guid1`/`app_version`/`categories`/`colors` fall back to the
+    APP_* defines in <app_dir>/src/app.h when omitted; guid1 and app_version
+    have no safe default, so missing both ways raises ValueError.
+    """
+    app_dir = Path(app_dir)
+    code_bin = Path(code_bin)
+    out_path = Path(out_path)
+
+    index_path = app_dir / "index.bin"
+    if not index_path.is_file():
+        raise ValueError(f"no {index_path} - pack the assets first")
+    records = read_index_bin(index_path)
+    if not records:
+        raise ValueError(f"{index_path} holds no assets")
+    if len(records) > ASSETS_CAP:
+        raise ValueError(f"{index_path} claims {len(records)} assets, "
+                         f"over OCT_ASSETS_CAP ({ASSETS_CAP})")
+
+    if None in (title, guid1, app_version, categories, colors):
+        app_h = app_dir / "src" / "app.h"
+        defines = read_app_defines(app_h) if app_h.is_file() else {}
+        if title is None:
+            # the sim compiles without APP_TITLE too (catalog falls back to
+            # the pack name), so an absent define is a zero title, not an error
+            title = defines.get("title", "")
+        if guid1 is None:
+            guid1 = defines.get("guid1")
+            if guid1 is None:
+                raise ValueError(f"no APP_GUID1 in {app_h} and no guid1 given")
+        if app_version is None:
+            app_version = defines.get("app_version")
+            if app_version is None:
+                raise ValueError(f"no APP_VERSION in {app_h} and no app_version given")
+        if categories is None:
+            categories = defines.get("categories", 0)
+        if colors is None:
+            colors = defines.get("colors", 0)
+
+    if not code_bin.is_file():
+        raise ValueError(f"ARM module not found: {code_bin} - build it first "
+                         f"(cmake -G Ninja -S <octavios>/apps -B out && cmake --build out)")
+    code = code_bin.read_bytes()
+    if not code:
+        raise ValueError(f"{code_bin} is empty - the ARM build produced no code")
+
+    # ── descriptor table + payloads, id order, 4-byte aligned ───────────────
+    descs = bytearray(OCT_DESC_SIZE * len(records))
+    payloads = bytearray()
+    cursor = (OCT_HEADER_SIZE + len(descs) + 3) & ~3
+    for i, (kind, name) in enumerate(records):
+        src = _asset_payload_path(app_dir, kind, name)
+        if not src.is_file():
+            raise ValueError(f"asset '{name}' (id {i}): no payload at {src}")
+        payload = src.read_bytes()
+        if not payload:
+            raise ValueError(f"asset '{name}' (id {i}): {src} is empty")
+
+        desc_off = i * OCT_DESC_SIZE
+        descs[desc_off:desc_off + len(name)] = name.encode("ascii")
+        struct.pack_into("<II", descs, desc_off + 24, cursor, len(payload))
+        descs[desc_off + 32] = kind                 # Flags/ExtId/Reserved stay 0
+        if kind == KIND_SPRITE:
+            # the sim memcpys sizeof(octBmp_t) from its zeroed pack buffer,
+            # so a shorter payload embeds zero-padded - mirror that
+            bmp = payload[:BMP_SIZE].ljust(BMP_SIZE, b"\0")
+            descs[desc_off + 36:desc_off + 36 + BMP_SIZE] = bmp
+
+        padding = (-len(payload)) & 3
+        payloads += payload + b"\0" * padding
+        cursor += len(payload) + padding
+
+    code_offset = cursor
+    total = code_offset + len(code)
+
+    # ── octPackHeader_t ──────────────────────────────────────────────────────
+    header = bytearray(OCT_HEADER_SIZE)
+    header[0:4] = OCT_PACK_MAGIC
+    struct.pack_into("<I", header, 8, OCT_PACK_FORMAT_SUPPORTED)
+    struct.pack_into("<Q", header, 16, guid1)
+    struct.pack_into("<I", header, 32, app_version)
+    struct.pack_into("<I", header, 36, OCT_ENGINE_VERSION_CURRENT)
+    struct.pack_into("<I", header, 44, categories)
+    # BuildDateTime (offset 48) stays 0: deterministic output, unlike the sim
+    struct.pack_into("<I", header, 52, total)
+    encoded_title = title.encode("utf-8")[:SOFTWARE_NAME_MAXLEN - 1]
+    header[56:56 + len(encoded_title)] = encoded_title
+    struct.pack_into("<I", header, 136, colors)
+    struct.pack_into("<II", header, 140, code_offset, len(code))
+    struct.pack_into("<II", header, 148, OCT_HEADER_SIZE, len(records))
+    # SoundDescs mirrors AssetDescs, SoundCount 0: one unified table, sounds
+    # are found by Kind (see SIM_build_pack)
+    struct.pack_into("<II", header, 156, OCT_HEADER_SIZE, 0)
+
+    elf_path = code_bin.with_suffix(".elf")
+    if elf_path.is_file():
+        build_id = extract_gnu_build_id(elf_path.read_bytes())
+        if build_id:
+            header[164:184] = build_id
+
+    pack = bytearray(total)
+    pack[0:OCT_HEADER_SIZE] = header
+    pack[OCT_HEADER_SIZE:OCT_HEADER_SIZE + len(descs)] = descs
+    payload_offset = (OCT_HEADER_SIZE + len(descs) + 3) & ~3
+    pack[payload_offset:payload_offset + len(payloads)] = payloads
+    pack[code_offset:total] = code
+    struct.pack_into("<I", pack, 4, zlib.crc32(bytes(pack[8:total])) & 0xFFFFFFFF)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_bytes(pack)
+    return out_path
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description="beta asset-container tools (see module docstring)")
+    parser.add_argument("--build-oct", action="store_true", required=True,
+                        help="assemble the cube-loadable .oct from a packed app dir")
+    parser.add_argument("--app-dir", required=True, type=Path,
+                        help="app folder holding index.bin, art/packed, sound/assets")
+    parser.add_argument("--code", required=True, type=Path,
+                        help="ARM module binary, out/<app>.bin")
+    parser.add_argument("--out", required=True, type=Path,
+                        help="destination .oct path")
+    parser.add_argument("--title", help="pack title (default: APP_TITLE from src/app.h)")
+    parser.add_argument("--guid", help="pack Guid1 (default: APP_GUID1 from src/app.h)")
+    parser.add_argument("--version", type=int,
+                        help="app version (default: APP_VERSION from src/app.h)")
+    parser.add_argument("--categories", type=lambda s: int(s, 0),
+                        help="category bitmask (default: APP_CATEGORIES from src/app.h)")
+    parser.add_argument("--colors", type=lambda s: int(s, 0),
+                        help="Colors field (default: APP_COLORS from src/app.h)")
+    args = parser.parse_args(argv)
+
+    try:
+        path = build_oct(args.app_dir, args.code, args.out,
+                         title=args.title,
+                         guid1=int(args.guid, 0) if args.guid else None,
+                         app_version=args.version,
+                         categories=args.categories,
+                         colors=args.colors)
+    except (ValueError, OSError) as error:
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
+
+    size = path.stat().st_size
+    code_size = Path(args.code).stat().st_size
+    print(f"{path}: {size} bytes (assets + {code_size} bytes ARM code)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

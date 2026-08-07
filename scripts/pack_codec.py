@@ -38,11 +38,14 @@ from config import (
     A_MAX, ALPHA5_MASK, ALPHA5_SHIFT,
     B_MAX, BYTES_PER_RGBA,
     DEFAULT_OFFSET_BITNESS, DEFAULT_QUALITY_THRESHOLD, G_MAX,
-    HDR_OFF_COMPRESSION, HDR_OFF_NUM_PIXELS, HDR_OFF_PIDX, HDR_OFF_WIDTH,
+    HDR_OFF_BBOX, HDR_OFF_PIVOT_X,
+    HDR_OFF_COMPRESSION, HDR_OFF_NUM_PIXELS, HDR_OFF_PIDX, HDR_OFF_RATE,
+    HDR_OFF_WIDTH,
     HEADER_SIZE, MEDIAN_CUT_CHANNEL_WEIGHTS,
     PACKED_COLOR_MASK, PAL_DESCRIPTOR_SIZE, PAL_MAX_PALETTES,
     PAL_MAX_TOTAL_COLORS, PAL_TRANSPARENT_IDX, PALETTE_SIZES_TRIED,
-    PALETTE_SPRITE_NAME, PALETTE_TIERS_USABLE, PIVOT_HALFPIX,
+    PALETTE_SPRITE_NAME, PALETTE_TIERS_USABLE, PIVOT_FULLSIZE_SCALE,
+    PIVOT_HALFPIX,
     PIVOT_LOCAL_OFFSET, PIVOT_MODE, PIVOT_SCALE, PivotMode,
     PLACEHOLDER_SPRITE_NAME, PRESPLIT_MASK,
     R_MAX, RGB565_MASK, RLE_ENCODE, RLE_MAX_RUN, SpriteFlag, WORD_BITS,
@@ -479,31 +482,42 @@ def snap_color(r5: int, g6: int, b5: int, a5: int,
     )
 
 
-def extract_per_sprite_colors(
+def extract_per_sprite_color_counts(
     file_list: Iterable[str],
     color_tolerance: int = 0,
-) -> dict[str, set[tuple[int, int, int, int]]]:
-    """Return the set of quantized colors each sprite uses.
+    skip_names: Iterable[str] | None = None,
+) -> dict[str, dict[tuple[int, int, int, int], int]]:
+    """Per sprite, ``{quantized_color: pixel_count}``.
+
+    The pixel count is what makes :func:`median_cut` a median cut: without it
+    a 14,400-pixel black field and one stray antialiased pixel pull the box
+    boundaries equally hard, which is exactly how the corpus's 41-sprite
+    ``eyes*`` bucket lost both black and white out of its 4-colour palette.
+
+    ``skip_names`` defaults to the reserved ``pal``/``0`` sprites. The
+    ``!pack.txt`` path narrows it to ``pal`` only, because utils.exe does route
+    the reserved ``0`` placeholder through a real palette group.
 
     Vectorised via numpy.unique so large sheets process in milliseconds.
     """
-    result: dict[str, set[tuple[int, int, int, int]]] = {}
+    result: dict[str, dict[tuple[int, int, int, int], int]] = {}
+    skip = set(skip_names) if skip_names is not None \
+        else {PALETTE_SPRITE_NAME, PLACEHOLDER_SPRITE_NAME}
 
     for fpath in file_list:
         path = Path(fpath)
         name = path.stem
-        if name in (PALETTE_SPRITE_NAME, PLACEHOLDER_SPRITE_NAME) \
-                or path.suffix.lower() != '.png':
+        if name in skip or path.suffix.lower() != '.png':
             continue
         try:
             pixels = np.asarray(Image.open(fpath).convert('RGBA')).reshape(-1, 4)
         except Exception:
-            result[name] = set()
+            result[name] = {}
             continue
 
         opaque = pixels[pixels[:, 3] > 0]
         if opaque.size == 0:
-            result[name] = set()
+            result[name] = {}
             continue
 
         # Vectorised RGB565+A5 quantisation
@@ -515,17 +529,50 @@ def extract_per_sprite_colors(
         # Encode into a single uint32 key so np.unique can dedup fast
         keys = (r5.astype(np.uint32) << 24) | (g6.astype(np.uint32) << 16) \
              | (b5.astype(np.uint32) << 8)  |  a5.astype(np.uint32)
-        unique = np.unique(keys)
+        unique, counts = np.unique(keys, return_counts=True)
 
-        colors: set[tuple[int, int, int, int]] = set()
-        for k in unique.tolist():
+        colors: dict[tuple[int, int, int, int], int] = {}
+        for k, n in zip(unique.tolist(), counts.tolist()):
             tup = ((k >> 24) & 0xFF, (k >> 16) & 0xFF,
                    (k >> 8) & 0xFF, k & 0xFF)
             if color_tolerance > 0:
                 tup = snap_color(*tup, color_tolerance)
-            colors.add(tup)
+            colors[tup] = colors.get(tup, 0) + n
         result[name] = colors
     return result
+
+
+def extract_per_sprite_colors(
+    file_list: Iterable[str],
+    color_tolerance: int = 0,
+    skip_names: Iterable[str] | None = None,
+) -> dict[str, set[tuple[int, int, int, int]]]:
+    """Return the set of quantized colors each sprite uses.
+
+    The set view of :func:`extract_per_sprite_color_counts`, for the grouping
+    logic that only cares which colors co-occur.
+    """
+    return {name: set(counts) for name, counts in
+            extract_per_sprite_color_counts(
+                file_list, color_tolerance=color_tolerance,
+                skip_names=skip_names).items()}
+
+
+def pool_color_weights(
+    members: Iterable[str],
+    sprite_counts: dict[str, dict[tuple[int, int, int, int], int]],
+) -> list[tuple[tuple[int, int, int, int], int]]:
+    """Sum the per-sprite pixel counts of a palette group's members.
+
+    A colour used by several sprites in the group weighs the sum of its
+    occurrences, which is what a palette shared by the whole group should
+    optimise for.
+    """
+    pooled: dict[tuple[int, int, int, int], int] = {}
+    for name in members:
+        for color, n in sprite_counts.get(name, {}).items():
+            pooled[color] = pooled.get(color, 0) + n
+    return sorted(pooled.items())
 
 
 def _pick_tier(tiers: list[int], need: int) -> int:
@@ -652,7 +699,9 @@ def build_grouped_palettes(
     if color_tolerance > 0:
         print(f"  Color tolerance: {color_tolerance} "
               f"(merging similar colors in 565 space)")
-    sprite_colors = extract_per_sprite_colors(file_list, color_tolerance=color_tolerance)
+    sprite_counts = extract_per_sprite_color_counts(
+        file_list, color_tolerance=color_tolerance)
+    sprite_colors = {n: set(c) for n, c in sprite_counts.items()}
 
     total_sprites = len(sprite_colors)
     total_unique = len(set().union(*sprite_colors.values())) if sprite_colors else 0
@@ -674,11 +723,10 @@ def build_grouped_palettes(
         pal_size = tier + 1
         sym_bits = symbol_bitness_for_size(pal_size)
 
-        unique_colors = list(group.colors)
-        if len(unique_colors) <= tier:
-            pal_q = unique_colors
+        weighted = pool_color_weights(group.sprite_names, sprite_counts)
+        if len(weighted) <= tier:
+            pal_q = [c for c, _n in weighted]
         else:
-            weighted = [(c, 1) for c in unique_colors]
             pal_q = median_cut(weighted, tier)
 
         palette_rgba = [(0, 0, 0, 0)] + [expand_565_a5(*q) for q in pal_q]
@@ -694,6 +742,88 @@ def build_grouped_palettes(
               f"{len(group.sprite_names)} sprites, {group.num_unique} unique colors")
 
     return sprite_assignments, all_palette_data
+
+
+def build_config_palettes(
+    file_list: list[str],
+    config,
+    color_tolerance: int = 0,
+) -> tuple[dict[str, tuple[int, EncoderPalette, int]],
+           list[tuple[list[tuple[int, int, int, int]], int]],
+           list[str]]:
+    """Build one palette per ``!pack.txt`` block instead of auto-grouping.
+
+    ``config`` is a :class:`packtxt.PackConfig`. Every block becomes exactly
+    one palette of ``block.max_colors`` entries (index 0 = transparent), which
+    is what ``utils.exe`` does; blocks are NOT merged, because their identity
+    and ordering are the parity contract with the legacy pack (the block index
+    is the Pidx written into every member sprite's header).
+
+    Returns ``(sprite_assignments, all_palette_data, unmatched_names)``.
+    A sprite that matches no block is NOT skipped: it falls out of
+    ``sprite_assignments`` and the caller (``pack.py``) packs it into
+    palette group 0, or group 1 when its name contains "font", at the
+    default 8-bit symbol bitness. (``utils.exe`` itself instead skips such
+    a sprite: "Unmatched palette %s, skipped".) The third element is only
+    for the warning printed below.
+    """
+    print("  Scanning sprites for per-sprite color analysis...")
+    sprite_counts = extract_per_sprite_color_counts(
+        file_list, color_tolerance=color_tolerance,
+        skip_names={PALETTE_SPRITE_NAME})
+    sprite_colors = {n: set(c) for n, c in sprite_counts.items()}
+
+    groups, unmatched = config.group_sprites(sorted(sprite_colors))
+
+    sprite_assignments: dict[str, tuple[int, EncoderPalette, int]] = {}
+    all_palette_data: list[tuple[list[tuple[int, int, int, int]], int]] = []
+
+    print(f"  {len(config.buckets)} palette group(s) from "
+          f"{config.path.name if config.path else '!pack.txt'}:\n")
+
+    for bucket in config.buckets:
+        members = groups.get(bucket.index, [])
+        pal_size = bucket.max_colors
+        usable = pal_size - 1
+        sym_bits = symbol_bitness_for_size(pal_size)
+
+        weighted = pool_color_weights(members, sprite_counts)
+        unique_colors = {c for c, _n in weighted}
+
+        if len(weighted) > usable:
+            pal_q = median_cut(weighted, usable)
+        else:
+            pal_q = [c for c, _n in weighted]
+
+        palette_rgba = [(0, 0, 0, 0)] + [expand_565_a5(*q) for q in pal_q]
+        palette_rgba = _pad_palette_to_size(palette_rgba, pal_size)
+
+        encoder_pal = EncoderPalette(palette_rgba, has_alpha=True)
+        all_palette_data.append((palette_rgba, sym_bits))
+        for name in members:
+            sprite_assignments[name] = (bucket.index, encoder_pal, sym_bits)
+
+        tags = ''.join(bucket.tags)
+        print(f"    [{bucket.index:02}] {pal_size:>4} colors ({sym_bits}-bit), "
+              f"{len(members):>3} sprites, {len(unique_colors)} unique colors  "
+              f"{bucket.patterns[0]}{' ' + tags if tags else ''}")
+
+    if unmatched:
+        print(f"  WARNING: {len(unmatched)} sprite(s) match no !pack.txt mask "
+              f"and will be packed into group 0 (group 1 if the name "
+              f"contains 'font'), 8-bit: {', '.join(unmatched[:8])}"
+              + (" ..." if len(unmatched) > 8 else ""))
+
+    total_colors = sum(len(c) for c, _ in all_palette_data)
+    if len(all_palette_data) > PAL_MAX_PALETTES:
+        print(f"  WARNING: {len(all_palette_data)} palettes exceeds the engine "
+              f"limit of {PAL_MAX_PALETTES}")
+    if total_colors > PAL_MAX_TOTAL_COLORS:
+        print(f"  NOTE: {total_colors} palette colors exceed the legacy "
+              f"pal.png budget of {PAL_MAX_TOTAL_COLORS}; the beta container "
+              f"stores one .pal per group and is unaffected")
+
+    return sprite_assignments, all_palette_data, unmatched
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -876,11 +1006,44 @@ def compute_legacy_local_pivot(w: int, h: int) -> tuple[float, float]:
     )
 
 
+def compute_psd_marker_pivot(layer_x: int, layer_y: int,
+                             pivot_rect: tuple[int, int, int, int],
+                             fullsize: bool = False) -> tuple[float, float]:
+    """Pivot value in the utils.exe / ``~pivot``-marker convention:
+
+        pivot = SCALE * (rect_centre - layer_xy) - PIVOT_HALFPIX
+
+    ``pivot_rect`` is the ``(x, y, w, h)`` psd.exe stored in the layer's PSL
+    pivot block: the ``~pivot`` marker blob that overlaps the layer, or the
+    layer's own rect when no marker does (see
+    :func:`pack_psd.pivot_for_layer`).
+
+    ``SCALE`` is the zoom the engine draws the sprite at — 2 for a normal
+    palette sprite, 1 for a ``<FULLSIZE>`` one.  Verified against all 450
+    packed sprites of the OCT_get_started corpus; the pinned example is
+    ``ic_twist_00``: layer (20, 20, 37x36), marker (37, 37, 2x2) -> (35.5, 35.5).
+
+    Note the own-rect fallback reduces to the LEGACY formula:
+    ``2 * (x + w/2 - x) - 0.5 == w - 0.5``.
+    """
+    px, py, pw, ph = pivot_rect
+    scale = PIVOT_FULLSIZE_SCALE if fullsize else PIVOT_SCALE
+    return (
+        scale * (px + pw / 2.0 - layer_x) - PIVOT_HALFPIX,
+        scale * (py + ph / 2.0 - layer_y) - PIVOT_HALFPIX,
+    )
+
+
 def compute_default_pivot(w: int, h: int,
                           atlas_x: int | None,
                           atlas_y: int | None) -> tuple[float, float]:
-    """Dispatch to the active pivot encoding selected by PIVOT_MODE."""
-    if PIVOT_MODE == PivotMode.LEGACY:
+    """Dispatch to the active pivot encoding selected by PIVOT_MODE.
+
+    PSD mode reaches here only when the sprite carries no marker data (no PSD
+    source, or a PSL without a pivot block); it then behaves exactly like
+    LEGACY, which is what keeps manifest-driven packs byte-identical.
+    """
+    if PIVOT_MODE in (PivotMode.LEGACY, PivotMode.PSD):
         return compute_legacy_local_pivot(w, h)
     if atlas_x is None or atlas_y is None:
         raise ValueError(
@@ -892,20 +1055,32 @@ def build_header(w: int, h: int, symbol_bitness: int, offset_bitness: int,
                  pidx: int, flags: int,
                  atlas_x: int | None = None, atlas_y: int | None = None,
                  pivot_x: float | None = None, pivot_y: float | None = None,
+                 layer_x: int | None = None, layer_y: int | None = None,
+                 pivot_rect: tuple[int, int, int, int] | None = None,
                  num_pixels: int = 0, tags: int = 0, number: int = 0,
                  group: int = 0, sprite_type: int = 0, seq: int = 0, rate: int = 1,
                  bx: float = 0.0, by: float = 0.0,
                  bw: float = 0.0, bh: float = 0.0) -> bytes:
     """Build a 48-byte octBmp_t header (without PackerSizes).
 
-    Pivot is selected by config.PIVOT_MODE:
-      - PivotMode.LEGACY  -> (w - PIVOT_LOCAL_OFFSET, h - PIVOT_LOCAL_OFFSET)
-      - PivotMode.ATLAS   -> -(atlas_xy * PIVOT_SCALE + PIVOT_HALFPIX)
-    Callers may also pass pivot_x/pivot_y explicitly to bypass both modes
-    (used for the reserved 0.png placeholder and advanced test cases).
+    Pivot precedence:
+      1. explicit ``pivot_x`` / ``pivot_y`` (the reserved 0.png placeholder,
+         hand-tuned pivots carried in a CSV, tests);
+      2. ``pivot_rect`` + ``layer_x`` / ``layer_y`` when PIVOT_MODE is
+         PivotMode.PSD — the utils.exe marker formula, with the scale taken
+         from the FULLSIZE bit of ``flags``;
+      3. config.PIVOT_MODE's default:
+         - PivotMode.LEGACY / PSD -> (w - PIVOT_LOCAL_OFFSET, h - PIVOT_LOCAL_OFFSET)
+         - PivotMode.ATLAS        -> -(atlas_xy * PIVOT_SCALE + PIVOT_HALFPIX)
     """
     if pivot_x is None or pivot_y is None:
-        cpx, cpy = compute_default_pivot(w, h, atlas_x, atlas_y)
+        if (PIVOT_MODE == PivotMode.PSD and pivot_rect is not None
+                and layer_x is not None and layer_y is not None):
+            cpx, cpy = compute_psd_marker_pivot(
+                layer_x, layer_y, pivot_rect,
+                fullsize=bool(flags & SpriteFlag.FULLSIZE))
+        else:
+            cpx, cpy = compute_default_pivot(w, h, atlas_x, atlas_y)
         if pivot_x is None: pivot_x = cpx
         if pivot_y is None: pivot_y = cpy
 
@@ -926,6 +1101,23 @@ def build_header(w: int, h: int, symbol_bitness: int, offset_bitness: int,
 
     assert len(header) == HEADER_SIZE
     return header
+
+
+def patch_font_metrics(header: bytes, pivot_x: float, pivot_y: float,
+                       bw: float, bh: float) -> bytes:
+    """Overwrite PivotX/PivotY and the Bx/By/Bw/Bh block of an octBmp_t header.
+
+    Used on the header-reuse path: a glyph descriptor reused from a previous
+    pack may predate the font-metrics fix, and a stale pivot collapses every
+    label the engine draws. The `.fnt` is authoritative, so it wins over
+    whatever the old header held. Bx/By are zeroed — the engine reads Bw as
+    the pen advance and Bh as the line height, and legacy glyph descriptors
+    keep Bx = By = 0.
+    """
+    buf = bytearray(header)
+    struct.pack_into('<ff', buf, HDR_OFF_PIVOT_X, pivot_x, pivot_y)
+    struct.pack_into('<ffff', buf, HDR_OFF_BBOX, 0.0, 0.0, bw, bh)
+    return bytes(buf)
 
 
 def read_existing_header(packed_png_path: str) -> bytes | None:
@@ -959,6 +1151,12 @@ def pack_sprite(
     atlas_y: int | None = None,
     pivot_x: float | None = None,
     pivot_y: float | None = None,
+    layer_x: int | None = None,
+    layer_y: int | None = None,
+    pivot_rect: tuple[int, int, int, int] | None = None,
+    bw: float = 0.0,
+    bh: float = 0.0,
+    rate: int = 1,
 ) -> bytes | None:
     """Pack an exported RGBA PNG into the WowCube packed format.
 
@@ -985,12 +1183,24 @@ def pack_sprite(
             compression = (offset_bitness << 8) | symbol_bitness
             struct.pack_into('<I', header, HDR_OFF_COMPRESSION, compression)
             header[HDR_OFF_PIDX] = pidx
+        # A header reused from a previous pack may predate the layer-mark rate
+        # rule (or the artist may have recoloured the layer since), and the PSL
+        # is authoritative — patch it in rather than shipping a stale multiplier.
+        struct.pack_into('<b', header, HDR_OFF_RATE, rate)
         header = bytes(header)
     else:
+        # The palette group's own bitness also governs a freshly built header —
+        # otherwise every sprite is written at the 8-bit default no matter how
+        # small its palette is, which is what made the corpus pack 26 % larger
+        # than utils.exe's.
+        if symbol_bitness_override is not None:
+            symbol_bitness = symbol_bitness_override
         header = build_header(
             w, h, symbol_bitness, offset_bitness, pidx, flags,
             atlas_x=atlas_x, atlas_y=atlas_y,
             pivot_x=pivot_x, pivot_y=pivot_y,
+            layer_x=layer_x, layer_y=layer_y, pivot_rect=pivot_rect,
+            bw=bw, bh=bh, rate=rate,
         )
 
     # ── Vectorised pixel quantisation ──────────────────────────────────
