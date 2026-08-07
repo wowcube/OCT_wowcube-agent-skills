@@ -18,7 +18,7 @@
 3. **Palette alpha format**: across 451 shipping sprites the rule is exact — `.pal` words are either `(alpha5<<27) | ((c|c<<16) & 0x07E0F81F)` **with** `OCT_FLAG_ALPHA`, or plain `c|c<<16` **without** it. `pack_beta.build_pal` always writes the second form while `pack_codec` always sets the flag — a combination that occurs in no shipping pack; the engine's `OCT_BLEND_alpha` (`alpha = pe >> 27`) would read the red channel as alpha. Measured effect: every antialiased pixel flattened to opaque (2328/2328 on `t_welcome`, 9596/9596 on `selector_00`).
 4. Housekeeping blocking CI: sound basenames must be valid C identifiers (`Congratulations-007.wav` breaks `SND_*`); generated files tracked in app repos; unpinned deps; `oct-builder/scripts` snapshot diverged; the `APP_VER(x,y,z)` parser fix lives only in the oct-builder copy.
 
-**Testing:** `$env:PYTHONPATH='scripts'; python -m pytest tests/ -q` from the repo root. Baseline on this branch: **271 passed**. Every task adds tests. No AI attribution in commits. Do not push until the owner asks.
+**Testing:** `$env:PYTHONPATH='scripts'; python -m pytest tests/ -q` from the repo root. Baseline on this branch: **271 passed** (347 after Task 2, 369 after Task 3). Every task adds tests. No AI attribution in commits. Do not push until the owner asks.
 
 **Simulator is available** (MSVC present) — use it for the visual checks the plan calls for; the engine source is at `..\octavios`.
 
@@ -60,19 +60,27 @@
 
 **Files:** `scripts/pack_beta.py` (`build_pal`), `scripts/pack_codec.py` (alpha carry + flag decision), `scripts/pack.py` (`_to_565` alpha path), `tests/test_pal_alpha.py` (new).
 
-- [ ] **Step 1: Pin the golden format in a test.** Read golden `.pal` files from the corpus (and, if reachable, `app_launcher`/`app_seabattle`): assert the two-format rule — alpha-spread words iff the sprites referencing that palette carry `OCT_FLAG_ALPHA`. Encode the bit layout as a constant with the engine reference (`oct_render.h::OCT_BLEND_alpha`, `alpha = pe >> 27`, `fg = pe & 0x07FFFFFF`).
+> **Correction carried in from Task 2 (measured, overrides Step 4's phrasing below).** The `OCT_FLAG_ALPHA` decision is already correct at 451/451 and belongs to `packtxt.resolve_sprite_flags()`: `utils.exe` decides it **per palette group** from pooled anti-aliasing (invisible at alpha ≤ 8, opaque at alpha ≥ 230, ALPHA iff `semi/visible > 0.15`), with `<ALPHA>`/`<OPAQUE>` as overrides. Task 3 therefore only makes the **`.pal` byte format follow that already-decided flag**. Step 4's "when the palette has any non-opaque entry, and only then" would *regress* it — `cubetext_hi_*` and `main*` do hold semi-transparent pixels yet correctly stay opaque. The flag logic was left untouched.
 
-- [ ] **Step 2: Write the round-trip test** — a sprite with antialiased edges (build one with Pillow: a soft-edged circle) packed with alpha must decode back with its alpha gradient preserved (not flattened), and its palette must be in the spread format with the flag set.
+- [x] **Step 1: Pin the golden format in a test.** Read golden `.pal` files from the corpus (and, if reachable, `app_launcher`/`app_seabattle`): assert the two-format rule — alpha-spread words iff the sprites referencing that palette carry `OCT_FLAG_ALPHA`. Encode the bit layout as a constant with the engine reference (`oct_render.h::OCT_BLEND_alpha`, `alpha = pe >> 27`, `fg = pe & 0x07FFFFFF`).
 
-- [ ] **Step 3: Run — expect failure** (today: alpha dropped in `_to_565`, plain palette, flag set anyway).
+- [x] **Step 2: Write the round-trip test** — a sprite with antialiased edges (build one with Pillow: a soft-edged circle) packed with alpha must decode back with its alpha gradient preserved (not flattened), and its palette must be in the spread format with the flag set.
 
-- [ ] **Step 4: Implement.** Carry per-colour alpha through quantisation into the palette; emit the spread format when the palette has any non-opaque entry and set `OCT_FLAG_ALPHA` then — and only then. Keep index 0 fully transparent in both formats.
+- [x] **Step 3: Run — expect failure** (today: alpha dropped in `_to_565`, plain palette, flag set anyway).
 
-- [ ] **Step 5: Visual verification in the simulator (mandatory — this changes rendering).** Build a small palette app with antialiased sprites (reuse `..\app_paltest`, or scaffold a fresh one; do NOT modify committed apps — copy first), pack it before and after the fix, run the Windows simulator on both, capture screenshots, and confirm: after = soft edges, before = hard/incorrect edges. Attach the evidence to the report. If the simulator shows the opposite, STOP and report — the format hypothesis would be wrong.
+- [x] **Step 4: Implement.** Carry per-colour alpha through quantisation into the palette; emit the spread format ~~when the palette has any non-opaque entry and set `OCT_FLAG_ALPHA` then — and only then~~ **iff the group's sprites already carry `OCT_FLAG_ALPHA`** (see the correction above). Keep index 0 fully transparent in both formats.
 
-- [ ] **Step 6: Corpus cross-check.** Repack the corpus and compare `.pal` formats and `ALPHA` flags per sprite against golden: target **451/451 format+flag agreement**.
+  **Measured:** alpha was never lost in quantisation — `EncoderPalette` carries RGBA and alpha is a full median-cut channel; the drop was `pack.py::_to_565`, which threw the channel away before `pack_beta.build_pal`. `build_pal(colors, alphas=None)` now picks the format, and `emit_beta_layout` derives `alphas is None` from the group's sprites' flags byte (offset 44), so the two can no longer disagree. The plain branch is unchanged code, so an opaque group is byte-identical to before.
 
-- [ ] **Step 7: Commit** `fix(pack): palette alpha - spread format with the ALPHA flag, antialiasing preserved`
+- [x] **Step 5: Visual verification in the simulator (mandatory — this changes rendering).** Build a small palette app with antialiased sprites (reuse `..\app_paltest`, or scaffold a fresh one; do NOT modify committed apps — copy first), pack it before and after the fix, run the Windows simulator on both, capture screenshots, and confirm: after = soft edges, before = hard/incorrect edges. Attach the evidence to the report. If the simulator shows the opposite, STOP and report — the format hypothesis would be wrong.
+
+  **Measured:** scaffolded `..\app_paltest` (a soft white disc, a soft blue disc, an opacity ramp, over an opaque backdrop) and `..\app_paltest_before`, packed from identical PNGs with the post-fix and the pre-fix (`e95c49d`) packer — the containers differ in the four `.pal` files and **nothing else** (`index.bin` and every `.raw` byte-identical). Both simulators build and run. **Before:** the backdrop renders magenta, the white disc bright green with a hard jagged rim, the blue disc dark red, the ramp a flat mustard block — exactly what `OCT_BLEND_alpha` does with plain words (alpha = the red channel, garbage in the dead bit-fields). **After:** correct colours, feathered rims on both discs, and a real left-to-right opacity ramp. Hypothesis confirmed in the expected direction.
+
+- [x] **Step 6: Corpus cross-check.** Repack the corpus and compare `.pal` formats and `ALPHA` flags per sprite against golden: target **451/451 format+flag agreement**.
+
+  **Measured** (packed from the golden `art/exported/` with `!pack.txt`, so the exporter is out of the loop): 46 groups, 450 sprites emitted. `.pal` format follows our own ALPHA flag **46/46**; format **45/46** and flag **45/46** vs `art/packed/` on disk; ALPHA flag **450/450** vs `utils.exe`'s own `art/!pack.log` records. The single deviation is group 45 (`qr_code*`) — the same post-pack `art/qr_setalpha.py` patch Task 2 already isolated, which flips flag *and* palette together, so the rule holds in both states. Total `.pal` bytes **18,036 = golden exactly**; zero spread words carry bits outside `alpha5 | 0x07E0F81F`; index 0 is zero in every group. The 451st sprite (the reserved `0` placeholder) is not emitted into our beta container at all — pre-existing, Task 4's record-count gap (500 vs 511), untouched here.
+
+- [x] **Step 7: Commit** `fix(pack): palette alpha - spread format with the ALPHA flag, antialiasing preserved`
 
 ### Task 4: End-to-end python build of the legacy corpus
 

@@ -3,7 +3,11 @@
 The beta simulator loads an app from:
   <APP_DIR>/index.bin                  - kind-tagged asset manifest; record index == asset id
   <APP_DIR>/art/packed/<name>.raw      - sprites (48B octBmp_t + payload) and maps
-  <APP_DIR>/art/packed/<name>.pal      - palettes (4 bytes per color: RGB565 twice)
+  <APP_DIR>/art/packed/<name>.pal      - palettes, 4 bytes per color in one of
+                                         two forms (see build_pal): plain
+                                         `c | c << 16` for an opaque group, or
+                                         `alpha5 << 27 | pre-spread RGB` for a
+                                         group whose sprites carry OCT_FLAG_ALPHA
   <APP_DIR>/sound/assets/<name>.mp3    - sounds (22050 Hz mono CBR 32k)
 
 Struct layouts mirror octavios/engine/oct_types.h + oct_pack.h and are pinned
@@ -58,6 +62,18 @@ OCT_FLAG_BG = 1 << 3
 OCT_FLAG_RAW565 = 1 << 7
 # octBmp_t::Compression sub-format for a RAW565 payload, mirrors engine/oct_consts.h
 RAW565_PLAIN, RAW565_RLE = 0, 1
+
+# .pal word layout for a group whose sprites carry OCT_FLAG_ALPHA, mirrors
+# engine/oct_render.h::OCT_BLEND_alpha (`alpha = pe >> 27`, `fg = pe &
+# 0x07FFFFFF`, "Already spread in pallette"). Without the flag the word is
+# plain `c | c << 16` instead -- see build_pal.
+PAL_SPREAD_MASK = 0x07E0F81F        # engine SPREAD_MASK
+PAL_ALPHA5_SHIFT = 27
+PAL_ALPHA5_MASK = 0x1F
+
+# legacy octBmp_t byte offsets, as pack_codec.build_header writes them
+HDR_OFF_FLAGS = 44
+HDR_OFF_LEGACY_PIDX = 45
 
 # RLE control-byte threshold and limits
 RAW565_RUN = 0x80
@@ -433,22 +449,122 @@ def read_index_bin(path: Path) -> list[tuple[int, str]]:
     return records
 
 
-def build_pal(colors_rgb565: list[int]) -> bytes:
-    # each entry stores the RGB565 value twice (see golden 5.pal)
-    return b"".join(struct.pack("<HH", c, c) for c in colors_rgb565)
+def pal_word_plain(rgb565: int) -> int:
+    """The opaque palette word: RGB565 duplicated into both halves.
+
+    ``OCT_BLEND_opaque`` does ``back[pix] = pal[t]`` and only the low half
+    ever reaches the framebuffer, so the duplication is free redundancy —
+    but it is what ``utils.exe`` writes, byte for byte.
+    """
+    rgb565 &= 0xFFFF
+    return (rgb565 | (rgb565 << 16)) & 0xFFFFFFFF
 
 
-def read_pal(path: Path) -> list[int]:
+def pal_word_spread(rgb565: int, alpha8: int) -> int:
+    """The alpha palette word: 5-bit alpha over pre-spread RGB.
+
+    ``OCT_BLEND_alpha`` (engine ``oct_render.h``) reads it as::
+
+        alpha = pe >> 27;              // 5 bits
+        fg    = pe & 0x07FFFFFF;       // already (fg | fg << 16) & 0x07e0f81f
+
+    i.e. green is lifted into bits 26..21 so the blend can do all three
+    channels in one 32-bit add.
+    """
+    a5 = (alpha8 >> 3) & PAL_ALPHA5_MASK
+    rgb565 &= 0xFFFF
+    return (a5 << PAL_ALPHA5_SHIFT) | ((rgb565 | (rgb565 << 16)) & PAL_SPREAD_MASK)
+
+
+def pal_is_spread(words) -> bool:
+    """True when a ``.pal`` word list is in the alpha (spread) format.
+
+    A plain palette has ``low16 == high16`` in every word; the spread form
+    scatters green into the high half and alpha above it, which no plain
+    entry can imitate.  An all-zero palette is identical in both forms and
+    reports plain (corpus group 16, ``eyes_bg*``, is exactly that).
+    """
+    return any((w & 0xFFFF) != ((w >> 16) & 0xFFFF) for w in words)
+
+
+def build_pal(colors_rgb565: list[int], alphas: list[int] | None = None) -> bytes:
+    """Serialise one palette group.
+
+    ``alphas`` is what picks the format, and the caller must derive it from
+    the group's ``OCT_FLAG_ALPHA`` bit — the two are one decision, not two
+    (see :func:`pal_word_spread`; a plain palette read by ``OCT_BLEND_alpha``
+    would use its RED channel as alpha, and a spread one read by
+    ``OCT_BLEND_opaque`` would lose green).  ``utils.exe`` keeps them in
+    lockstep for all 46 palette groups of the reference corpus.
+
+      * ``alphas is None`` — plain ``c | c << 16``, for sprites WITHOUT
+        ``OCT_FLAG_ALPHA``.
+      * ``alphas`` given (0..255 per entry) — the spread alpha format, for
+        sprites WITH it.
+
+    Index 0 is the keyed-out slot every blend routine skips
+    (``if (t == 0) continue``); it is written as all-zero in both forms.
+    """
+    if alphas is None:
+        # each entry stores the RGB565 value twice (see golden 5.pal)
+        return b"".join(struct.pack("<HH", c, c) for c in colors_rgb565)
+    if len(alphas) != len(colors_rgb565):
+        raise ValueError(
+            f"palette has {len(colors_rgb565)} colors but {len(alphas)} alphas")
+    words = [pal_word_spread(c, a) for c, a in zip(colors_rgb565, alphas)]
+    if words:
+        words[0] = 0
+    return b"".join(struct.pack("<I", w) for w in words)
+
+
+def _read_pal_words(path: Path) -> list[int]:
     blob = Path(path).read_bytes()
     if len(blob) % 4 != 0:
         raise ValueError(f"{path}: truncated .pal file, {len(blob)} bytes is not a multiple of 4")
-    out = []
-    for off in range(0, len(blob), 4):
-        a, b = struct.unpack_from("<HH", blob, off)
-        if a != b:
-            raise ValueError(f"pal entry mismatch at {off}: {a:04x} != {b:04x}")
-        out.append(a)
+    return [struct.unpack_from("<I", blob, off)[0]
+            for off in range(0, len(blob), 4)]
+
+
+def read_pal(path: Path) -> list[int]:
+    """The palette's RGB565 colors, whichever of the two formats it is in."""
+    return [c for c, _a in read_pal_rgba(path)]
+
+
+def read_pal_rgba(path: Path) -> list[tuple[int, int]]:
+    """``[(rgb565, alpha8)]``; a plain palette reads back fully opaque.
+
+    Index 0 always reads back ``(0, 0)`` — it is the transparent slot.
+    """
+    words = _read_pal_words(path)
+    out: list[tuple[int, int]] = []
+    if pal_is_spread(words):
+        for w in words:
+            a5 = (w >> PAL_ALPHA5_SHIFT) & PAL_ALPHA5_MASK
+            r5, g6, b5 = (w >> 11) & 0x1F, (w >> 21) & 0x3F, w & 0x1F
+            out.append(((r5 << 11) | (g6 << 5) | b5, (a5 << 3) | (a5 >> 2)))
+    else:
+        out = [(w & 0xFFFF, 255) for w in words]
+    if out:
+        out[0] = (0, 0)
     return out
+
+
+def split_pal_entries(entries) -> tuple[list[int], list[int]]:
+    """Normalise a palette group to ``([rgb565], [alpha8])``.
+
+    Accepts the historic ``[rgb565, ...]`` form (everything opaque) as well
+    as ``[(rgb565, alpha8), ...]``.
+    """
+    colors: list[int] = []
+    alphas: list[int] = []
+    for entry in entries:
+        if isinstance(entry, (tuple, list)):
+            color, alpha = entry
+        else:
+            color, alpha = entry, 255
+        colors.append(int(color) & 0xFFFF)
+        alphas.append(int(alpha) & 0xFF)
+    return colors, alphas
 
 
 def patch_palette_sprite(blob: bytes, *, pal_id: int, seq_id: int = 0,
@@ -631,13 +747,13 @@ def emit_beta_layout(
     app_dir: str | Path,
     app_name: str,
     *,
-    palettes: dict[int, list[int]] | None = None,
+    palettes: dict[int, list[int] | list[tuple[int, int]]] | None = None,
     palette_sprites=(),
     full_sprites=(),
     icon: str | Path | Image.Image | bytes | None = None,
     icon_side: int = 160,
     icon_dither: bool = False,
-    icon_palette: list[int] | None = None,
+    icon_palette: list[int] | list[tuple[int, int]] | None = None,
     sounds: list[str] | None = None,
     ids_path: str | Path | None = None,
 ) -> list[tuple[int, str]]:
@@ -662,8 +778,17 @@ def emit_beta_layout(
       5. one SOUND per mp3 (payload stays in sound/assets/, nothing written)
 
     Arguments:
-      palettes:        {legacy_pidx: [rgb565, ...]} - keyed by whatever Pidx
-                       values the legacy sprite headers actually carry.
+      palettes:        {legacy_pidx: [rgb565, ...]} or
+                       {legacy_pidx: [(rgb565, alpha8), ...]} - keyed by
+                       whatever Pidx values the legacy sprite headers
+                       actually carry. Whether a group's .pal is written in
+                       the plain or the alpha (spread) format is NOT this
+                       argument's call: it follows the OCT_FLAG_ALPHA bit of
+                       the sprites that reference the group, because the two
+                       are one decision in the engine (see build_pal). The
+                       alphas are simply dropped for a group whose sprites
+                       are opaque, and default to 255 when a caller passes
+                       the bare-rgb565 form for a group that has the flag.
       palette_sprites: iterable of (name, legacy_blob) or
                        (name, legacy_blob, extra_flags) - 48-byte legacy
                        octBmp_t + opaque payload, as read from the current
@@ -685,10 +810,11 @@ def emit_beta_layout(
                        palette icon: its dimensions live in the blob header.
       icon_dither:     full-color icon only - Floyd-Steinberg dithering,
                        exactly like a full sprite's dither flag.
-      icon_palette:    the palette icon's OWN colors ([rgb565, ...]). Emitted
-                       as a dedicated KIND_PAL record (next numeric name
-                       after the palette groups) that ico_idle's Pidx points
-                       at. FULLSIZE is derived from the blob dimensions:
+      icon_palette:    the palette icon's OWN colors ([rgb565, ...] or
+                       [(rgb565, alpha8), ...], same rule as `palettes`).
+                       Emitted as a dedicated KIND_PAL record (next numeric
+                       name after the palette groups) that ico_idle's Pidx
+                       points at. FULLSIZE is derived from the blob dimensions:
                        a side over 120 draws 1:1 (240 tier), 120 and under
                        draws at x2 (cheap tier).
       sounds:          mp3 basenames; None scans <app_dir>/sound/assets/.
@@ -779,9 +905,26 @@ def emit_beta_layout(
     # 48-byte pure-zero zero.raw (the rate default of 1 would set byte 45)
     _write_raw(packed_dir / "zero.raw", build_bmp_header(w=0, h=0, flags=0, rate=0))
 
+    # A group's .pal format is decided by its sprites' OCT_FLAG_ALPHA bit, not
+    # by whether the palette happens to hold a non-opaque entry: utils.exe sets
+    # the flag per group from pooled anti-aliasing, and several corpus groups
+    # (cubetext_hi_*, main*) do have semi-transparent pixels yet stay opaque.
+    # Emitting the wrong form is not a rounding error -- OCT_BLEND_alpha would
+    # read a plain word's RED channel as alpha, and OCT_BLEND_opaque would
+    # write a spread word's green-less low half straight to the framebuffer.
+    pal_wants_alpha: dict[int, bool] = {}
+    for _name, blob, extra in palette_sprites:
+        legacy_pidx = blob[HDR_OFF_LEGACY_PIDX]
+        has_alpha = bool((blob[HDR_OFF_FLAGS] | extra) & OCT_FLAG_ALPHA)
+        pal_wants_alpha[legacy_pidx] = \
+            pal_wants_alpha.get(legacy_pidx, False) or has_alpha
+
     for legacy_pidx, asset_id in pal_asset_id.items():
         _kind, pal_name = records[asset_id]
-        (packed_dir / f"{pal_name}.pal").write_bytes(build_pal(palettes[legacy_pidx]))
+        colors, alphas = split_pal_entries(palettes[legacy_pidx])
+        spread = pal_wants_alpha.get(legacy_pidx, False)
+        (packed_dir / f"{pal_name}.pal").write_bytes(
+            build_pal(colors, alphas if spread else None))
 
     if icon is not None:
         if icon_pal_id is not None:
@@ -790,8 +933,11 @@ def emit_beta_layout(
             # blob dimensions: over 120 is the 1:1 (240) tier, at or under
             # 120 is the cheap x2-upscale tier.
             _kind, icon_pal_name = records[icon_pal_id]
+            icon_colors, icon_alphas = split_pal_entries(icon_palette)
             (packed_dir / f"{icon_pal_name}.pal").write_bytes(
-                build_pal(icon_palette))
+                build_pal(icon_colors,
+                          icon_alphas if icon[HDR_OFF_FLAGS] & OCT_FLAG_ALPHA
+                          else None))
             icon_w, icon_h = struct.unpack_from("<hh", icon, 36)
             fullsize = OCT_FLAG_FULLSIZE if max(icon_w, icon_h) > 120 else 0
             _write_raw(packed_dir / "ico_idle.raw",

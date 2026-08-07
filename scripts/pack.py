@@ -669,7 +669,8 @@ def _phase_emit_raw(args: argparse.Namespace) -> None:
     print(f"  Wrote {ok} .raw file(s)" + (f", {bad} skipped (not %4)" if bad else ""))
 
 
-def _encode_palette_icon(icon: Path, side: int) -> tuple[bytes, list[int]]:
+def _encode_palette_icon(icon: Path, side: int
+                         ) -> tuple[bytes, list[tuple[int, int]]]:
     """Quantize the launcher icon standalone through the pack_codec pipeline.
 
     Same geometry as the full-color path (to_rgb565): centre-crop to a
@@ -677,7 +678,9 @@ def _encode_palette_icon(icon: Path, side: int) -> tuple[bytes, list[int]]:
     transparency survives into palette index 0. The resized PNG is then run
     through the exact machinery every exported sprite uses
     (build_auto_palette -> pack_sprite), yielding a legacy palette-sprite
-    blob plus the icon's own dedicated palette as RGB565 values.
+    blob plus the icon's own dedicated palette as (RGB565, alpha8) pairs —
+    pack_sprite leaves OCT_FLAG_ALPHA set, so that pal is written in the
+    spread format and the icon's antialiased rim survives.
     """
     import tempfile
 
@@ -698,7 +701,8 @@ def _encode_palette_icon(icon: Path, side: int) -> tuple[bytes, list[int]]:
             blob = pack_sprite(str(tmp_png), pal, symbol_bitness=sym)
     if blob is None:
         raise ValueError(f"palette icon {icon} produced no sprite blob")
-    pal565 = [0x0000 if c[3] == 0 else rgba_to_rgb565(c[0], c[1], c[2])
+    pal565 = [(0x0000, 0) if c[3] == 0
+              else (rgba_to_rgb565(c[0], c[1], c[2]), c[3])
               for c in colors]
     return blob, pal565
 
@@ -731,11 +735,17 @@ def _phase_emit_beta(
     # In the --build-palette grouped path those are the sprite_assignments'
     # 0-based group indices; in the load-pal.png path they are the dict keys
     # load_palette_for_encoding produced (same source the encoder used).
-    def _to_565(pal: EncoderPalette) -> list[int]:
-        return [0x0000 if c[3] == 0 else rgba_to_rgb565(c[0], c[1], c[2])
+    # (rgb565, alpha8) per entry: the alpha channel is a full median-cut
+    # dimension already (EncoderPalette holds RGBA), and pack_beta needs it to
+    # write the spread .pal format for groups whose sprites carry
+    # OCT_FLAG_ALPHA. Dropping it here is what used to flatten every
+    # antialiased edge.
+    def _to_565(pal: EncoderPalette) -> list[tuple[int, int]]:
+        return [(0x0000, 0) if c[3] == 0
+                else (rgba_to_rgb565(c[0], c[1], c[2]), c[3])
                 for c in pal.colors]
 
-    pal_groups: dict[int, list[int]] = {}
+    pal_groups: dict[int, list[tuple[int, int]]] = {}
     if sprite_assignments:
         for pidx, pal, _sym in sprite_assignments.values():
             pal_groups.setdefault(pidx, _to_565(pal))
