@@ -69,8 +69,10 @@ from pack_codec import (
 )
 from pack_psd import (
     _ensure_placeholder_sprite,
+    emit_index_blocks,
     export_psd,
     generate_app_ids_h,
+    is_name_declaration,
     normalize_layer_name,
     pack_maps,
     parse_psl,
@@ -120,6 +122,19 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument('--app-name', default=None,
                    help='App name for the beta ids header filename '
                         '(<app-name>_ids.h; default: the --beta-app-dir folder name)')
+    p.add_argument('--beta-ids-output', default=None,
+                   help='Exact path of the beta ids header, overriding the '
+                        '<app-name>_ids.h default. Use it when the app '
+                        'includes a header whose name is not derived from the '
+                        'app/target name (legacy !pack.bat sets app=app, so '
+                        'src/app.h does #include "app_ids.h").')
+    p.add_argument('--pack-bat', default=None,
+                   help='Path to the app\'s art/!pack.bat, the artist\'s own '
+                        'declaration of the pack (which PSDs are exported, '
+                        'which are -map, which palette config utils.exe '
+                        'consumes). Auto-detected as <art-dir>/!pack.bat.')
+    p.add_argument('--no-pack-bat', action='store_true',
+                   help='Ignore any !pack.bat and use the filename heuristics')
     p.add_argument('--pack-config', default=None,
                    help='Path to a legacy !pack.txt (palette buckets + '
                         '<FULLSIZE>/<ALPHA>/... tags). Auto-detected as '
@@ -169,16 +184,51 @@ def _resolve_asset_names(args: argparse.Namespace) -> set[str]:
     return {DEFAULT_ASSET_NAME}
 
 
-def _resolve_map_filter(args: argparse.Namespace) -> None:
+def _resolve_pack_bat(args: argparse.Namespace):
+    """Load the app's ``art/!pack.bat`` declaration, if it has one."""
+    from packbat import find_pack_bat, parse_pack_bat
+
+    if getattr(args, 'no_pack_bat', False):
+        return None
+    path = Path(args.pack_bat) if getattr(args, 'pack_bat', None) \
+        else find_pack_bat(args.art_dir)
+    if path is None:
+        return None
+    if not path.is_file():
+        print(f"Error: --pack-bat {path} not found")
+        sys.exit(1)
+    try:
+        pb = parse_pack_bat(path)
+    except OSError as exc:
+        print(f"  WARNING: {path} unreadable ({exc}) - falling back to "
+              f"filename heuristics")
+        return None
+    if not pb.declares_anything:
+        print(f"  NOTE: {path} declares no psd.exe/utils.exe runs - "
+              f"falling back to filename heuristics")
+        return None
+    print(f"  Using {path}: {len(pb.assets)} asset PSD(s), {len(pb.maps)} "
+          f"map PSD(s), {len(pb.fonts)} font(s)"
+          + (f", config {pb.pack_config}" if pb.pack_config else ""))
+    return pb
+
+
+def _resolve_map_filter(args: argparse.Namespace, pack_bat=None) -> None:
     """Decide which PSDs are placement maps rather than sprite sheets.
 
-    Two sources, both name-based because that is all the legacy toolchain
-    had: the ``map_`` filename prefix, and the launcher's two reserved map
-    names. ``ico`` is looked up by name by the engine itself
-    (``oct_shell.h``: ``OCT_external_map(..., "ico")``) and ``ahover`` is its
-    hover twin, so ``art/ico.psd``/``art/ahover.psd`` are maps by contract —
-    the reference corpus's ``!pack.bat`` indeed runs exactly those two (and
-    only those two) through ``psd.exe -map``.
+    The app's own ``art/!pack.bat`` wins when it exists: it literally lists
+    the ``psd.exe ... -map`` invocations, which is the only source that
+    generalises. ``OCT_ladybug`` runs EIGHT PSDs through ``-map``
+    (``splash, splash_wo_saves, countdown, hud, game_over, complete, win,
+    ico``) and not one of them carries the ``map_`` prefix or a reserved
+    launcher name, so the name-based fallback below finds exactly one of the
+    eight — and the other seven then export sprite PNGs.
+
+    Fallback, when there is no ``!pack.bat``: the ``map_`` filename prefix
+    plus the launcher's two reserved map names. ``ico`` is looked up by name
+    by the engine itself (``oct_shell.h``: ``OCT_external_map(..., "ico")``)
+    and ``ahover`` is its hover twin, so ``art/ico.psd``/``art/ahover.psd``
+    are maps by contract.
 
     Getting this wrong is not cosmetic: a map PSD exported in Assets mode
     writes PNGs, and its layers are *named after sprites that already exist*
@@ -187,6 +237,16 @@ def _resolve_map_filter(args: argparse.Namespace) -> None:
     silently overwrites the sprite it points at.
     """
     if args.map_filter is not None:
+        return
+    if pack_bat is not None and pack_bat.declares_export:
+        if pack_bat.maps:
+            args.map_filter = ','.join(pack_bat.maps)
+            print(f"  Maps declared by {pack_bat.path.name}: {args.map_filter}")
+        else:
+            # An explicit declaration with no -map run means "no maps", which
+            # is different from "we could not tell" - do not fall through.
+            args.map_filter = ''
+            print(f"  {pack_bat.path.name} declares no -map PSDs")
         return
     art = Path(args.art_dir)
     map_psds = [p.stem for p in sorted(art.glob(f'{MAP_FILENAME_PREFIX}*.psd'))]
@@ -197,23 +257,35 @@ def _resolve_map_filter(args: argparse.Namespace) -> None:
         print(f"  Auto-detected maps: {args.map_filter}")
 
 
-def _phase_export(args: argparse.Namespace, asset_names_set: set[str]) -> None:
+def _map_filter_value(args: argparse.Namespace):
+    """``--map-filter`` normalised once: None (auto), 'all', or a name list.
+
+    An empty string is a *declaration* of "no maps" (``!pack.bat`` with no
+    ``-map`` run) and yields ``[]`` — distinct from None, which means "nobody
+    told us, guess from filenames".
+    """
+    mf = args.map_filter
+    if mf is None or mf == 'auto':
+        return None
+    if mf == 'all':
+        return 'all'
+    return [n.strip() for n in mf.split(',') if n.strip()]
+
+
+def _phase_export(args: argparse.Namespace, asset_names_set: set[str],
+                  pack_bat=None) -> None:
     if not args.export:
         return
     print("=== Exporting PSD/FNT layers (psd-tools) ===")
-    mf = args.map_filter
-    if mf is None or mf == 'auto':
-        export_map_filter = None
-    elif mf == 'all':
-        export_map_filter = 'all'
-    else:
-        export_map_filter = [n.strip() for n in mf.split(',') if n.strip()]
-
     export_psd(
         art_dir=args.art_dir,
         exported_dir=args.exported_dir,
-        map_filter=export_map_filter,
+        map_filter=_map_filter_value(args),
         asset_names=asset_names_set,
+        psd_names=(pack_bat.psd_names if pack_bat is not None
+                   and pack_bat.declares_export else None),
+        font_sources=(pack_bat.fonts if pack_bat is not None
+                      and pack_bat.fonts else None),
     )
     _apply_export_overrides(args.art_dir, args.exported_dir)
     print()
@@ -252,7 +324,31 @@ def _apply_export_overrides(art_dir: str, exported_dir: str) -> int:
     return len(pngs)
 
 
-def _resolve_pack_config(args: argparse.Namespace):
+def _declared_pack_config(args: argparse.Namespace, pack_bat) -> Path | None:
+    """The palette config ``!pack.bat`` actually feeds to ``utils.exe``.
+
+    Not a filename question. ``OCT_get_started`` passes ``!pack.txt``
+    directly. ``OCT_ladybug`` first runs its own ``pack_palettes.py`` to
+    expand ``!pack.txt`` (16 coarse buckets, used only as a ``--lock`` seed)
+    into ``!pack_pal.txt`` (32 buckets) and passes *that* — so picking the
+    config by name gives ladybug a much coarser palette set than the one its
+    shipped container was built with. We never run the app's script: the
+    generated config is committed, and if it is not, we fall back to the
+    filename heuristic rather than guess.
+    """
+    if pack_bat is None or not pack_bat.pack_config:
+        return None
+    cand = Path(args.art_dir) / pack_bat.pack_config.replace('\\', '/')
+    if cand.is_file():
+        return cand
+    print(f"  WARNING: {pack_bat.path.name} feeds {pack_bat.pack_config} to "
+          f"utils.exe but {cand} does not exist (it is generated by the app's "
+          f"own script and was not committed) - falling back to the "
+          f"!pack.txt filename heuristic")
+    return None
+
+
+def _resolve_pack_config(args: argparse.Namespace, pack_bat=None):
     """Resolve the ``!pack.txt`` that drives palette buckets, if any.
 
     Precedence (documented in the CLI help too):
@@ -264,22 +360,25 @@ def _resolve_pack_config(args: argparse.Namespace):
       3. ``--manifest`` without an explicit ``--pack-config`` — the
          manifest is the modern asset spec and wins outright; an
          auto-detected ``!pack.txt`` sitting next to it is ignored.
-      4. ``<art-dir>/!pack.txt`` — auto-detected for legacy apps when
-         none of the above apply.
+      4. the config ``art/!pack.bat`` passes to ``utils.exe``
+         (see :func:`_declared_pack_config`), or failing that
+         ``<art-dir>/!pack.txt`` — auto-detected for legacy apps.
     """
     from packtxt import PackTxtError, find_pack_txt, parse_pack_txt
 
     if args.no_pack_config:
         return None
     if args.manifest and not args.pack_config:
-        auto = find_pack_txt(args.art_dir)
+        auto = _declared_pack_config(args, pack_bat) \
+            or find_pack_txt(args.art_dir)
         if auto is not None:
             print(f"  NOTE: {auto} ignored - the manifest ({args.manifest}) "
                   f"takes precedence over !pack.txt")
         return None
 
     path = Path(args.pack_config) if args.pack_config \
-        else find_pack_txt(args.art_dir)
+        else (_declared_pack_config(args, pack_bat)
+              or find_pack_txt(args.art_dir))
     if path is None:
         return None
     if not path.is_file():
@@ -513,13 +612,13 @@ def _compute_map_skip_set(args: argparse.Namespace,
     if not (args.build_maps or args.build_ids):
         return set()
 
-    mf = args.map_filter or ''
+    mf = _map_filter_value(args)
     psl_cands = {p.stem for p in Path(args.exported_dir).glob('*.psl')}
     csv_cands = {p.stem for p in Path(args.exported_dir).glob('*.csv')}
     all_cands = psl_cands | csv_cands
 
-    if ',' in mf:
-        skip = {n.strip() for n in mf.split(',') if n.strip()}
+    if isinstance(mf, list):
+        skip = set(mf)
     elif mf == 'all':
         skip = all_cands
     else:
@@ -663,30 +762,34 @@ def _phase_pack_sprites(
     return err
 
 
+class MapPhaseResult:
+    """What the map/ids phase produced, for the beta emit that follows."""
+
+    def __init__(self, map_names=(), legacy_bmp_names=None,
+                 metadata_blocks=''):
+        self.map_names = list(map_names)
+        self.legacy_bmp_names = dict(legacy_bmp_names or {})
+        self.metadata_blocks = metadata_blocks
+
+
 def _phase_pack_maps(args: argparse.Namespace,
-                     asset_names_set: set[str]) -> list[str]:
+                     asset_names_set: set[str]) -> MapPhaseResult:
     """Pack PSD maps and optionally the legacy app_ids.h.
 
     Returns the packed map names (clean, without the map_ prefix) so later
     phases can tell map containers apart from sprite containers in
-    --output-dir. Empty when the phase is skipped.
+    --output-dir, the inverse legacy BMP index the beta emit needs to
+    translate those maps' BmpIdx fields, and the $names/%types/&groups/#tags
+    constants the beta ids header has to carry too.
     """
     if not (args.build_maps or args.build_ids):
-        return []
+        return MapPhaseResult()
 
     print("\n=== Building maps and/or app_ids.h ===")
-    mf = args.map_filter
-    if mf is None or mf == 'auto':
-        map_filter_val = None
-    elif mf == 'all':
-        map_filter_val = 'all'
-    else:
-        map_filter_val = [n.strip() for n in mf.split(',') if n.strip()]
-
-    (map_names, _bmp_index, sorted_names, name_map,
+    (map_names, bmp_index, sorted_names, name_map,
      type_map, group_map, tag_map) = pack_maps(
         args.exported_dir, args.packed_dir, args.output_dir,
-        map_filter=map_filter_val,
+        map_filter=_map_filter_value(args),
         asset_names=asset_names_set,
     )
     print(f"\n  Maps packed: {len(map_names)} ({', '.join(map_names)})")
@@ -702,7 +805,12 @@ def _phase_pack_maps(args: argparse.Namespace,
             ids_path, args.exported_dir,
         )
 
-    return map_names
+    return MapPhaseResult(
+        map_names=map_names,
+        legacy_bmp_names={idx: name for name, idx in bmp_index.items()},
+        metadata_blocks=emit_index_blocks(name_map, type_map,
+                                          group_map, tag_map),
+    )
 
 
 def _phase_emit_raw(args: argparse.Namespace) -> None:
@@ -780,7 +888,7 @@ def _phase_emit_beta(
     args: argparse.Namespace,
     sprite_assignments: dict[str, tuple[int, EncoderPalette, int]] | None,
     palettes: dict[int, EncoderPalette],
-    map_names: list[str],
+    maps: MapPhaseResult,
 ) -> None:
     """Emit the beta (octavios dev) asset container into --beta-app-dir.
 
@@ -856,11 +964,17 @@ def _phase_emit_beta(
     # legacy 0 placeholder, map containers and full-color sprites are not
     # palette sprites. Without a manifest every extra_flags is 0, so the
     # legacy no-manifest output is byte-identical to before.
+    map_names = maps.map_names
     skip = {PALETTE_SPRITE_NAME, PLACEHOLDER_SPRITE_NAME} \
         | set(map_names) | full_names
     palette_blobs: list[tuple[str, bytes, int]] = []
+    psd_map_blobs: list[tuple[str, bytes]] = []
     for png in sorted(Path(args.output_dir).glob('*.png')):
-        if png.stem in skip:
+        if png.stem in map_names:
+            with Image.open(png) as img:
+                psd_map_blobs.append((png.stem, img.convert('RGBA').tobytes()))
+            continue
+        if png.stem in skip or is_name_declaration(png.stem):
             continue
         with Image.open(png) as img:
             palette_blobs.append((png.stem, img.convert('RGBA').tobytes(),
@@ -927,6 +1041,10 @@ def _phase_emit_beta(
         icon_side=icon_cfg.side,
         icon_dither=icon_cfg.dither,
         icon_palette=icon_palette,
+        psd_maps=psd_map_blobs,
+        legacy_bmp_names=maps.legacy_bmp_names,
+        metadata_blocks=maps.metadata_blocks,
+        ids_path=args.beta_ids_output,
     )
 
     kinds = [k for k, _n in records]
@@ -939,21 +1057,32 @@ def _phase_emit_beta(
         print("  WARNING: no launcher icon found (--icon / icon.png) - the "
               "ico/ahover records were skipped, and the launcher needs them "
               "to install the app")
-    print(f"  ids header -> {app_dir / 'src' / (app_name + '_ids.h')}")
+    ids_dest = Path(args.beta_ids_output) if args.beta_ids_output \
+        else app_dir / 'src' / (app_name + '_ids.h')
+    print(f"  ids header -> {ids_dest}")
 
 
 def main() -> None:
     args = _build_arg_parser().parse_args()
+    pack_bat = _resolve_pack_bat(args)
     asset_names_set = _resolve_asset_names(args)
-    _resolve_map_filter(args)
+    _resolve_map_filter(args, pack_bat)
 
-    _phase_export(args, asset_names_set)
+    _phase_export(args, asset_names_set, pack_bat)
 
     files = [Path(f) for f in args.files] if args.files \
             else sorted(Path(args.exported_dir).glob('*.png'))
+    # `$name` layers are NAME_ declarations, not artwork. The exporter no
+    # longer writes them, but a committed art/exported/ from a real psd.exe
+    # run can still hold them and CI packs committed exports as-is.
+    decls = [f for f in files if is_name_declaration(f.stem)]
+    if decls:
+        print(f"  Ignoring {len(decls)} $name declaration PNG(s) in "
+              f"{args.exported_dir}/ (NAME_ constants, not sprites)")
+        files = [f for f in files if not is_name_declaration(f.stem)]
     os.makedirs(args.output_dir, exist_ok=True)
 
-    pack_config = _resolve_pack_config(args)
+    pack_config = _resolve_pack_config(args, pack_bat)
     sprite_assignments, palettes, has_palette = _phase_palette(
         args, files, pack_config=pack_config)
 
@@ -1006,11 +1135,11 @@ def main() -> None:
               f"lines above) - aborting before maps/ids/beta emit.")
         sys.exit(1)
 
-    map_names = _phase_pack_maps(args, asset_names_set)
+    maps = _phase_pack_maps(args, asset_names_set)
 
     _phase_emit_raw(args)
 
-    _phase_emit_beta(args, sprite_assignments, palettes, map_names)
+    _phase_emit_beta(args, sprite_assignments, palettes, maps)
 
     if sprite_pivots:
         custom = [(n, px, py) for n, (px, py) in sprite_pivots.items()

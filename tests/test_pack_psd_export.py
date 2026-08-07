@@ -220,3 +220,117 @@ def test_map_psds_emit_no_pngs(tmp_path, monkeypatch, is_map, expect_png):
     assert (tmp_path / "spr.png").exists() is expect_png
     assert (tmp_path / "src.csv").exists()
     assert (tmp_path / "src.psl").exists()
+
+
+# ── $name declaration layers emit no PNG ─────────────────────────────────────
+#
+# OCT_ladybug's map PSDs carry 26 of them (2x2 text anchors like
+# `$score!font2`). The legacy container proves they are not assets: 544
+# records and not one name starting with `$`, while src/app_ids.h defines
+# NAME_score. They must still reach the CSV, which is where the NAME_ index
+# map is built from.
+
+def _stub_psd(monkeypatch, layers):
+    import pack_psd
+
+    class _PSD(list):
+        pass
+
+    doc = _PSD(layers)
+    stub = type("X", (), {"open": staticmethod(lambda p: doc)})
+    monkeypatch.setattr(pack_psd, "PSDImage", stub, raising=False)
+    monkeypatch.setitem(__import__("sys").modules, "psd_tools",
+                        type("M", (), {"PSDImage": stub}))
+
+
+def _visible(name, w=4, h=4):
+    layer = _FakeLayer(name, _mask(w, h, [(1, 1)]))
+    layer.width, layer.height = w, h
+    layer.is_visible = lambda: True
+    return layer
+
+
+def test_name_declaration_layer_emits_no_png(tmp_path, monkeypatch):
+    import pack_psd
+    _stub_psd(monkeypatch, [_visible("spr"), _visible("$score!font2", 2, 2)])
+    pack_psd.export_psd_file_python(str(tmp_path / "hud.psd"), str(tmp_path))
+    assert (tmp_path / "spr.png").exists()
+    assert not (tmp_path / "$score.png").exists()
+
+
+def test_name_declaration_layer_still_reaches_the_csv(tmp_path, monkeypatch):
+    import pack_psd
+    _stub_psd(monkeypatch, [_visible("$score!font2", 2, 2)])
+    pack_psd.export_psd_file_python(str(tmp_path / "hud.psd"), str(tmp_path))
+    assert "$score!font2" in (tmp_path / "hud.csv").read_text()
+    names, *_ = pack_psd.build_metadata_maps(str(tmp_path))
+    assert names == {"score": 1}
+
+
+def test_a_dollar_suffix_is_still_a_sprite(tmp_path, monkeypatch):
+    """`hero$player` is the sprite `hero` annotated with NAME_player."""
+    import pack_psd
+    _stub_psd(monkeypatch, [_visible("hero$player")])
+    pack_psd.export_psd_file_python(str(tmp_path / "a.psd"), str(tmp_path))
+    assert list(tmp_path.glob("*.png"))
+
+
+# ── only the PSDs !pack.bat declares are exported ────────────────────────────
+
+def test_undeclared_psds_are_skipped(tmp_path, monkeypatch, capsys):
+    """OCT_ladybug keeps ladybug-assets.psd, the pre-split original of
+    ladybug-assets_1/_2.psd; get_started keeps an unreferenced map_18_18.psd."""
+    import pack_psd
+    art = tmp_path / "art"
+    art.mkdir()
+    for stem in ("wanted", "stray"):
+        (art / f"{stem}.psd").write_bytes(b"8BPS")
+    _stub_psd(monkeypatch, [_visible("spr")])
+    assets, maps = pack_psd.export_all_python(
+        str(art), str(tmp_path / "exported"), map_filter=[],
+        psd_names=["wanted"])
+    assert assets == ["wanted"] and maps == []
+    assert not (tmp_path / "exported" / "stray.csv").exists()
+    assert "Not exported (not declared in !pack.bat): stray" in capsys.readouterr().out
+
+
+def test_declared_psds_keep_their_declared_order(tmp_path, monkeypatch):
+    import pack_psd
+    art = tmp_path / "art"
+    art.mkdir()
+    for stem in ("a", "b", "c"):
+        (art / f"{stem}.psd").write_bytes(b"8BPS")
+    _stub_psd(monkeypatch, [_visible("spr")])
+    assets, _ = pack_psd.export_all_python(
+        str(art), str(tmp_path / "exported"), map_filter=[],
+        psd_names=["c", "a"])
+    assert assets == ["c", "a"]
+
+
+def test_declared_fonts_win_over_the_fonts_subdir(tmp_path, monkeypatch):
+    """ladybug ships art/font_1.fnt AND a DIFFERENT art/fonts/font_1.fnt;
+    !pack.bat names the former."""
+    import pack_psd
+    art = tmp_path / "art"
+    (art / "fonts").mkdir(parents=True)
+    (art / "font_1.fnt").write_bytes(b"BMF\x03")
+    (art / "fonts" / "font_1.fnt").write_bytes(b"BMF\x03")
+    seen = []
+    monkeypatch.setattr(pack_psd, "export_font_python",
+                        lambda p, d: seen.append(p))
+    pack_psd.export_all_python(str(art), str(tmp_path / "exported"),
+                               map_filter=[], font_sources=["font_1.fnt"])
+    assert seen == [str(art / "font_1.fnt")]
+
+
+def test_without_declared_fonts_the_fonts_subdir_is_used(tmp_path, monkeypatch):
+    import pack_psd
+    art = tmp_path / "art"
+    (art / "fonts").mkdir(parents=True)
+    (art / "fonts" / "font_1.fnt").write_bytes(b"BMF\x03")
+    seen = []
+    monkeypatch.setattr(pack_psd, "export_font_python",
+                        lambda p, d: seen.append(p))
+    pack_psd.export_all_python(str(art), str(tmp_path / "exported"),
+                               map_filter=[])
+    assert seen == [str(art / "fonts" / "font_1.fnt")]

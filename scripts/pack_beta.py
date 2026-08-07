@@ -29,6 +29,11 @@ import numpy as np
 from PIL import Image
 
 KIND_SPRITE, KIND_SOUND, KIND_PAL, KIND_MAP = 0, 1, 2, 3
+OCT_PLACE_SIZE = 28             # sizeof(octPlace_t), oct_types.h
+OCT_PLACE_BMP_OFFSET = 16       # octPlace_t.BmpIdx (int16), within one place
+# The two map names the launcher looks up by name to draw an installed app's
+# icon: static "ico" and the hover animation "ahover" (engine oct_shell.h).
+RESERVED_LAUNCHER_MAPS = ("ico", "ahover")
 ASSET_NAME_MAXLEN = 24          # incl. NUL, oct_consts.h OCT_ASSET_NAME_MAXLEN
 ASSETS_CAP = 2048               # oct_pack.h OCT_ASSETS_CAP
 EXT_MAX_DESCS = 512             # launcher sees only the first 512 descriptors
@@ -677,7 +682,51 @@ def _load_rgb565(image, size, dither=False) -> bytes:
         return to_rgb565(img, size, dither=dither)
 
 
-def generate_beta_ids_h(records: list[tuple[int, str]]) -> str:
+def remap_map_bmp_ids(blob: bytes, legacy_bmp_names: dict[int, str],
+                      sprite_ids: dict[str, int],
+                      *, what: str = "map") -> bytes:
+    """Rewrite a legacy map payload's BmpIdx fields into beta asset ids.
+
+    A map packed by ``pack_psd.pack_maps`` stores, in every 28-byte
+    octPlace_t, the sprite's index in the LEGACY alphabetical BMP enum. In the
+    beta container the same field must hold the sprite's asset id (its
+    ``index.bin`` record index), which is a completely different numbering.
+    Shipping the legacy value renders the wrong sprite at every placement -
+    structurally valid, visually nonsense.
+
+    A place pointing at something that is not a beta sprite (index 0, or a
+    name that never became an asset) is zeroed onto the reserved empty
+    sprite rather than left dangling.
+    """
+    out = bytearray(blob)
+    if len(out) < 8:
+        raise ValueError(f"{what}: payload is {len(out)} bytes, not a map")
+    _version, count = struct.unpack_from("<ii", out, 0)
+    if 8 + count * OCT_PLACE_SIZE > len(out):
+        raise ValueError(
+            f"{what}: header claims {count} places but the payload is "
+            f"{len(out)} bytes")
+    missing: set[str] = set()
+    for i in range(count):
+        off = 8 + i * OCT_PLACE_SIZE + OCT_PLACE_BMP_OFFSET
+        legacy, = struct.unpack_from("<h", out, off)
+        if legacy <= 0:
+            continue
+        name = legacy_bmp_names.get(legacy)
+        asset_id = sprite_ids.get(name, 0) if name else 0
+        if asset_id == 0 and name:
+            missing.add(name)
+        struct.pack_into("<h", out, off, asset_id)
+    if missing:
+        print(f"  WARNING: map '{what}' places reference "
+              f"{len(missing)} name(s) that are not sprites in this container "
+              f"({', '.join(sorted(missing)[:6])}"
+              f"{' ...' if len(missing) > 6 else ''}) - drawn as the empty sprite")
+    return bytes(out)
+
+
+def generate_beta_ids_h(records: list[tuple[int, str]],
+                        metadata_blocks: str = "") -> str:
     """Kind-aware ids header text for a beta record list (index == asset id).
 
     enum BMP carries every KIND_SPRITE record except the reserved slot-0
@@ -741,6 +790,9 @@ def generate_beta_ids_h(records: list[tuple[int, str]]) -> str:
     lines.append("SND_last};\n\n")
 
     lines.append("typedef enum BMP BMP;\ntypedef enum MAP MAP;\ntypedef enum SND SND;\n")
+    if metadata_blocks:
+        lines.append("\n")
+        lines.append(metadata_blocks)
     return "".join(lines)
 
 
@@ -757,6 +809,9 @@ def emit_beta_layout(
     icon_palette: list[int] | list[tuple[int, int]] | None = None,
     sounds: list[str] | None = None,
     ids_path: str | Path | None = None,
+    psd_maps: list[tuple[str, bytes]] | None = None,
+    legacy_bmp_names: dict[int, str] | None = None,
+    metadata_blocks: str = "",
 ) -> list[tuple[int, str]]:
     """Write the complete beta asset container for one app directory.
 
@@ -819,9 +874,26 @@ def emit_beta_layout(
                        a side over 120 draws 1:1 (240 tier), 120 and under
                        draws at x2 (cheap tier).
       sounds:          mp3 basenames; None scans <app_dir>/sound/assets/.
+      psd_maps:        (name, legacy_octPlace_blob) for every placement map
+                       the app's own -map PSDs produced. Their BmpIdx fields
+                       are legacy enum indices and are rewritten to beta
+                       asset ids (see remap_map_bmp_ids), which needs
+                       legacy_bmp_names.
+      legacy_bmp_names: {legacy_bmp_index: sprite_name}, i.e. the inverse of
+                       pack_psd.build_bmp_name_index. Required with psd_maps.
+      metadata_blocks: pre-rendered $names/%types/&groups/#tags constants
+                       (pack_psd.emit_index_blocks) appended to the ids
+                       header. An app whose maps set octObject_t.Name/.Type/
+                       .Tags needs them to compile.
 
-    Legacy PSD maps are NOT emitted: their embedded bmp indices are legacy
-    enum values, meaningless in the beta asset-id space.
+    Launcher maps: "ico" (and its hover twin "ahover") are synthesized from
+    `icon` so an app with no ico.psd still installs. An app that declares its
+    OWN -map PSDs decides the launcher set instead: only the reserved names it
+    declares are emitted (ladybug ships ico.psd and no ahover.psd, and its
+    legacy container has exactly one launcher map). Their payloads still come
+    from `icon`, because a legacy ico.psd map points into the legacy enum
+    space and the beta launcher wants the RAW565 icon; "ico" therefore stays
+    at its low, launcher-visible asset id.
 
     Returns the records written (same shape read_index_bin returns).
     """
@@ -866,12 +938,32 @@ def emit_beta_layout(
         icon_pal_id = len(records)
         records.append((KIND_PAL, str(len(pal_asset_id) + 1)))
 
+    # An app with its own -map PSDs declares which launcher maps exist; one
+    # with none at all (the AI-generated shape) gets both synthesized.
+    psd_maps = list(psd_maps or [])
+    declared_map_names = [n for n, _b in psd_maps]
+    if declared_map_names:
+        launcher_maps = [n for n in RESERVED_LAUNCHER_MAPS
+                         if n in declared_map_names]
+        if "ico" not in launcher_maps:
+            # the launcher cannot install an app without it
+            launcher_maps.insert(0, "ico")
+    else:
+        launcher_maps = list(RESERVED_LAUNCHER_MAPS)
+    # a reserved name is served by the synthesized asset, not by the PSD map
+    dropped = [n for n in declared_map_names if n in launcher_maps]
+    if dropped and icon is not None:
+        print(f"  NOTE: {', '.join(dropped)}.psd map(s) superseded by the "
+              f"launcher icon assets built from the icon image")
+    if icon is not None:
+        psd_maps = [(n, b) for n, b in psd_maps if n not in launcher_maps]
+
     ico_idle_id = None
     if icon is not None:
         ico_idle_id = len(records)
         records.append((KIND_SPRITE, "ico_idle"))
-        records.append((KIND_MAP, "ico"))
-        records.append((KIND_MAP, "ahover"))
+        for n in launcher_maps:
+            records.append((KIND_MAP, n))
         if len(records) > EXT_MAX_DESCS:
             raise ValueError(
                 f"icon assets reach id {len(records) - 1}, past the "
@@ -884,6 +976,9 @@ def emit_beta_layout(
     for name, _image, _size, _flags, _dither in full_sprites:
         sprite_ids[name] = len(records)
         records.append((KIND_SPRITE, name))
+
+    for name, _blob in psd_maps:
+        records.append((KIND_MAP, name))
 
     for name in sounds:
         records.append((KIND_SOUND, name))
@@ -954,10 +1049,10 @@ def emit_beta_layout(
         # walk, so the icon just holds either way), but ahover is the hover
         # ANIMATION map and the real toolchain packs it looped (PLACE_LOOPED,
         # see golden app_hulk ahover.raw) while ico stays static
-        _write_raw(packed_dir / "ico.raw",
-                   build_map(ico_idle_id, icon_w, icon_h))
-        _write_raw(packed_dir / "ahover.raw",
-                   build_map(ico_idle_id, icon_w, icon_h, looped=True))
+        for n in launcher_maps:
+            _write_raw(packed_dir / f"{n}.raw",
+                       build_map(ico_idle_id, icon_w, icon_h,
+                                 looped=(n == "ahover")))
 
     for name, blob, extra_flags in palette_sprites:
         if len(blob) < BMP_SIZE:
@@ -993,12 +1088,21 @@ def emit_beta_layout(
                    build_raw565_sprite(texels, w, h, flags=flags,
                                        seq=seq.get(name, 0)))
 
+    if psd_maps and legacy_bmp_names is None:
+        raise ValueError("psd_maps need legacy_bmp_names to translate their "
+                         "BmpIdx fields into beta asset ids")
+    for name, blob in psd_maps:
+        _write_raw(packed_dir / f"{name}.raw",
+                   remap_map_bmp_ids(blob, legacy_bmp_names or {},
+                                     sprite_ids, what=name))
+
     # ── index.bin + ids header ──────────────────────────────────────────────
     (app_dir / "index.bin").write_bytes(build_index_bin(records))
 
     ids_file = Path(ids_path) if ids_path else app_dir / "src" / f"{app_name}_ids.h"
     ids_file.parent.mkdir(parents=True, exist_ok=True)
-    ids_file.write_text(generate_beta_ids_h(records), encoding="ascii")
+    ids_file.write_text(generate_beta_ids_h(records, metadata_blocks),
+                        encoding="ascii")
 
     return records
 
@@ -1146,15 +1250,55 @@ def _parse_int_expr(text: str, define: str,
     return _eval_int_ast(tree, text, define)
 
 
+_RE_LOCAL_INCLUDE = re.compile(r'^\s*#\s*include\s+"([^"]+)"', re.M)
+
+
+def _app_header_text(app_h: Path, _depth: int = 3) -> str:
+    """``app.h`` plus every local ``#include "..."`` reachable from it.
+
+    The pack-header defines do not have to live in ``app.h``: ``OCT_ladybug``
+    keeps ``APP_VER``/``APP_VERSION``/``APP_GUID1``/``APP_TITLE``/
+    ``APP_CATEGORIES`` in ``src/config.h`` and ``app.h`` merely includes it.
+    Reading ``app.h`` alone raised "no APP_GUID1" and no ``.oct`` could be
+    built for the app at all. Only quoted (project-local) includes that
+    resolve inside the app are followed; ``<...>`` engine headers are not
+    ours to read.
+    """
+    seen: set[Path] = set()
+    chunks: list[str] = []
+
+    def visit(path: Path, depth: int) -> None:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return
+        if resolved in seen or not path.is_file():
+            return
+        seen.add(resolved)
+        try:
+            text = path.read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeDecodeError):
+            return
+        chunks.append(text)
+        if depth <= 0:
+            return
+        for m in _RE_LOCAL_INCLUDE.finditer(text):
+            visit(path.parent / m.group(1), depth - 1)
+
+    visit(Path(app_h), _depth)
+    return "\n".join(chunks)
+
+
 def read_app_defines(app_h: str | Path) -> dict:
     """Extract the pack-header defines from an app's src/app.h.
 
     Returns only the keys actually present: title (str), guid1, app_version,
     categories, colors (ints). Mirrors videopack.py's read_app_guid but for
     the whole define set the pack header needs. Reads with utf-8-sig because
-    real app.h files carry a BOM.
+    real app.h files carry a BOM, and follows the app's own quoted includes
+    (see :func:`_app_header_text`).
     """
-    text = Path(app_h).read_text(encoding="utf-8-sig")
+    text = _app_header_text(Path(app_h))
     out: dict = {}
     func_macros = _collect_func_macros(text)
 

@@ -281,3 +281,45 @@ def test_generate_group_filter(tmp_manifest, tmp_path):
     generate(m, out, group="ui")
     assert (out / "sfx_coin.wav").exists()
     assert (out / "sfx_hit.wav").read_bytes() == before
+
+
+# ── pre-encoded mp3s committed in sound/ (not sound/assets/) ─────────────────
+#
+# OCT_ladybug's shape: twelve ready mp3s in sound/ itself, no WAV sources, no
+# sound/assets/ at all - and twelve KIND_SOUND records in its legacy
+# container. A build that only scans sound/assets/ ships a silent app whose
+# every SND_getAssetId() returns -1.
+
+LADYBUG_MP3S = ["berry_eaten", "berry_eaten2", "countdown", "game_over",
+                "idle_001", "idle_002", "idle_003", "idle_004", "idle_005",
+                "intro", "poison", "starting"]
+
+
+def test_plan_mp3_adoption_covers_the_ladybug_set():
+    from gen_sounds import plan_mp3_adoption
+    plan = plan_mp3_adoption([Path(f"sound/{n}.mp3") for n in LADYBUG_MP3S])
+    assert [asset for _src, asset in plan] == sorted(LADYBUG_MP3S)
+
+
+def test_plan_mp3_adoption_normalises_the_asset_name():
+    from gen_sounds import plan_mp3_adoption
+    plan = plan_mp3_adoption([Path("sound/Win-Fanfare.mp3")])
+    assert plan == [(Path("sound/Win-Fanfare.mp3"), "win_fanfare")]
+
+
+def test_plan_mp3_adoption_rejects_colliding_sources():
+    from gen_sounds import plan_mp3_adoption
+    with pytest.raises(ValueError, match=r"collide after name normalisation"):
+        plan_mp3_adoption([Path("a/Win-Fanfare.mp3"), Path("a/win fanfare.mp3")])
+
+
+def test_plan_mp3_adoption_leaves_committed_assets_alone():
+    from gen_sounds import plan_mp3_adoption
+    plan = plan_mp3_adoption([Path("sound/intro.mp3"), Path("sound/poison.mp3")],
+                             committed={"intro"})
+    assert [asset for _src, asset in plan] == ["poison"]
+
+
+def test_plan_mp3_adoption_of_nothing_is_empty():
+    from gen_sounds import plan_mp3_adoption
+    assert plan_mp3_adoption([]) == []

@@ -438,6 +438,33 @@ tags OR'd into every member sprite's header flags. Point it elsewhere with
 `--pack-config <path>`, or opt out with `--no-pack-config` to fall back to the
 auto median-cut grouping.
 
+**Legacy apps with an `art/!pack.bat` — that file wins over every filename
+heuristic.** The artist's batch file is not documentation, it is the exact
+`psd.exe`/`utils.exe` command line the shipped container was built from, and
+`pack.py` reads it (`packbat.py`) for four things a filename cannot tell you:
+
+- **which PSDs are exported at all** — `OCT_get_started` keeps an unreferenced
+  `art/map_18_18.psd`, `OCT_ladybug` keeps `ladybug-assets.psd` (the pre-split
+  original of `ladybug-assets_1/_2`); neither is part of the pack;
+- **which of them are `-map` placement documents** — ladybug runs eight PSDs
+  through `psd.exe -map` and not one carries the `map_` prefix or a reserved
+  launcher name;
+- **which palette config `utils.exe` consumes** — ladybug's `!pack.bat`
+  generates `!pack_pal.txt` (32 buckets) from `!pack.txt` (16, the `--lock`
+  seed) and feeds the generated one. We never run the app's own script; if its
+  output was not committed, `pack.py` says so and falls back;
+- **what the ids header is called** — `!pack.bat` sets `app=app` in ladybug, so
+  the header is `src/app_ids.h`, not `src/<target>_ids.h`.
+
+Opt out with `--no-pack-bat`, or point elsewhere with `--pack-bat <path>`. An
+app with no `!pack.bat` (every scaffolded/AI-generated app) is unaffected.
+
+**`$name` layers are NAME_ declarations, not sprites.** A PSD layer whose name
+*starts with* `$` (`$score!font2`) is a placement anchor the app looks up by
+`octObject_t.Name == NAME_score`. It emits no PNG and no asset record — only a
+`NAME_` constant and a place with `BmpIdx = 0`. A `$` *after* a base name
+(`hero$player`) still annotates a real sprite.
+
 **Precedence: `--manifest` wins.** When a manifest is given, any auto-detected
 `!pack.txt` next to it is ignored (with a printed note) — the manifest is the
 newer, richer spec and manifest-driven apps must not change behaviour because

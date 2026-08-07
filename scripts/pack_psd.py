@@ -91,6 +91,29 @@ def _norm(s: str) -> str:
     return s.lower().replace('-', '_').replace(' ', '_')
 
 
+# A layer whose name *starts* with `$` is a NAME DECLARATION, not artwork.
+NAME_DECL_PREFIX = '$'
+
+
+def is_name_declaration(name: str) -> bool:
+    """True for a ``$name`` layer: a named anchor, never a sprite.
+
+    ``$`` normally annotates a sprite layer (``hero$player`` is the sprite
+    ``hero`` carrying ``NAME_player``). When it is the *first* character
+    there is no artwork left in front of it: the layer is a bare placement
+    anchor the app looks up by ``NAME_``. ``OCT_ladybug``'s map PSDs hold 26
+    of them (``$score!font2``, 2x2 px), and the legacy container proves what
+    ``utils.exe`` does with them — ``index.bin`` has 544 records and not one
+    name starting with ``$``, while ``src/app_ids.h`` defines
+    ``NAME_score``. They register in the NAME_ table and produce no asset.
+
+    Letting one through is not a cosmetic miscount: ``BMP_$score`` is not a
+    C identifier, so :func:`pack_beta.generate_beta_ids_h` raises and the
+    whole pack dies.
+    """
+    return name.startswith(NAME_DECL_PREFIX)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PSD layer name parsing
 # ─────────────────────────────────────────────────────────────────────────────
@@ -449,10 +472,13 @@ def export_psd_file_python(psd_path: str, exported_dir: str,
         ))
         fallback_id += 1
 
-        # Export PNG (skip markers, zero-size, already-exported names).
+        # Export PNG (skip markers, name declarations, zero-size,
+        # already-exported names).
         # -map PSDs are placement documents: psd.exe emits no PNGs for them,
         # their layers only reference sprites another PSD already exported.
-        if not is_map and not parsed.is_marker and w > 0 and h > 0:
+        if not is_map and not parsed.is_marker \
+                and not is_name_declaration(parsed.png_name) \
+                and w > 0 and h > 0:
             out_png = os.path.join(exported_dir, f"{parsed.png_name}.png")
             if not os.path.exists(out_png):
                 try:
@@ -586,8 +612,19 @@ def _ensure_placeholder_sprite(art_dir: str) -> str:
 def export_all_python(art_dir: str, exported_dir: str,
                       map_filter=None,
                       asset_names: set[str] | None = None,
+                      psd_names: list[str] | None = None,
+                      font_sources: list[str] | None = None,
                       ) -> tuple[list[str], list[str]]:
-    """Export all PSD and FNT files using psd-tools."""
+    """Export all PSD and FNT files using psd-tools.
+
+    ``psd_names`` / ``font_sources``, when given, are the exact source list
+    declared by the app's ``art/!pack.bat`` (see :mod:`packbat`) and replace
+    the ``art/*.psd`` + ``art/fonts/*.fnt`` globs. A PSD the batch file never
+    mentions is not part of the pack: ``OCT_get_started`` keeps a stray
+    ``map_18_18.psd`` and ``OCT_ladybug`` keeps ``ladybug-assets.psd`` (the
+    pre-split original of ``ladybug-assets_1/_2``), neither of which the
+    legacy container contains.
+    """
     if asset_names is None:
         asset_names = {DEFAULT_ASSET_NAME}
 
@@ -622,15 +659,38 @@ def export_all_python(art_dir: str, exported_dir: str,
     asset_names_out: list[str] = []
     map_names_exported: list[str] = []
 
-    # Fonts
-    fonts_dir = os.path.join(art_dir, 'fonts')
-    if os.path.isdir(fonts_dir):
-        for fnt in sorted(Path(fonts_dir).glob('*.fnt')):
+    # Fonts. A declared list wins: ladybug ships art/font_1.fnt AND a
+    # DIFFERENT art/fonts/font_1.fnt, and !pack.bat names the former.
+    if font_sources is not None:
+        fnts = [Path(art_dir) / f.replace('\\', '/') for f in font_sources]
+        for fnt in fnts:
+            if not fnt.is_file():
+                print(f"  WARNING: !pack.bat declares font {fnt} - not found")
+                continue
             print(f"  Export font: {fnt.name}")
             export_font_python(str(fnt), exported_dir)
+    else:
+        fonts_dir = os.path.join(art_dir, 'fonts')
+        if os.path.isdir(fonts_dir):
+            for fnt in sorted(Path(fonts_dir).glob('*.fnt')):
+                print(f"  Export font: {fnt.name}")
+                export_font_python(str(fnt), exported_dir)
 
     # PSDs
-    for psd in sorted(Path(art_dir).glob('*.psd')):
+    psds = sorted(Path(art_dir).glob('*.psd'))
+    if psd_names is not None:
+        declared = list(psd_names)
+        by_stem = {p.stem: p for p in psds}
+        missing = [n for n in declared if n not in by_stem]
+        for n in missing:
+            print(f"  WARNING: !pack.bat declares {n}.psd - not found in {art_dir}")
+        skipped = [p.stem for p in psds if p.stem not in set(declared)]
+        if skipped:
+            print(f"  Not exported (not declared in !pack.bat): "
+                  f"{', '.join(skipped)}")
+        psds = [by_stem[n] for n in declared if n in by_stem]
+
+    for psd in psds:
         name = psd.stem
         if map_filter is None:
             is_map = name not in asset_names
@@ -661,10 +721,13 @@ def export_all_python(art_dir: str, exported_dir: str,
 
 
 def export_psd(art_dir: str, exported_dir: str,
-               map_filter=None, asset_names: set[str] | None = None
+               map_filter=None, asset_names: set[str] | None = None,
+               psd_names: list[str] | None = None,
+               font_sources: list[str] | None = None,
                ) -> tuple[list[str], list[str]]:
     """Wrapper: export PSD/FNT into exported_dir using psd-tools."""
-    return export_all_python(art_dir, exported_dir, map_filter, asset_names)
+    return export_all_python(art_dir, exported_dir, map_filter, asset_names,
+                             psd_names=psd_names, font_sources=font_sources)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -769,11 +832,15 @@ def parse_map_csv(csv_path: str) -> list[dict]:
                         rate = int(m.group(1))
                 i += 2
 
+            parsed = LayerName.parse(raw_name)
             records.append({
                 'csv_id': int(row[0]),
                 'raw_name': raw_name,
                 'sprite_name': _norm(base_name),
                 'base_name': base_name,
+                'png_name': parsed.png_name,
+                'obj_name': parsed.obj_name,
+                'tag_name': parsed.tag_name,
                 'type_name': type_name,
                 'group_name': group_name,
                 'number': number,
@@ -793,15 +860,20 @@ def build_bmp_name_index(packed_dir: str, exported_dir: str
     """Build alphabetically-sorted BMP name → index mapping from packed sprites."""
     names: set[str] = set()
 
+    # A `$name.png` on disk is not a sprite (see is_name_declaration): a real
+    # psd.exe run may have left one in art/exported/, and CI packs committed
+    # exports as-is, so filter here as well as in the exporter.
     if os.path.isdir(packed_dir):
         for f in Path(packed_dir).glob('*.png'):
-            if f.stem != PLACEHOLDER_SPRITE_NAME:
+            if f.stem != PLACEHOLDER_SPRITE_NAME \
+                    and not is_name_declaration(f.stem):
                 names.add(f.stem)
 
     if os.path.isdir(exported_dir):
         for f in Path(exported_dir).glob('*.png'):
             stem = f.stem
-            if stem != PLACEHOLDER_SPRITE_NAME and not stem.endswith('.csv'):
+            if stem != PLACEHOLDER_SPRITE_NAME and not stem.endswith('.csv') \
+                    and not is_name_declaration(stem):
                 names.add(stem)
 
     names.add(PALETTE_SPRITE_NAME)
@@ -889,11 +961,11 @@ def _load_packed_pivots(packed_dir: str
 def _pack_octplace(x: float, y: float, w: int, h: int, bmp_idx: int,
                    number: int, flags: int, side: int, rate: int,
                    name_byte: int, group_idx: int, parent: int,
-                   type_idx: int) -> bytes:
+                   type_idx: int, tags: int = 0) -> bytes:
     """Pack a single octPlace_t (28 bytes)."""
     return b''.join((
         struct.pack('<ff', x, y),
-        struct.pack('<I',  0),                              # Tags
+        struct.pack('<I',  tags & 0xFFFFFFFF),              # Tags
         struct.pack('<hh', w & NUMBER_FIELD_MASK, h & NUMBER_FIELD_MASK),
         struct.pack('<h',  bmp_idx),
         struct.pack('<h',  number & NUMBER_FIELD_MASK),
@@ -911,11 +983,33 @@ def psl_to_octplace(records: list[dict],
                     bmp_index: dict[str, int],
                     type_map: dict[str, int],
                     group_map: dict[str, int],
-                    packed_pivots: dict[str, tuple[float, float, int, int]] | None = None
+                    packed_pivots: dict[str, tuple[float, float, int, int]] | None = None,
+                    name_map: dict[str, int] | None = None,
+                    tag_map: dict[str, int] | None = None,
+                    layer_meta: dict[tuple, tuple[str, str]] | None = None,
                     ) -> bytes:
-    """Convert parsed PSL records to an octPlace_t binary blob (map payload)."""
+    """Convert parsed PSL records to an octPlace_t binary blob (map payload).
+
+    ``name_map``/``tag_map`` are the ``$names``/``#tags`` index maps from
+    :func:`build_metadata_maps`; they fill octPlace_t's ``Name`` byte and
+    ``Tags`` word, which is how the app finds a placement at runtime
+    (``octObject_t.Name == NAME_score``, ``.Tags & TAG_health2``).
+
+    A ``$name`` layer (see :func:`is_name_declaration`) is an anchor with no
+    artwork: its place keeps the rect and the ``Name`` byte but gets
+    ``BmpIdx = 0``, matching the legacy container where no ``$`` asset exists.
+
+    ``layer_meta`` maps ``(png_name, x, y, w, h)`` to ``(obj_name, tag_name)``
+    recovered from the PSD's own CSV, because the PSL record layout we mirror
+    from ``psd.exe`` has slots for the group and type suffixes but none for
+    ``$name``/``#tag``. Without it those two fall back to what the PSL name
+    alone can carry (the ``$`` prefix) and no tags.
+    """
     if packed_pivots is None:
         packed_pivots = {}
+    name_map = name_map or {}
+    tag_map = tag_map or {}
+    layer_meta = layer_meta or {}
 
     places: list[bytes] = []
     for rec in records:
@@ -930,7 +1024,14 @@ def psl_to_octplace(records: list[dict],
         rate = rec.get('rate', 0)
 
         is_layer_marker = (not name and w <= 1 and h <= 1)
-        bmp_idx = bmp_index.get(name, 0) if name else 0
+        is_decl = is_name_declaration(name)
+        bmp_idx = 0 if (is_decl or not name) else bmp_index.get(name, 0)
+
+        obj_name, tag_name = layer_meta.get(
+            (name, rec['x'], rec['y'], w, h),
+            (LayerName.parse(name).obj_name if name else '', ''))
+        name_byte = name_map.get(obj_name, 0) if obj_name else 0
+        tags = tag_bits(tag_name, tag_map)
 
         stored_pvx = stored_pvy = 0.0
         if name and name in packed_pivots:
@@ -957,13 +1058,15 @@ def psl_to_octplace(records: list[dict],
         rate_out = rate if rate > 0 else OCT_PLACE_RATE_DEFAULT
 
         if is_layer_marker:
-            bmp_idx = type_idx = group_idx = 0
+            bmp_idx = type_idx = group_idx = name_byte = 0
+            tags = 0
             flags = 0
             rate_out = OCT_PLACE_RATE_DEFAULT
 
         places.append(_pack_octplace(
             local_x, local_y, w, h, bmp_idx, number,
-            flags, sid, rate_out, 0, group_idx, 0, type_idx,
+            flags, sid, rate_out, name_byte, group_idx, 0, type_idx,
+            tags=tags,
         ))
 
     return struct.pack('<ii', 1, len(places)) + b''.join(places)
@@ -972,8 +1075,16 @@ def psl_to_octplace(records: list[dict],
 def csv_to_octplace(csv_records: list[dict],
                     bmp_index: dict[str, int],
                     type_map: dict[str, int],
-                    group_map: dict[str, int]) -> bytes:
-    """Convert parsed CSV records to an octPlace_t blob (map payload, no sides)."""
+                    group_map: dict[str, int],
+                    name_map: dict[str, int] | None = None,
+                    tag_map: dict[str, int] | None = None) -> bytes:
+    """Convert parsed CSV records to an octPlace_t blob (map payload, no sides).
+
+    With ``name_map``/``tag_map`` the ``Name`` byte and ``Tags`` word come
+    from the layer's own ``$name``/``#tag`` suffixes (same rule as
+    :func:`psl_to_octplace`); without them the historical behaviour is kept,
+    where ``Name`` is just a running counter.
+    """
     places: list[bytes] = []
     name_counter = 1
 
@@ -1000,17 +1111,50 @@ def csv_to_octplace(csv_records: list[dict],
             places.append(place_data)
             continue
 
-        bmp_idx  = bmp_index.get(sprite_name, 0)
+        png_name = rec.get('png_name', sprite_name)
+        bmp_idx = 0 if is_name_declaration(png_name) \
+            else bmp_index.get(sprite_name, 0)
         type_idx = type_map.get(rec['type_name'], 0) if rec['type_name'] else 0
         group_idx = group_map.get(rec['group_name'], 0) if rec['group_name'] else 0
 
+        if name_map is None:
+            name_byte = name_counter & 0xFF
+            tags = 0
+        else:
+            obj = rec.get('obj_name', '')
+            name_byte = name_map.get(obj, 0) if obj else 0
+            tags = tag_bits(rec.get('tag_name', ''), tag_map or {})
+
         places.append(_pack_octplace(
             float(x), float(y), w, h, bmp_idx, rec['number'],
-            0, -1, rec['rate'], name_counter & 0xFF, group_idx, 0, type_idx,
+            0, -1, rec['rate'], name_byte, group_idx, 0, type_idx,
+            tags=tags,
         ))
         name_counter += 1
 
     return struct.pack('<ii', 1, len(places)) + b''.join(places)
+
+
+def _csv_layer_meta(csv_path) -> dict[tuple, tuple[str, str]]:
+    """``(png_name, x, y, w, h) -> ($name, #tag)`` from a per-PSD CSV.
+
+    The PSL record layout we mirror from ``psd.exe`` has fixed slots for the
+    ``&group`` and ``%type`` suffixes but none for ``$name`` or ``#tag``, so
+    a map built from the PSL alone would lose both. The CSV written by the
+    same export carries the raw layer name, and (name, rect) identifies the
+    layer in it — that is the sidecar this reads. Returns {} when the PSD was
+    exported without ``-log`` (no CSV).
+    """
+    if csv_path is None or not Path(csv_path).is_file():
+        return {}
+    meta: dict[tuple, tuple[str, str]] = {}
+    try:
+        for rec in parse_map_csv(str(csv_path)):
+            key = (rec['png_name'], rec['x'], rec['y'], rec['w'], rec['h'])
+            meta.setdefault(key, (rec['obj_name'], rec['tag_name']))
+    except Exception:
+        return {}
+    return meta
 
 
 def pack_maps(exported_dir: str, packed_dir: str, output_dir: str,
@@ -1060,8 +1204,11 @@ def pack_maps(exported_dir: str, packed_dir: str, output_dir: str,
             if explicit_set is None and map_filter != 'all' and psl_type != PSL_TYPE_MAP:
                 print(f"    Skipping (not a map PSL, type={psl_type})")
                 continue
+            layer_meta = _csv_layer_meta(csv_files.get(map_name))
             blob = psl_to_octplace(records, bmp_index, type_map, group_map,
-                                   packed_pivots=packed_pivots)
+                                   packed_pivots=packed_pivots,
+                                   name_map=name_map, tag_map=tag_map,
+                                   layer_meta=layer_meta)
         elif has_csv:
             print(f"\n  Map: {map_name} (from CSV, no side conversion)")
             csv_records = parse_map_csv(str(csv_files[map_name]))
@@ -1069,7 +1216,8 @@ def pack_maps(exported_dir: str, packed_dir: str, output_dir: str,
             if not csv_records:
                 print("    Skipping (empty CSV)")
                 continue
-            blob = csv_to_octplace(csv_records, bmp_index, type_map, group_map)
+            blob = csv_to_octplace(csv_records, bmp_index, type_map, group_map,
+                                   name_map=name_map, tag_map=tag_map)
         else:
             continue
 
@@ -1103,14 +1251,55 @@ def pack_maps(exported_dir: str, packed_dir: str, output_dir: str,
 
 def _emit_index_block(lines: list[str], prefix: str, label: str,
                       idx_map: dict[str, int]) -> None:
-    """Append a '// label\\n const uint8_t PREFIX_X = N;\\n ...' block to lines."""
+    """Append one ``//label`` + ``const … PREFIX_X = N;`` block.
+
+    Shape measured on the two committed legacy headers
+    (``OCT_ladybug/src/app_ids.h``, ``OCT_get_started/art/app_get_started_ids.h``):
+
+      * only ``%types`` gets a ``TYPE_last`` sentinel, and it is emitted even
+        when the block is empty (``const uint8_t TYPE_last = 1;`` in
+        get_started, which declares no types at all). ``NAME_``/``GROUP_``/
+        ``TAG_`` have no sentinel;
+      * ``#tags`` is a BITMASK, not a counter: ladybug's four health tags are
+        ``TAG_health1 = 1, TAG_health2 = 2, TAG_health3 = 4, TAG_health4 = 8``
+        and the type is ``uint32_t``, because the app ORs them into
+        ``octObject_t.Tags`` and tests with ``&``. Emitting the 1-based index
+        (…= 3, …= 4) as ``uint8_t`` compiles fine and silently makes
+        ``TAG_health3`` alias ``TAG_health1|TAG_health2``.
+    """
+    ctype = 'uint32_t' if prefix == 'TAG' else 'uint8_t'
     lines.append(f'//{label}\n')
     for name, idx in sorted(idx_map.items(), key=lambda x: x[1]):
-        lines.append(f'const uint8_t {prefix}_{name} = {idx};\n')
-    last = (max(idx_map.values()) + 1) if idx_map else 1
-    if idx_map or prefix != 'TAG':
-        lines.append(f'const uint8_t {prefix}_last = {last};\n')
+        value = (1 << (idx - 1)) if prefix == 'TAG' else idx
+        lines.append(f'const {ctype} {prefix}_{name} = {value};\n')
+    if prefix == 'TYPE':
+        last = (max(idx_map.values()) + 1) if idx_map else 1
+        lines.append(f'const uint8_t TYPE_last = {last};\n')
     lines.append('\n')
+
+
+def emit_index_blocks(name_map: dict[str, int], type_map: dict[str, int],
+                      group_map: dict[str, int], tag_map: dict[str, int]) -> str:
+    """The ``$names``/``%types``/``&groups``/``#tags`` tail of an ids header.
+
+    Shared by the legacy :func:`generate_app_ids_h` and the beta
+    ``pack_beta.generate_beta_ids_h`` so the two can never disagree: the beta
+    header OVERWRITES the app's committed ``src/<app>_ids.h``, and an app that
+    reads ``octObject_t.Name``/``.Type``/``.Tags`` (ladybug does, for its HUD
+    labels and health hearts) stops compiling the moment these go missing.
+    """
+    parts: list[str] = []
+    _emit_index_block(parts, 'NAME',  '$names',  name_map)
+    _emit_index_block(parts, 'TYPE',  '%types',  type_map)
+    _emit_index_block(parts, 'GROUP', '&groups', group_map)
+    _emit_index_block(parts, 'TAG',   '#tags',   tag_map)
+    return ''.join(parts)
+
+
+def tag_bits(tag_name: str, tag_map: dict[str, int]) -> int:
+    """``TAG_<tag_name>``'s bitmask value, or 0 for an unknown/absent tag."""
+    idx = tag_map.get(tag_name, 0) if tag_name else 0
+    return (1 << (idx - 1)) if idx > 0 else 0
 
 
 def generate_app_ids_h(sorted_sprite_names: list[str],
@@ -1185,10 +1374,7 @@ def generate_app_ids_h(sorted_sprite_names: list[str],
     out_parts.extend(map_lines)
     out_parts.append('typedef enum BMP BMP;\ntypedef enum MAP MAP;\n\n')
 
-    _emit_index_block(out_parts, 'NAME',  '$names',  name_map)
-    _emit_index_block(out_parts, 'TYPE',  '%types',  type_map)
-    _emit_index_block(out_parts, 'GROUP', '&groups', group_map)
-    _emit_index_block(out_parts, 'TAG',   '#tags',   tag_map)
+    out_parts.append(emit_index_blocks(name_map, type_map, group_map, tag_map))
 
     with open(output_path, 'w') as f:
         f.write(''.join(out_parts))

@@ -112,6 +112,35 @@ def resolve_sound_asset_names(stems: Iterable[str]) -> dict[str, str]:
     return mapping
 
 
+def plan_mp3_adoption(sources, committed=()) -> list[tuple[Path, str]]:
+    """Which pre-encoded mp3s to adopt into ``sound/assets/``, and as what.
+
+    A third real app shape: ``OCT_ladybug`` commits twelve ready mp3s in
+    ``sound/`` itself — no WAV sources, no ``sound/assets/`` at all — and its
+    legacy container has the matching twelve KIND_SOUND records. A build that
+    only scans ``sound/assets/`` produces zero, and every
+    ``SND_getAssetId()`` in the app returns -1 at runtime: a silent game that
+    passes every structural check.
+
+    They are adopted by COPY, never re-encoded: they are already the shipped
+    audio, and a round trip through ffmpeg would change bytes for nothing
+    (and needs a tool CI may not have). The asset name is normalised exactly
+    like a WAV source's, so the ``SND_`` enum member is legal C, and two
+    sources normalising onto one name raise instead of one silently winning
+    (that would drop a ``SND_`` id the app compiles against).
+
+    ``committed`` are asset names already present in ``sound/assets/``; those
+    win, because a committed encoded asset is the authority over a loose
+    source file. Returns ``[(source_path, asset_name), ...]`` in asset order.
+    """
+    sources = [Path(s) for s in sources]
+    asset_of = resolve_sound_asset_names(s.stem for s in sources)
+    committed = set(committed)
+    return sorted(((s, asset_of[s.stem]) for s in sources
+                   if asset_of[s.stem] not in committed),
+                  key=lambda pair: pair[1])
+
+
 def _md5_seed(label: str) -> int:
     return int(hashlib.md5(label.encode("utf-8")).hexdigest()[:8], 16)
 

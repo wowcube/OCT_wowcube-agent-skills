@@ -279,14 +279,18 @@ diffs the two files expecting equality.
 We match the **shipped bytes** (450/450) and therefore differ from the raw log
 by exactly this one sprite. This is the expected and desired direction.
 
-### 5.5 Two extra exporter artefacts
+### 5.5 Two extra exporter artefacts — *fixed in §10*
 
-We export `map_18_18.psd` (→ `map_18_18.csv`/`.psl`, packed as map `18_18`);
-the corpus's `!pack.bat` never runs `psd.exe` on it, so golden has 9 CSV/PSL
-pairs and we have 10. Legacy PSD maps are not emitted into the beta container,
-so `index.bin` is unaffected. The extra files are inert build products in a
-gitignored directory. Left alone: refusing to export a committed `map_*.psd`
-would be a stranger rule than exporting it.
+We exported `map_18_18.psd` (→ `map_18_18.csv`/`.psl`, packed as map `18_18`);
+the corpus's `!pack.bat` never runs `psd.exe` on it, so golden had 9 CSV/PSL
+pairs and we had 10. At the time legacy PSD maps were not emitted into the
+beta container, so `index.bin` was unaffected and this was left alone.
+
+**Superseded.** The third corpus (§10) made both halves matter: PSD maps *are*
+emitted now, so an undeclared `map_*.psd` would become a ninth MAP record
+get_started's legacy container does not have. `art/!pack.bat` is now read as
+the authoritative export list, `map_18_18.psd` is not exported at all, and the
+CSV/PSL count matches golden exactly.
 
 ---
 
@@ -431,3 +435,98 @@ Test suite: **400 passed**, up from the 369 baseline — +7
 `test_export_overrides.py`, +7 `test_map_detection.py`, +10
 `test_app_defines.py`, +7 `test_palette_weights.py`. Nothing removed, nothing
 skipped, no test weakened.
+
+---
+
+## 10. Third corpus: `OCT_ladybug` — `art/!pack.bat` as the source of truth
+
+A second legacy app, packed with the same `psd.exe` + `utils.exe` toolchain,
+broke the python packer in five distinct ways. Ground truth available: its
+committed `index.bin` (**544 records: 493 sprite / 31 pal / 8 map / 12 sound**)
+and `src/app_ids.h`. `art/packed/` and `art/exported/` are *not* committed
+here, so per-sprite byte comparison against the legacy binaries — the strongest
+evidence used in §3 — is not possible for this app; the checks below are
+name-set, symbol-set and self-consistency instead.
+
+### 10.1 The five gaps
+
+| # | symptom | root cause | fix |
+|---|---|---|---|
+| 1 | **crash**: `ValueError: asset name '$label_you' yields 'BMP_$label_you'` | 26 map-PSD layers named `$score!font2` (2×2 text anchors) were exported as sprites. Legacy: zero `$` names in `index.bin`, `NAME_score` in `app_ids.h` | `pack_psd.is_name_declaration` — a leading `$` marks a NAME_ declaration; no PNG, no BMP index entry, and its place gets `BmpIdx = 0` + the `Name` byte |
+| 2 | 1 map detected, legacy has 8 | none of ladybug's eight `-map` PSDs carries the `map_` prefix or a reserved launcher name | read `art/!pack.bat` (`packbat.py`): it lists the `psd.exe … -map` runs literally |
+| 3 | 0 sound records, legacy has 12 | the app commits ready mp3s in `sound/` **root**, not `sound/assets/`, and has no WAVs | `gen_sounds.plan_mp3_adoption` + `ci_build`: pre-encoded root mp3s are copied (never re-encoded) under normalised names, collisions fatal |
+| 4 | wrote `src/app_ladybug_ids.h`, app compiles `src/app_ids.h` | the ids name was derived from the `*.target` marker; `!pack.bat` sets `app=app` | `packbat.resolve_ids_header`: the `#include "…_ids.h"` in `src/` wins, then `!pack.bat`'s `utils.exe` argument, then the target name |
+| 5 | picked `!pack.txt` (16 buckets) | `!pack.bat` generates `!pack_pal.txt` (32 buckets) with the app's own `pack_palettes.py` and feeds *that* to `utils.exe`; `!pack.txt` is only the `--lock` seed | `pack._declared_pack_config`: use the file `utils.exe` is actually given. The app's script is never run; if its output was not committed we say so and fall back |
+
+Two more were uncovered while proving the above:
+
+* **PSD maps were not emitted into the beta container at all** (their `BmpIdx`
+  fields are legacy enum indices). Without them ladybug cannot reach 8 MAP
+  records. `pack_beta.remap_map_bmp_ids` rewrites every 28-byte `octPlace_t`'s
+  `BmpIdx` from the legacy alphabetical index to the record's beta asset id.
+* **`APP_*` defines need not live in `src/app.h`.** ladybug keeps
+  `APP_GUID1`/`APP_VERSION`/`APP_TITLE`/`APP_CATEGORIES` in `src/config.h`, and
+  every `.oct` build died with `no APP_GUID1`. `read_app_defines` now follows
+  the app's own quoted `#include`s.
+
+### 10.2 The launcher-map rule
+
+`ico`/`ahover` are synthesised from `art/icon.png` so an AI-generated app with
+no `ico.psd` still installs. ladybug ships its own `ico.psd` and no
+`ahover.psd`, and its legacy container has exactly one launcher map among the
+eight. The rule is therefore: **an app that declares its own `-map` PSDs
+decides which reserved launcher maps exist** (ladybug → `ico` only,
+get_started → `ico` + `ahover`, an app with no map PSDs → both). Their
+*payloads* still come from `art/icon.png`, so `ico` keeps its low,
+launcher-visible asset id (33 here) instead of drifting past `EXT_MAX_DESCS`
+with the scene maps.
+
+### 10.3 `TAG_` constants were a counter, not a bitmask
+
+The generated `#tags` block emitted `const uint8_t TAG_health3 = 3;`. The
+committed legacy header has `const uint32_t TAG_health3 = 4;` — the app ORs
+these into `octObject_t.Tags` and tests with `&`, so the index form silently
+makes `TAG_health3` alias `TAG_health1|TAG_health2`. Fixed to `1 << (i-1)` /
+`uint32_t`, and the `_last` sentinel is now emitted only for `%types`, which is
+what both committed headers show. The `Tags` word of each `octPlace_t` is
+populated too, recovered from the per-PSD CSV (the PSL layout mirrored from
+`psd.exe` has slots for `&group` and `%type` but none for `$name`/`#tag`).
+
+### 10.4 Measured
+
+| check | legacy | ours | |
+|---|---|---|---|
+| `index.bin` records | 544 | **544** | exact |
+| sprite / pal / map / sound | 493 / 31 / 8 / 12 | **493 / 31 / 8 / 12** | exact |
+| MAP record names | 8 | **8** | identical set |
+| SOUND record names | 12 | **12** | identical set |
+| PAL record names | 31 | **31** | identical set |
+| SPRITE record names | 493 | 493 | one swap: ours has `ico_idle`, legacy has `0` (§5.1/§5.2, pre-existing) |
+| `BMP_`/`MAP_`/`SND_` symbols | 537 / 9 / 13 | 538 / 9 / 13 | **0 missing** (the extra is `BMP_ico_idle`) |
+| `NAME_`/`TYPE_`/`GROUP_`/`TAG_` | 26 / 12 / 2 / 4 | 26 / 12 / 2 / 4 | **0 missing, 0 value or type mismatches** |
+| sprite header vs `!pack_pal.txt` | — | 20/20 sample | flags, palette group and symbol bitness all agree with the declared bucket; 0 sprites unmatched by the config |
+| map `BmpIdx` after remap | — | 8/8 maps | no place points outside the container; `hud` carries 18 `Name` anchors and 24 `Tags` hearts |
+| ARM build | — | **links clean** | 17,823 B; the app's own `src/` compiles against the regenerated `src/app_ids.h` — the strongest symbol-agreement evidence available |
+| `.oct` | — | 996,607 B | CRC32 `0x3F126024`, ARM tail byte-identical |
+
+### 10.5 Regressions
+
+* `OCT_get_started`, staged fresh from `git ls-files`: **511 records**
+  (452/46/2/11), 0 missing symbols, `.oct` 1,669,784 B verified.
+* `app_gbhotel` (full-colour, `oct-builder/_smoke`): `.oct` **byte-identical**
+  at 2,650,632 B, SHA-256 `FC3AFBA3…0BA2`.
+
+### 10.6 Still unmatched
+
+* **`index.bin` ordering** (§5.3) — unchanged and still not a defect.
+* **`ico_idle` vs `0`** (§5.1/§5.2) — unchanged; the one record-name
+  difference, in both legacy corpora.
+* **Per-sprite bytes for ladybug are unverified against the legacy binaries**,
+  because the app commits neither `art/packed/` nor `art/exported/` and no
+  `!pack.log`. The sprite headers are cross-checked against the app's own
+  `!pack_pal.txt` declaration instead.
+* **`copy /Y` post-steps in `!pack.bat` are not honoured.** get_started's batch
+  copies `qr_code_transparent.png` over the exported `qr_code.png`; that case
+  is covered by the `art/overrides/` convention (§4.1), but the batch line
+  itself is parsed and ignored. An app using `copy` without an `overrides/`
+  dir would ship the PSD layer instead.
