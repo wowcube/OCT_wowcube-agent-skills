@@ -12,7 +12,8 @@
 - Additional golden `.pal` format evidence: `app_launcher`, `app_seabattle` packs (see the part-2 fidelity report).
 
 **Known gap list (from the 2026-08-05 fidelity study — root causes already established):**
-1. **Pivots**: `psd.exe` reads the `~pivot` layer, treats each 4-connected blob as a marker, assigns each sprite the overlapping marker (fallback: the layer's own rect); `utils.exe` packs `PivotX = 2*(marker_centre_x − layer_x) − 0.5`. Verified against real packed bytes (`ic_twist_00`: layer (20,20,37×36), marker (37,37,2×2) → pivot (35.5, 35.5)) and reproduces 320/320 pivots in `assets.psd`. Our packer uses `PIVOT_MODE = LEGACY` → **201/450 sprites mis-anchored, worst by 51 px**.
+1. **Pivots**: `psd.exe` reads the `~pivot` layer, treats each 4-connected blob as a marker, assigns each sprite the overlapping marker (fallback: the layer's own rect); `utils.exe` packs `PivotX = 2*(marker_centre_x − layer_x) − 0.5`. Verified against real packed bytes (`ic_twist_00`: layer (20,20,37×36), marker (37,37,2×2) → pivot (35.5, 35.5)) and reproduces 320/320 pivots in `assets.psd`. Our packer uses `PIVOT_MODE = LEGACY` → **201/450 sprites mis-anchored, worst by 103 px** (`transit_w_new_01`).
+   **Task 1 addendum (measured, not guessed):** the scale factor is the engine's draw zoom, so a `<FULLSIZE>` sprite (drawn 1:1) uses **scale 1, not 2**. The plain ×2 formula reproduces 400/450; keying the scale off `OCT_FLAG_FULLSIZE` reproduces **450/450**. The 50 affected sprites are exactly the `<FULLSIZE>` blocks of `!pack.txt` (`selectcube_*`, `selectcube_orange_*`, `ahover*`, `ico*`). **Consequence for Task 2:** the `<FULLSIZE>` tag is now load-bearing twice — flags *and* pivots — so losing it corrupts sprite anchoring as well as scale.
 2. **`!pack.txt` ignored**: per-glob palette sizes (2/4/6/7/8-bit buckets, 46 palettes) and `<FULLSIZE>`/`<ALPHA>` tags. Our auto-palette makes 16×256-colour groups → 8-bit for 450/452 sprites, **+57 % packed size**, and **`<FULLSIZE>` lost on 50 `selectcube_*` sprites** (engine would draw them at 2× — a visible bug).
 3. **Palette alpha format**: across 451 shipping sprites the rule is exact — `.pal` words are either `(alpha5<<27) | ((c|c<<16) & 0x07E0F81F)` **with** `OCT_FLAG_ALPHA`, or plain `c|c<<16` **without** it. `pack_beta.build_pal` always writes the second form while `pack_codec` always sets the flag — a combination that occurs in no shipping pack; the engine's `OCT_BLEND_alpha` (`alpha = pe >> 27`) would read the red channel as alpha. Measured effect: every antialiased pixel flattened to opaque (2328/2328 on `t_welcome`, 9596/9596 on `selector_00`).
 4. Housekeeping blocking CI: sound basenames must be valid C identifiers (`Congratulations-007.wav` breaks `SND_*`); generated files tracked in app repos; unpinned deps; `oct-builder/scripts` snapshot diverged; the `APP_VER(x,y,z)` parser fix lives only in the oct-builder copy.
@@ -27,15 +28,15 @@
 
 **Files:** `scripts/config.py` (pivot mode), `scripts/pack_codec.py` (`build_header` pivot maths), `scripts/pack.py` (pivot plumbing from csv/psl), `tests/test_pivot_parity.py` (new).
 
-- [ ] **Step 1: Write the failing parity test.** Build a fixture from the corpus: parse 10 representative sprites' pivots out of the golden `art/packed/*.raw` headers (offsets 4/8, floats) and their layer rects + markers from the golden `art/exported/*.csv`. Assert our packer reproduces each. Pick sprites spanning: marker-anchored (`ic_twist_00` — pinned in the study), own-rect fallback (a sprite from `eyes.psd`/`text.psd`, which have no `~pivot` layer), a `=num` sequence member, and a FULLSIZE one.
+- [x] **Step 1: Write the failing parity test.** Build a fixture from the corpus: parse 10 representative sprites' pivots out of the golden `art/packed/*.raw` headers (offsets 4/8, floats) and their layer rects + markers from the golden `art/exported/*.csv`. Assert our packer reproduces each. Pick sprites spanning: marker-anchored (`ic_twist_00` — pinned in the study), own-rect fallback (a sprite from `eyes.psd`/`text.psd`, which have no `~pivot` layer), a `=num` sequence member, and a FULLSIZE one.
 
-- [ ] **Step 2: Run it — expect failures** on the marker-anchored ones (LEGACY formula gives `(w-0.5, h-0.5)`).
+- [x] **Step 2: Run it — expect failures** on the marker-anchored ones (LEGACY formula gives `(w-0.5, h-0.5)`).
 
-- [ ] **Step 3: Implement.** Add `PivotMode.PSD`; the pivot source is the exporter's csv/psl records (`pack_psd.find_pivot_markers`/`pivot_for_layer` already exist from `1a50c1a` — reuse, don't duplicate). Wire `pack.py`'s existing `_load_sprite_pivots_from_csvs` path so a csv-carried pivot rect reaches `build_header` as `2*(centre − xy) − 0.5`. Default mode stays whatever keeps manifest-driven apps unchanged (full-color/manifest apps must not move a single byte — see Task 5's regression).
+- [x] **Step 3: Implement.** Add `PivotMode.PSD`; the pivot source is the exporter's csv/psl records (`pack_psd.find_pivot_markers`/`pivot_for_layer` already exist from `1a50c1a` — reuse, don't duplicate). Wire `pack.py`'s existing `_load_sprite_pivots_from_csvs` path so a csv-carried pivot rect reaches `build_header` as `2*(centre − xy) − 0.5`. Default mode stays whatever keeps manifest-driven apps unchanged (full-color/manifest apps must not move a single byte — see Task 5's regression).
 
-- [ ] **Step 4: Full-corpus proof.** Script it: export all 9 PSDs with our exporter, pack, then compare **every** sprite's packed pivot against the golden `.raw`. Target: **450/450 exact**. Report any residue with root cause.
+- [x] **Step 4: Full-corpus proof.** Script it: export all 9 PSDs with our exporter, pack, then compare **every** sprite's packed pivot against the golden `.raw`. Target: **450/450 exact**. Report any residue with root cause.
 
-- [ ] **Step 5: Commit** `feat(pack): PSD pivot markers - packed pivots match utils.exe`
+- [x] **Step 5: Commit** `feat(pack): PSD pivot markers - packed pivots match utils.exe`
 
 ### Task 2: `!pack.txt` support — palette buckets and per-group flags
 

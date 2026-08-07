@@ -42,7 +42,8 @@ from config import (
     HEADER_SIZE, MEDIAN_CUT_CHANNEL_WEIGHTS,
     PACKED_COLOR_MASK, PAL_DESCRIPTOR_SIZE, PAL_MAX_PALETTES,
     PAL_MAX_TOTAL_COLORS, PAL_TRANSPARENT_IDX, PALETTE_SIZES_TRIED,
-    PALETTE_SPRITE_NAME, PALETTE_TIERS_USABLE, PIVOT_HALFPIX,
+    PALETTE_SPRITE_NAME, PALETTE_TIERS_USABLE, PIVOT_FULLSIZE_SCALE,
+    PIVOT_HALFPIX,
     PIVOT_LOCAL_OFFSET, PIVOT_MODE, PIVOT_SCALE, PivotMode,
     PLACEHOLDER_SPRITE_NAME, PRESPLIT_MASK,
     R_MAX, RGB565_MASK, RLE_ENCODE, RLE_MAX_RUN, SpriteFlag, WORD_BITS,
@@ -876,11 +877,44 @@ def compute_legacy_local_pivot(w: int, h: int) -> tuple[float, float]:
     )
 
 
+def compute_psd_marker_pivot(layer_x: int, layer_y: int,
+                             pivot_rect: tuple[int, int, int, int],
+                             fullsize: bool = False) -> tuple[float, float]:
+    """Pivot value in the utils.exe / ``~pivot``-marker convention:
+
+        pivot = SCALE * (rect_centre - layer_xy) - PIVOT_HALFPIX
+
+    ``pivot_rect`` is the ``(x, y, w, h)`` psd.exe stored in the layer's PSL
+    pivot block: the ``~pivot`` marker blob that overlaps the layer, or the
+    layer's own rect when no marker does (see
+    :func:`pack_psd.pivot_for_layer`).
+
+    ``SCALE`` is the zoom the engine draws the sprite at — 2 for a normal
+    palette sprite, 1 for a ``<FULLSIZE>`` one.  Verified against all 450
+    packed sprites of the OCT_get_started corpus; the pinned example is
+    ``ic_twist_00``: layer (20, 20, 37x36), marker (37, 37, 2x2) -> (35.5, 35.5).
+
+    Note the own-rect fallback reduces to the LEGACY formula:
+    ``2 * (x + w/2 - x) - 0.5 == w - 0.5``.
+    """
+    px, py, pw, ph = pivot_rect
+    scale = PIVOT_FULLSIZE_SCALE if fullsize else PIVOT_SCALE
+    return (
+        scale * (px + pw / 2.0 - layer_x) - PIVOT_HALFPIX,
+        scale * (py + ph / 2.0 - layer_y) - PIVOT_HALFPIX,
+    )
+
+
 def compute_default_pivot(w: int, h: int,
                           atlas_x: int | None,
                           atlas_y: int | None) -> tuple[float, float]:
-    """Dispatch to the active pivot encoding selected by PIVOT_MODE."""
-    if PIVOT_MODE == PivotMode.LEGACY:
+    """Dispatch to the active pivot encoding selected by PIVOT_MODE.
+
+    PSD mode reaches here only when the sprite carries no marker data (no PSD
+    source, or a PSL without a pivot block); it then behaves exactly like
+    LEGACY, which is what keeps manifest-driven packs byte-identical.
+    """
+    if PIVOT_MODE in (PivotMode.LEGACY, PivotMode.PSD):
         return compute_legacy_local_pivot(w, h)
     if atlas_x is None or atlas_y is None:
         raise ValueError(
@@ -892,20 +926,32 @@ def build_header(w: int, h: int, symbol_bitness: int, offset_bitness: int,
                  pidx: int, flags: int,
                  atlas_x: int | None = None, atlas_y: int | None = None,
                  pivot_x: float | None = None, pivot_y: float | None = None,
+                 layer_x: int | None = None, layer_y: int | None = None,
+                 pivot_rect: tuple[int, int, int, int] | None = None,
                  num_pixels: int = 0, tags: int = 0, number: int = 0,
                  group: int = 0, sprite_type: int = 0, seq: int = 0, rate: int = 1,
                  bx: float = 0.0, by: float = 0.0,
                  bw: float = 0.0, bh: float = 0.0) -> bytes:
     """Build a 48-byte octBmp_t header (without PackerSizes).
 
-    Pivot is selected by config.PIVOT_MODE:
-      - PivotMode.LEGACY  -> (w - PIVOT_LOCAL_OFFSET, h - PIVOT_LOCAL_OFFSET)
-      - PivotMode.ATLAS   -> -(atlas_xy * PIVOT_SCALE + PIVOT_HALFPIX)
-    Callers may also pass pivot_x/pivot_y explicitly to bypass both modes
-    (used for the reserved 0.png placeholder and advanced test cases).
+    Pivot precedence:
+      1. explicit ``pivot_x`` / ``pivot_y`` (the reserved 0.png placeholder,
+         hand-tuned pivots carried in a CSV, tests);
+      2. ``pivot_rect`` + ``layer_x`` / ``layer_y`` when PIVOT_MODE is
+         PivotMode.PSD — the utils.exe marker formula, with the scale taken
+         from the FULLSIZE bit of ``flags``;
+      3. config.PIVOT_MODE's default:
+         - PivotMode.LEGACY / PSD -> (w - PIVOT_LOCAL_OFFSET, h - PIVOT_LOCAL_OFFSET)
+         - PivotMode.ATLAS        -> -(atlas_xy * PIVOT_SCALE + PIVOT_HALFPIX)
     """
     if pivot_x is None or pivot_y is None:
-        cpx, cpy = compute_default_pivot(w, h, atlas_x, atlas_y)
+        if (PIVOT_MODE == PivotMode.PSD and pivot_rect is not None
+                and layer_x is not None and layer_y is not None):
+            cpx, cpy = compute_psd_marker_pivot(
+                layer_x, layer_y, pivot_rect,
+                fullsize=bool(flags & SpriteFlag.FULLSIZE))
+        else:
+            cpx, cpy = compute_default_pivot(w, h, atlas_x, atlas_y)
         if pivot_x is None: pivot_x = cpx
         if pivot_y is None: pivot_y = cpy
 
@@ -959,6 +1005,9 @@ def pack_sprite(
     atlas_y: int | None = None,
     pivot_x: float | None = None,
     pivot_y: float | None = None,
+    layer_x: int | None = None,
+    layer_y: int | None = None,
+    pivot_rect: tuple[int, int, int, int] | None = None,
 ) -> bytes | None:
     """Pack an exported RGBA PNG into the WowCube packed format.
 
@@ -991,6 +1040,7 @@ def pack_sprite(
             w, h, symbol_bitness, offset_bitness, pidx, flags,
             atlas_x=atlas_x, atlas_y=atlas_y,
             pivot_x=pivot_x, pivot_y=pivot_y,
+            layer_x=layer_x, layer_y=layer_y, pivot_rect=pivot_rect,
         )
 
     # ── Vectorised pixel quantisation ──────────────────────────────────

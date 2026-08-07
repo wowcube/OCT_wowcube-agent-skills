@@ -51,6 +51,8 @@ from config import (
     PALETTE_SPRITE_NAME,
     PLACEHOLDER_SPRITE_NAME,
     PLACEHOLDER_SPRITE_PIVOT,
+    PSL_TYPE_ASSET,
+    SpriteFlag,
 )
 
 from pack_codec import (
@@ -69,6 +71,7 @@ from pack_psd import (
     generate_app_ids_h,
     normalize_layer_name,
     pack_maps,
+    parse_psl,
 )
 
 
@@ -296,6 +299,43 @@ def _load_sprite_pivots_from_csvs(exported_dir: str
     return sprite_pivots
 
 
+def _load_sprite_pivot_rects_from_psls(
+        exported_dir: str
+) -> dict[str, tuple[int, int, tuple[int, int, int, int]]]:
+    """Map png_name -> (layer_x, layer_y, pivot_rect) from the exported PSLs.
+
+    ``psd.exe`` (and :func:`pack_psd.export_psd_file_python`) stores, per layer,
+    the ``~pivot`` marker rect that overlaps it — falling back to the layer's
+    own rect when no marker does. ``utils.exe`` turns that into the octBmp_t
+    pivot; see :func:`pack_codec.compute_psd_marker_pivot`.
+
+    Only Assets-mode PSLs are read: ``-map`` PSLs leave the pivot block zeroed,
+    so a sprite listed in both (``ahover_00`` lives in ``ahover.psl`` and
+    ``ahover_src.psl``) must keep the Assets record whatever order the files
+    are visited in. Zero-area pivot blocks are dropped for the same reason.
+    """
+    rects: dict[str, tuple[int, int, tuple[int, int, int, int]]] = {}
+    for psl_file in sorted(Path(exported_dir).glob('*.psl')):
+        try:
+            psl_type, records = parse_psl(str(psl_file))
+        except Exception:
+            continue
+        if psl_type != PSL_TYPE_ASSET:
+            continue
+        for rec in records:
+            name = rec['name']
+            if not name:
+                continue                      # marker layer: no exported PNG
+            if rec['pivot_w'] <= 0 or rec['pivot_h'] <= 0:
+                continue                      # no pivot information
+            rects[name] = (
+                rec['x'], rec['y'],
+                (rec['pivot_x'], rec['pivot_y'],
+                 rec['pivot_w'], rec['pivot_h']),
+            )
+    return rects
+
+
 def _load_sprite_atlas_xy_from_csvs(exported_dir: str
                                     ) -> dict[str, tuple[int, int]]:
     """Map png_name → (atlas_x, atlas_y) extracted from every CSV.
@@ -368,8 +408,15 @@ def _phase_pack_sprites(
     map_skip_names: set[str],
     sprite_pivots: dict[str, tuple[float, float]],
     has_palette: bool,
+    sprite_pivot_rects: dict[str, tuple[int, int, tuple[int, int, int, int]]]
+    | None = None,
+    sprite_flags: dict[str, int] | None = None,
 ) -> int:
     """Pack every sprite PNG. Returns the number of per-sprite errors."""
+    if sprite_pivot_rects is None:
+        sprite_pivot_rects = {}
+    if sprite_flags is None:
+        sprite_flags = {}
     ok = skip = err = 0
     total_orig = total_packed = 0
 
@@ -420,22 +467,29 @@ def _phase_pack_sprites(
                 pidx = 1 if 'font' in name else 0
                 palette = palettes.get(pidx, next(iter(palettes.values())))
 
-            # Pivot precedence: CSV-provided per-sprite pivot wins,
-            # placeholder sprite uses its hard-coded pivot, otherwise
-            # build_header falls back to the default scheme. Re-use
-            # path (header_bytes != None) ignores pvx/pvy and keeps the
-            # existing pivot from the previous .ass.
+            # Pivot precedence: CSV-provided per-sprite pivot wins, then the
+            # placeholder sprite's hard-coded pivot, then the PSD ~pivot
+            # marker rect carried by the exporter's PSL (utils.exe parity),
+            # then build_header's default scheme. Re-use path
+            # (header_bytes != None) ignores all of it and keeps the existing
+            # pivot from the previous pack.
             pvx, pvy = sprite_pivots.get(name, (None, None))
             if name == PLACEHOLDER_SPRITE_NAME:
                 pvx, pvy = PLACEHOLDER_SPRITE_PIVOT
+
+            layer_x = layer_y = pivot_rect = None
+            if pvx is None and name in sprite_pivot_rects:
+                layer_x, layer_y, pivot_rect = sprite_pivot_rects[name]
 
             blob = pack_sprite(
                 str(fpath), palette,
                 header_bytes=header_bytes,
                 pidx=pidx,
+                flags=sprite_flags.get(name, int(SpriteFlag.ALPHA)),
                 symbol_bitness_override=sym_override,
                 pivot_x=pvx,
                 pivot_y=pvy,
+                layer_x=layer_x, layer_y=layer_y, pivot_rect=pivot_rect,
             )
             if blob is None:
                 skip += 1
@@ -768,9 +822,15 @@ def main() -> None:
     if sprite_pivots:
         print(f"  Loaded pivot data for {len(sprite_pivots)} sprites from CSVs")
 
+    sprite_pivot_rects = _load_sprite_pivot_rects_from_psls(args.exported_dir)
+    if sprite_pivot_rects:
+        print(f"  Loaded PSD pivot markers for {len(sprite_pivot_rects)} "
+              f"sprites from PSLs")
+
     sprite_errors = _phase_pack_sprites(
         args, files, sprite_assignments, palettes,
         map_skip_names, sprite_pivots, has_palette,
+        sprite_pivot_rects=sprite_pivot_rects,
     )
     if sprite_errors:
         # A sprite that failed to pack means a missing .raw in the container;

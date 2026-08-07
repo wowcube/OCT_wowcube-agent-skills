@@ -209,28 +209,40 @@ BMFONT_FIRST_PRINTABLE = 33      # skip control codes + space
 class PivotMode(IntEnum):
     """How the sprite pivot is stored in the octBmp_t header.
 
-    ATLAS  - utils.exe convention: pivot encodes the sprite's top-left
-             position on the PSD canvas, scaled and negated:
+    ATLAS  - pivot encodes the sprite's top-left position on the PSD canvas,
+             scaled and negated:
                  pivot = -(atlas_xy * PIVOT_SCALE + PIVOT_HALFPIX)
-    LEGACY - legacy psd.exe / hand-tuned convention: pivot is stored in the
-             sprite's own local pixel coordinates with a half-pixel offset:
+    LEGACY - hand-tuned convention: pivot is stored in the sprite's own local
+             pixel coordinates with a half-pixel offset:
                  pivot = (w - PIVOT_LOCAL_OFFSET, h - PIVOT_LOCAL_OFFSET)
              Matches the byte-exact layout of packed_old/.
+    PSD    - full utils.exe parity: the pivot is the ``~pivot`` marker rect
+             psd.exe attached to the layer, expressed relative to the layer
+             origin and scaled by the engine's draw zoom:
+                 pivot = SCALE * (rect_centre - layer_xy) - PIVOT_HALFPIX
+             with SCALE = PIVOT_SCALE (2) normally and PIVOT_FULLSIZE_SCALE
+             (1) for a <FULLSIZE> sprite, which the engine draws 1:1.
+             A sprite with no marker gets its own rect as the pivot rect,
+             which reduces exactly to the LEGACY formula — so PSD mode is a
+             strict superset of LEGACY and only differs where real marker
+             data exists.
     """
     ATLAS  = 0
     LEGACY = 1
+    PSD    = 2
 
 
-# Active pivot encoding mode for newly built headers. Switch to ATLAS only
-# when targeting the utils.exe-based runtime; the engine in this repo
-# expects LEGACY pivots.
-PIVOT_MODE = PivotMode.LEGACY
+# Active pivot encoding mode for newly built headers. PSD is the utils.exe
+# parity mode; with no marker data (manifest-driven / full-color packs, which
+# have no PSD sources at all) it produces byte-identical headers to LEGACY.
+PIVOT_MODE = PivotMode.PSD
 
 # Half-pixel offset used by the LEGACY pivot encoding (pivot points to the
 # sprite's bottom-right pixel center).
 PIVOT_LOCAL_OFFSET = 0.5
 
 PIVOT_SCALE    = 2               # utils.exe stores pivot * 2x zoom
+PIVOT_FULLSIZE_SCALE = 1         # <FULLSIZE> sprites are drawn 1:1, not 2x
 PIVOT_HALFPIX  = 0.5             # + half-pixel offset (used by ATLAS mode)
 NUMBER_FIELD_MASK = 0x7FFF       # 15-bit Number field in octPlace_t
 BYTES_PER_RGBA  = 4              # RGBA PNG container stride
