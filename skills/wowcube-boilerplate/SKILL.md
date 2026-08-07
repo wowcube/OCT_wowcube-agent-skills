@@ -427,3 +427,19 @@ python <workspace>/OCT_wowcube-agent-skills/scripts/pack.py \
 `build_pipeline.py pack`, which takes the PNGs from `<workspace>/art/`,
 atlases them into a throwaway PSD internally, and runs `pack.py` itself; see
 `cube_asset-builder` Step 4.)
+
+**Legacy apps with an `art/!pack.txt`.** Hand-authored apps ported from the
+`psd.exe`+`utils.exe` toolchain ship a `!pack.txt` that declares one palette
+per block — the entry count, filename globs, and per-block tags
+(`<FULLSIZE> <ALPHA> <OPAQUE> <ADD> <BG> <BUMP> <DUDV> <REFL>`). `pack.py`
+auto-detects `<art-dir>/!pack.txt` and packs to it: one palette per block at
+exactly the declared size, symbol bitness `ceil(log2(size))`, and the block's
+tags OR'd into every member sprite's header flags. Point it elsewhere with
+`--pack-config <path>`, or opt out with `--no-pack-config` to fall back to the
+auto median-cut grouping.
+
+**Precedence: `--manifest` wins.** When a manifest is given, any `!pack.txt`
+next to it is ignored (with a printed note) — the manifest is the newer,
+richer spec and manifest-driven apps must not change behaviour because a
+legacy config file happens to sit in `art/`. An explicit `--pack-config` is
+still honoured alongside a manifest, for the deliberate mixed case.

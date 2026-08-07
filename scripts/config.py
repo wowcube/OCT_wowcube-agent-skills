@@ -40,12 +40,21 @@ HDR_OFF_RATE          = 47       # int8
 # ─────────────────────────────────────────────────────────────────────────────
 
 class SpriteFlag(IntFlag):
-    """octBmp_t Flags byte."""
+    """octBmp_t Flags byte.
+
+    Bit values 0x10/0x20/0x40 were read back out of ``utils.exe`` by packing a
+    probe sprite tagged ``<BUMP>`` / ``<DUDV>`` / ``<REFL>`` in ``!pack.txt``
+    and inspecting octBmp_t offset 44; the palette codec does not use them,
+    but ``!pack.txt`` can set them (see :mod:`packtxt`).
+    """
     NONE     = 0
     ALPHA    = 1 << 0
     FULLSIZE = 1 << 1
     ADDITIVE = 1 << 2
     BG       = 1 << 3
+    BUMP     = 1 << 4
+    DUDV     = 1 << 5
+    REFL     = 1 << 6
 
 
 class PlaceFlag(IntFlag):
@@ -182,6 +191,40 @@ PALETTE_SPRITE_NAME     = 'pal'
 
 DEFAULT_ASSET_NAME = 'assets'
 MAP_FILENAME_PREFIX = 'map_'
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# !pack.txt — the legacy utils.exe palette-bucket config (see packtxt.py)
+# ─────────────────────────────────────────────────────────────────────────────
+
+PACK_TXT_FILENAME = '!pack.txt'
+
+# Tag -> flag bits. Measured by packing a probe sprite carrying each tag with
+# the reference utils.exe and reading octBmp_t offset 44 back.
+PACK_TXT_TAG_FLAGS: dict[str, 'SpriteFlag'] = {
+    '<FULLSIZE>': SpriteFlag.FULLSIZE,
+    '<ADD>':      SpriteFlag.ADDITIVE,
+    '<BG>':       SpriteFlag.BG,
+    '<BUMP>':     SpriteFlag.BUMP,
+    '<DUDV>':     SpriteFlag.DUDV,
+    '<REFL>':     SpriteFlag.REFL,
+}
+# These two do not set a bit of their own — they override the auto-detection.
+PACK_TXT_TAG_ALPHA  = '<ALPHA>'
+PACK_TXT_TAG_OPAQUE = '<OPAQUE>'
+
+# utils.exe's per-group ALPHA auto-detection. A pixel is invisible at or below
+# TRANSPARENT_MAX_ALPHA and counts as fully opaque at or above OPAQUE_MIN_ALPHA
+# ("AA-tolerance: N/M semi-transparent pixels forced opaque"); the group gets
+# OCT_FLAG_ALPHA when the remaining semi-transparent share of the *visible*
+# pixels is STRICTLY above ENABLE_RATIO ("Alpha enabled: N/M").
+#
+# All three were pinned by binary-searching the reference utils.exe with
+# synthetic sprites: alpha 8 is still invisible and 9 is not; 229 is still
+# anti-aliased and 230 is not; 1500/10000 stays opaque and 1501/10000 does not.
+PACK_TXT_TRANSPARENT_MAX_ALPHA = 8
+PACK_TXT_OPAQUE_MIN_ALPHA      = 230
+PACK_TXT_ALPHA_ENABLE_RATIO    = 0.15
 
 
 # ─────────────────────────────────────────────────────────────────────────────

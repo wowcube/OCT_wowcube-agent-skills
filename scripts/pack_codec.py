@@ -483,18 +483,24 @@ def snap_color(r5: int, g6: int, b5: int, a5: int,
 def extract_per_sprite_colors(
     file_list: Iterable[str],
     color_tolerance: int = 0,
+    skip_names: Iterable[str] | None = None,
 ) -> dict[str, set[tuple[int, int, int, int]]]:
     """Return the set of quantized colors each sprite uses.
+
+    ``skip_names`` defaults to the reserved ``pal``/``0`` sprites. The
+    ``!pack.txt`` path narrows it to ``pal`` only, because utils.exe does route
+    the reserved ``0`` placeholder through a real palette group.
 
     Vectorised via numpy.unique so large sheets process in milliseconds.
     """
     result: dict[str, set[tuple[int, int, int, int]]] = {}
+    skip = set(skip_names) if skip_names is not None \
+        else {PALETTE_SPRITE_NAME, PLACEHOLDER_SPRITE_NAME}
 
     for fpath in file_list:
         path = Path(fpath)
         name = path.stem
-        if name in (PALETTE_SPRITE_NAME, PLACEHOLDER_SPRITE_NAME) \
-                or path.suffix.lower() != '.png':
+        if name in skip or path.suffix.lower() != '.png':
             continue
         try:
             pixels = np.asarray(Image.open(fpath).convert('RGBA')).reshape(-1, 4)
@@ -695,6 +701,84 @@ def build_grouped_palettes(
               f"{len(group.sprite_names)} sprites, {group.num_unique} unique colors")
 
     return sprite_assignments, all_palette_data
+
+
+def build_config_palettes(
+    file_list: list[str],
+    config,
+    color_tolerance: int = 0,
+) -> tuple[dict[str, tuple[int, EncoderPalette, int]],
+           list[tuple[list[tuple[int, int, int, int]], int]],
+           list[str]]:
+    """Build one palette per ``!pack.txt`` block instead of auto-grouping.
+
+    ``config`` is a :class:`packtxt.PackConfig`. Every block becomes exactly
+    one palette of ``block.max_colors`` entries (index 0 = transparent), which
+    is what ``utils.exe`` does; blocks are NOT merged, because their identity
+    and ordering are the parity contract with the legacy pack (the block index
+    is the Pidx written into every member sprite's header).
+
+    Returns ``(sprite_assignments, all_palette_data, unmatched_names)``.
+    ``utils.exe`` skips a sprite that matches no block ("Unmatched palette %s,
+    skipped"); the caller decides what to do with the third element.
+    """
+    print("  Scanning sprites for per-sprite color analysis...")
+    sprite_colors = extract_per_sprite_colors(
+        file_list, color_tolerance=color_tolerance,
+        skip_names={PALETTE_SPRITE_NAME})
+
+    groups, unmatched = config.group_sprites(sorted(sprite_colors))
+
+    sprite_assignments: dict[str, tuple[int, EncoderPalette, int]] = {}
+    all_palette_data: list[tuple[list[tuple[int, int, int, int]], int]] = []
+
+    print(f"  {len(config.buckets)} palette group(s) from "
+          f"{config.path.name if config.path else '!pack.txt'}:\n")
+
+    for bucket in config.buckets:
+        members = groups.get(bucket.index, [])
+        pal_size = bucket.max_colors
+        usable = pal_size - 1
+        sym_bits = symbol_bitness_for_size(pal_size)
+
+        unique_colors: set[tuple[int, int, int, int]] = set()
+        for name in members:
+            unique_colors |= sprite_colors.get(name, set())
+
+        colors = list(unique_colors)
+        if len(colors) > usable:
+            pal_q = median_cut([(c, 1) for c in colors], usable)
+        else:
+            pal_q = colors
+
+        palette_rgba = [(0, 0, 0, 0)] + [expand_565_a5(*q) for q in pal_q]
+        palette_rgba = _pad_palette_to_size(palette_rgba, pal_size)
+
+        encoder_pal = EncoderPalette(palette_rgba, has_alpha=True)
+        all_palette_data.append((palette_rgba, sym_bits))
+        for name in members:
+            sprite_assignments[name] = (bucket.index, encoder_pal, sym_bits)
+
+        tags = ''.join(bucket.tags)
+        print(f"    [{bucket.index:02}] {pal_size:>4} colors ({sym_bits}-bit), "
+              f"{len(members):>3} sprites, {len(unique_colors)} unique colors  "
+              f"{bucket.patterns[0]}{' ' + tags if tags else ''}")
+
+    if unmatched:
+        print(f"  WARNING: {len(unmatched)} sprite(s) match no !pack.txt mask "
+              f"and will be packed into group 0: {', '.join(unmatched[:8])}"
+              + (" ..." if len(unmatched) > 8 else ""))
+
+    total_colors = sum(len(c) for c, _ in all_palette_data)
+    if len(all_palette_data) > PAL_MAX_PALETTES:
+        print(f"  WARNING: {len(all_palette_data)} palettes exceeds the engine "
+              f"limit of {PAL_MAX_PALETTES}")
+    if total_colors > PAL_MAX_TOTAL_COLORS:
+        print(f"  NOTE: {total_colors} palette colors exceed the legacy "
+              f"pal.png budget of {PAL_MAX_TOTAL_COLORS}; the beta container "
+              f"stores one .pal per group and is unaffected")
+
+    return sprite_assignments, all_palette_data, unmatched
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1036,6 +1120,12 @@ def pack_sprite(
             header[HDR_OFF_PIDX] = pidx
         header = bytes(header)
     else:
+        # The palette group's own bitness also governs a freshly built header —
+        # otherwise every sprite is written at the 8-bit default no matter how
+        # small its palette is, which is what made the corpus pack 26 % larger
+        # than utils.exe's.
+        if symbol_bitness_override is not None:
+            symbol_bitness = symbol_bitness_override
         header = build_header(
             w, h, symbol_bitness, offset_bitness, pidx, flags,
             atlas_x=atlas_x, atlas_y=atlas_y,

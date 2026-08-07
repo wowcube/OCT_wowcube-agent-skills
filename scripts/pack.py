@@ -59,6 +59,7 @@ from pack_codec import (
     EncoderPalette,
     blob_to_packed_png,
     build_auto_palette,
+    build_config_palettes,
     build_grouped_palettes,
     load_palette_for_encoding,
     pack_sprite,
@@ -118,6 +119,15 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument('--app-name', default=None,
                    help='App name for the beta ids header filename '
                         '(<app-name>_ids.h; default: the --beta-app-dir folder name)')
+    p.add_argument('--pack-config', default=None,
+                   help='Path to a legacy !pack.txt (palette buckets + '
+                        '<FULLSIZE>/<ALPHA>/... tags). Auto-detected as '
+                        '<art-dir>/!pack.txt when present. Ignored when '
+                        '--manifest is given: the manifest is the newer, '
+                        'richer source and always wins.')
+    p.add_argument('--no-pack-config', action='store_true',
+                   help='Ignore any !pack.txt and use the auto median-cut '
+                        'palette grouping instead')
     p.add_argument('--manifest', default=None,
                    help='Path to plans/<game>_assets.json. Sprites with '
                         'color=="full" are RAW565-encoded into the beta '
@@ -186,7 +196,46 @@ def _phase_export(args: argparse.Namespace, asset_names_set: set[str]) -> None:
     print()
 
 
-def _phase_palette(args: argparse.Namespace, files: list[Path]
+def _resolve_pack_config(args: argparse.Namespace):
+    """Resolve the ``!pack.txt`` that drives palette buckets, if any.
+
+    Precedence (documented in the CLI help too):
+
+      1. ``--manifest`` — the manifest is the modern asset spec and wins
+         outright; a ``!pack.txt`` sitting next to it is ignored, so
+         manifest-driven apps are untouched by this feature.
+      2. ``--no-pack-config`` — explicit opt-out, back to auto-grouping.
+      3. ``--pack-config <path>`` — explicit config.
+      4. ``<art-dir>/!pack.txt`` — auto-detected for legacy apps.
+    """
+    from packtxt import find_pack_txt, parse_pack_txt
+
+    if args.no_pack_config:
+        return None
+    if args.manifest and not args.pack_config:
+        auto = find_pack_txt(args.art_dir)
+        if auto is not None:
+            print(f"  NOTE: {auto} ignored - the manifest ({args.manifest}) "
+                  f"takes precedence over !pack.txt")
+        return None
+
+    path = Path(args.pack_config) if args.pack_config \
+        else find_pack_txt(args.art_dir)
+    if path is None:
+        return None
+    if not path.is_file():
+        print(f"Error: --pack-config {path} not found")
+        sys.exit(1)
+
+    config = parse_pack_txt(path)
+    print(f"  Using palette config {path} "
+          f"({len(config.buckets)} palette groups, "
+          f"exported dir '{config.exported_dir}')")
+    return config
+
+
+def _phase_palette(args: argparse.Namespace, files: list[Path],
+                   pack_config=None
                    ) -> tuple[dict[str, tuple[int, EncoderPalette, int]] | None,
                               dict[int, EncoderPalette],
                               bool]:
@@ -195,11 +244,31 @@ def _phase_palette(args: argparse.Namespace, files: list[Path]
     sprite_assignments: dict[str, tuple[int, EncoderPalette, int]] | None = None
 
     pal_path = args.pal or os.path.join(args.packed_dir, DEFAULT_PALETTE_FILENAME)
-    has_palette = args.build_palette or os.path.exists(pal_path)
+    has_palette = args.build_palette or os.path.exists(pal_path) \
+        or pack_config is not None
 
     if not has_palette and (args.build_maps or args.build_ids):
         print("No palette found, skipping sprite packing (maps/ids only).")
         return None, palettes, False
+
+    # !pack.txt replaces the auto median-cut grouping entirely: one palette per
+    # block, sized exactly as the block declares. An already-built pal.png is
+    # still reused unless --build-palette asks for a rebuild.
+    if pack_config is not None and (args.build_palette
+                                    or not os.path.exists(pal_path)):
+        print("=== Building palettes from !pack.txt buckets ===")
+        sprite_assignments, all_palette_data, _unmatched = build_config_palettes(
+            [str(f) for f in files], pack_config,
+            color_tolerance=args.color_tolerance,
+        )
+        os.makedirs(args.output_dir, exist_ok=True)
+        pal_out = os.path.join(args.output_dir, DEFAULT_PALETTE_FILENAME)
+        save_palette_png([colors for colors, _ in all_palette_data],
+                         pal_out, has_alpha=True)
+        palettes = {i: EncoderPalette(colors, has_alpha=True)
+                    for i, (colors, _sym) in enumerate(all_palette_data)}
+        print()
+        return sprite_assignments, palettes, True
 
     if args.build_palette:
         file_strs = [str(f) for f in files]
@@ -805,7 +874,9 @@ def main() -> None:
             else sorted(Path(args.exported_dir).glob('*.png'))
     os.makedirs(args.output_dir, exist_ok=True)
 
-    sprite_assignments, palettes, has_palette = _phase_palette(args, files)
+    pack_config = _resolve_pack_config(args)
+    sprite_assignments, palettes, has_palette = _phase_palette(
+        args, files, pack_config=pack_config)
 
     # Reserved placeholder: BMP_0 / BMP_none - must always exist in slot 0.
     # Guarantee 0.png in art_dir (auto-create if missing) and mirror it
@@ -827,10 +898,27 @@ def main() -> None:
         print(f"  Loaded PSD pivot markers for {len(sprite_pivot_rects)} "
               f"sprites from PSLs")
 
+    # !pack.txt decides the per-group flag byte (<FULLSIZE>/<BG>/<ADD>/... plus
+    # the ALPHA bit, forced by <ALPHA>/<OPAQUE> or auto-detected from the
+    # group's anti-aliasing). These must reach pack_sprite BEFORE the header is
+    # built: FULLSIZE also halves the pivot scale.
+    sprite_flags: dict[str, int] = {}
+    if pack_config is not None:
+        from packtxt import resolve_sprite_flags
+        sprite_flags = resolve_sprite_flags(
+            pack_config, args.exported_dir, [f.stem for f in files])
+        n_full = sum(1 for v in sprite_flags.values()
+                     if v & int(SpriteFlag.FULLSIZE))
+        n_alpha = sum(1 for v in sprite_flags.values()
+                      if v & int(SpriteFlag.ALPHA))
+        print(f"  !pack.txt flags: {len(sprite_flags)} sprites "
+              f"({n_alpha} ALPHA, {n_full} FULLSIZE)")
+
     sprite_errors = _phase_pack_sprites(
         args, files, sprite_assignments, palettes,
         map_skip_names, sprite_pivots, has_palette,
         sprite_pivot_rects=sprite_pivot_rects,
+        sprite_flags=sprite_flags,
     )
     if sprite_errors:
         # A sprite that failed to pack means a missing .raw in the container;
