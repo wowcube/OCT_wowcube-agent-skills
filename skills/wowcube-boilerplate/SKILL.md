@@ -438,6 +438,12 @@ tags OR'd into every member sprite's header flags. Point it elsewhere with
 `--pack-config <path>`, or opt out with `--no-pack-config` to fall back to the
 auto median-cut grouping.
 
+`<ALPHA>` is the one tag that is not a plain OR: it does not force the bit on,
+it lowers `utils.exe`'s anti-aliasing threshold from 15 % to a strict zero, so
+a block whose alpha channel is purely binary still packs OPAQUE. `<OPAQUE>` is
+the only unconditional override. See `packtxt.py` and §12.3 of
+`docs/part3-parity-report.md`.
+
 **Legacy apps with an `art/!pack.bat` — that file wins over every filename
 heuristic.** The artist's batch file is not documentation, it is the exact
 `psd.exe`/`utils.exe` command line the shipped container was built from, and
@@ -464,6 +470,20 @@ app with no `!pack.bat` (every scaffolded/AI-generated app) is unaffected.
 `octObject_t.Name == NAME_score`. It emits no PNG and no asset record — only a
 `NAME_` constant and a place with `BmpIdx = 0`. A `$` *after* a base name
 (`hero$player`) still annotates a real sprite.
+
+**`!marker` suffixes and the layer colour swatch both carry data.** A PSD
+layer name may end in one or more `!token`s; `psd.exe` copies them verbatim
+into the PSL and `utils.exe` interprets them. `!rateN` sets `octBmp_t.Rate`,
+the frame-duration multiplier. `!font`/`!fontN` (and its `!label` synonym)
+makes a map place a text label. `!pingpong`, `!loop`, `!once`, `!hide`,
+`!pause`, `!twistable`, `!fliph`, `!flipv`, `!ccw`, `!cwcw`, `!cw` set
+`octPlace_t` flag bits. Anything else — `!full_size`, for instance — is inert.
+
+The bigger source of `Rate` is not a marker at all: a layer's **Photoshop
+colour swatch** becomes `Rate = colour + 1` for both sprites and places. In
+`OCT_ladybug` that is 66 of the 70 non-default rates. An artist recolouring a
+layer group in the Layers panel is therefore changing the animation speed.
+Full table with measurements: §12 of `docs/part3-parity-report.md`.
 
 **Precedence: `--manifest` wins.** When a manifest is given, any auto-detected
 `!pack.txt` next to it is ignored (with a printed note) — the manifest is the

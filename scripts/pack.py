@@ -44,6 +44,7 @@ except ImportError:
     sys.exit(1)
 
 from config import (
+    BMP_RATE_DEFAULT,
     DEFAULT_ASSET_NAME, DEFAULT_PALETTE_FILENAME,
     DEFAULT_QUALITY_THRESHOLD,
     HDR_OFF_COMPRESSION, HDR_OFF_PIDX, HDR_OFF_WIDTH,
@@ -53,6 +54,7 @@ from config import (
     PLACEHOLDER_SPRITE_PIVOT,
     PSL_TYPE_ASSET,
     PSL_TYPE_FONT,
+    PSL_TYPE_MAP,
     RESERVED_MAP_NAMES,
     SpriteFlag,
 )
@@ -569,6 +571,41 @@ def _load_sprite_pivot_rects_from_psls(
     return rects
 
 
+def _load_sprite_rates_from_psls(exported_dir: str) -> dict[str, int]:
+    """Map png_name -> octBmp_t Rate, from the exported Assets/Font PSLs.
+
+    ``Rate`` is the per-frame duration multiplier: ``oct_scene.h`` advances a
+    sequence every ``bmp->Rate * spr->FrameRate``, so a sprite that loses it
+    plays back at the raw frame rate — 4-10x too fast for ``OCT_ladybug``'s
+    animations. Two independent sources, both carried in the PSL and both
+    honoured by ``utils.exe``:
+
+      * an explicit ``!rateN`` marker on the layer name (``pat_00!rate10``);
+      * otherwise the layer's Photoshop colour swatch, ``sheet_colour + 1``
+        (:func:`config.rate_from_layer_mark`). This is the majority source —
+        66 of ladybug's 70 non-default rates are a yellow (4) or green (5)
+        label on the layer, with no marker anywhere in the name.
+
+    Map PSLs are skipped: ``octPlace_t.Rate`` is the same idea but a different
+    field, filled by :func:`pack_psd.psl_to_octplace` (and reused as the label
+    alignment for text places).
+    """
+    rates: dict[str, int] = {}
+    for psl_file in sorted(Path(exported_dir).glob('*.psl')):
+        try:
+            psl_type, records = parse_psl(str(psl_file))
+        except Exception:
+            continue
+        if psl_type == PSL_TYPE_MAP:
+            continue
+        for rec in records:
+            name = rec['name']
+            if not name:
+                continue                      # marker layer: no exported PNG
+            rates[name] = rec['rate'] or rec.get('mark_rate', 1)
+    return rates
+
+
 def _load_font_metrics_from_psls(
         exported_dir: str
 ) -> dict[str, tuple[float, float, float, float]]:
@@ -676,6 +713,7 @@ def _phase_pack_sprites(
     | None = None,
     sprite_flags: dict[str, int] | None = None,
     font_metrics: dict[str, tuple[float, float, float, float]] | None = None,
+    sprite_rates: dict[str, int] | None = None,
 ) -> int:
     """Pack every sprite PNG. Returns the number of per-sprite errors."""
     if sprite_pivot_rects is None:
@@ -684,6 +722,8 @@ def _phase_pack_sprites(
         sprite_flags = {}
     if font_metrics is None:
         font_metrics = {}
+    if sprite_rates is None:
+        sprite_rates = {}
     ok = skip = err = 0
     total_orig = total_packed = 0
 
@@ -774,6 +814,7 @@ def _phase_pack_sprites(
                 pivot_y=pvy,
                 layer_x=layer_x, layer_y=layer_y, pivot_rect=pivot_rect,
                 bw=bw, bh=bh,
+                rate=sprite_rates.get(name, BMP_RATE_DEFAULT),
             )
             if blob is None:
                 skip += 1
@@ -1158,10 +1199,16 @@ def main() -> None:
         print(f"  Loaded BMFont metrics (pivot + advance + line height) for "
               f"{len(font_metrics)} glyphs from PSLs")
 
+    sprite_rates = _load_sprite_rates_from_psls(args.exported_dir)
+    n_rated = sum(1 for v in sprite_rates.values() if v != BMP_RATE_DEFAULT)
+    if n_rated:
+        print(f"  Frame rates: {n_rated} of {len(sprite_rates)} sprites carry "
+              f"a non-default Rate (!rateN marker or layer colour)")
+
     # !pack.txt decides the per-group flag byte (<FULLSIZE>/<BG>/<ADD>/... plus
-    # the ALPHA bit, forced by <ALPHA>/<OPAQUE> or auto-detected from the
-    # group's anti-aliasing). These must reach pack_sprite BEFORE the header is
-    # built: FULLSIZE also halves the pivot scale.
+    # the ALPHA bit, decided per group from its pooled anti-aliasing against
+    # the block's <ALPHA>/<OPAQUE> threshold). These must reach pack_sprite
+    # BEFORE the header is built: FULLSIZE also halves the pivot scale.
     sprite_flags: dict[str, int] = {}
     if pack_config is not None:
         from packtxt import resolve_sprite_flags
@@ -1180,6 +1227,7 @@ def main() -> None:
         sprite_pivot_rects=sprite_pivot_rects,
         sprite_flags=sprite_flags,
         font_metrics=font_metrics,
+        sprite_rates=sprite_rates,
     )
     if sprite_errors:
         # A sprite that failed to pack means a missing .raw in the container;

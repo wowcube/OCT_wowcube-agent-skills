@@ -58,9 +58,25 @@ class SpriteFlag(IntFlag):
 
 
 class PlaceFlag(IntFlag):
-    """octPlace_t Flags word."""
-    NONE   = 0
-    LOOPED = 0x0002
+    """octPlace_t Flags word.
+
+    Every bit below was read back out of ``utils.exe``: a synthetic map PSL
+    carrying one place per marker token was packed and the resulting
+    ``octPlace_t.Flags`` word read at offset 20 (see
+    :data:`MAP_MARKER_PLACE_FLAGS`). They line up one-for-one with the
+    bitfield ``oct_types.h`` declares.
+    """
+    NONE      = 0
+    TWISTABLE = 0x0001
+    LOOPED    = 0x0002
+    HIDDEN    = 0x0004
+    PAUSED    = 0x0008
+    PINGPONG  = 0x0010
+    FLIPH     = 0x0080
+    FLIPV     = 0x0100
+    ROT_CCW   = 0x0200          # Rot = 1  (90 deg counter-clockwise)
+    ROT_180   = 0x0400          # Rot = 2
+    ROT_CW    = 0x0600          # Rot = 3  (90 deg clockwise)
 
 
 # octPlace_t's bitfield, LSB first (oct_types.h)::
@@ -86,6 +102,99 @@ OCT_PLACE_FONT_MAX = 3
 # ALIGN_CENTER == 0 (oct_shared.h), which is what all 64 legacy label places
 # carry -- labels must not inherit OCT_PLACE_RATE_DEFAULT.
 OCT_PLACE_LABEL_ALIGN_DEFAULT = 0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# `!marker` grammar (PSD layer name suffixes)
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# A PSD layer name is  <base>[$name][%type][&group][#tag][=num][!marker]...  .
+# `psd.exe` does NOT interpret the `!marker` tokens: it copies each one
+# verbatim into the record's MARKER SLOT (PSL_RATE_OFFSET), one token per
+# PSL_MARKER_CELL_SIZE-byte cell, in source order. `utils.exe` is what gives
+# them meaning, and it means different things in Assets mode and Map mode.
+#
+# The two tables below are the complete vocabulary, read out of `utils.exe`'s
+# own string pool and then confirmed by packing a synthetic PSL with one
+# record per token and reading the produced `.raw` back:
+#
+#   Assets mode -- only `rateN` does anything at all. `pause`, `font*`,
+#   `label*`, `pingpong`, `hide`, and any unknown token leave the octBmp_t
+#   byte-identical to a record with an empty slot.
+#
+#   Map mode -- the table below. `cw` is real even though it is only the tail
+#   of the pooled string "cwcw"; it sets Rot = 3.
+#
+# Anything not in either table is inert: `utils.exe` silently ignores it.
+# `!full_size` is the notable example -- it appears on 12 ladybug layers and
+# is a comment to the artist, not a packer instruction (the FULLSIZE flag
+# comes from the `<FULLSIZE>` bucket tag in `!pack.txt`).
+
+PSL_MARKER_CELL_SIZE = 16        # bytes per token inside the marker slot
+PSL_MARKER_MAX       = 2         # PSL_RATE_SIZE / PSL_MARKER_CELL_SIZE
+
+MARKER_RATE_PREFIX = 'rate'      # `rateN` -> Rate = N (both modes)
+
+# Map-mode marker -> the octPlace_t flag bits it sets.
+MAP_MARKER_PLACE_FLAGS: dict[str, int] = {
+    'twistable': 0x0001,
+    'loop':      0x0002,
+    'once':      0x0000,         # explicit "not looped"; sets nothing
+    'hide':      0x0004,
+    'pause':     0x0008,
+    'pingpong':  0x0010,
+    'fliph':     0x0080,
+    'flipv':     0x0100,
+    'ccw':       0x0200,
+    'cwcw':      0x0400,
+    'cw':        0x0600,
+}
+
+# Map-mode marker -> the Label (font) index it selects. A label place also
+# forces Rate to OCT_PLACE_LABEL_ALIGN_DEFAULT, which is why it is kept apart
+# from MAP_MARKER_PLACE_FLAGS.
+MAP_MARKER_LABEL: dict[str, int] = {
+    'font': 1, 'font1': 1, 'font2': 2, 'font3': 3,
+    'label': 1, 'label1': 1, 'label2': 2, 'label3': 3,
+}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Layer mark -> Rate
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# `psd.exe` writes the Photoshop LAYER SHEET COLOUR (the `lclr` tagged block,
+# the colour swatch in the Layers panel: 0 none, 1 red, 2 orange, 3 yellow,
+# 4 green, 5 blue, 6 violet, 7 gray) into bits 8..15 of the PSL LayerMark
+# field, on top of the 0xFF000000 base. `utils.exe` turns that into
+#
+#     Rate = sheet_colour + 1
+#
+# for BOTH octBmp_t.Rate and octPlace_t.Rate, and an explicit `!rateN` marker
+# overrides it. Measured by packing a PSL whose eight records carry marks
+# 0xFF000000..0xFF000700: the rates came back 1..8, and the record that also
+# carried `rate10` came back 10.
+#
+# This is not cosmetic. `oct_scene.h` makes the effective frame delay
+# `bmp->Rate * spr->FrameRate`, so a group that loses its colour label plays
+# 4-10x too fast. In `OCT_ladybug` 66 of the 70 non-default rates come from
+# the sheet colour alone (yellow -> 4, green -> 5) and only 4 from `!rate10`.
+LAYER_MARK_BASE        = 0xFF000000
+LAYER_MARK_COLOR_SHIFT = 8
+LAYER_MARK_COLOR_MASK  = 0xFF
+
+
+def layer_mark_of(sheet_color: int) -> int:
+    """PSL LayerMark int32 for a Photoshop sheet colour (0 = no label)."""
+    value = LAYER_MARK_BASE | ((sheet_color & LAYER_MARK_COLOR_MASK)
+                               << LAYER_MARK_COLOR_SHIFT)
+    return value - (1 << 32) if value >= (1 << 31) else value
+
+
+def rate_from_layer_mark(layer_mark: int) -> int:
+    """``utils.exe``'s default Rate for a record: sheet colour + 1."""
+    return ((layer_mark >> LAYER_MARK_COLOR_SHIFT)
+            & LAYER_MARK_COLOR_MASK) + 1
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -208,6 +317,10 @@ PSL_FONT_RATE_STRING       = 'letter'   # what psd.exe puts in the rate slot
 OCT_PLACE_SIZE         = 28
 OCT_PLACE_RATE_DEFAULT = 1
 
+# octBmp_t.Rate for an unlabelled layer with no `!rateN` marker: sheet colour
+# 0 -> 1 (see rate_from_layer_mark). One frame per spr->FrameRate tick.
+BMP_RATE_DEFAULT = 1
+
 DEFAULT_LAYER_MARK = -16777216   # 0xFF000000 as signed int32
 
 
@@ -252,7 +365,8 @@ PACK_TXT_TAG_FLAGS: dict[str, 'SpriteFlag'] = {
     '<DUDV>':     SpriteFlag.DUDV,
     '<REFL>':     SpriteFlag.REFL,
 }
-# These two do not set a bit of their own — they override the auto-detection.
+# These two do not set a bit of their own — they move the auto-detection's
+# threshold (see PACK_TXT_ALPHA_TAGGED_RATIO below).
 PACK_TXT_TAG_ALPHA  = '<ALPHA>'
 PACK_TXT_TAG_OPAQUE = '<OPAQUE>'
 
@@ -268,6 +382,20 @@ PACK_TXT_TAG_OPAQUE = '<OPAQUE>'
 PACK_TXT_TRANSPARENT_MAX_ALPHA = 8
 PACK_TXT_OPAQUE_MIN_ALPHA      = 230
 PACK_TXT_ALPHA_ENABLE_RATIO    = 0.15
+
+# `<ALPHA>` does NOT force the bit on -- it lowers the same threshold to zero,
+# so the group gets OCT_FLAG_ALPHA iff it has AT LEAST ONE semi-transparent
+# pixel. A `<ALPHA>` group whose alpha channel is purely binary is packed
+# OPAQUE, and utils.exe prints no decision line for it at all.
+#
+# Measured on OCT_ladybug: `eat_*` (0/29910 semi), `hit_*` (0/23834) and
+# `reboun*` (0/4266) are all tagged `<FULLSIZE><ALPHA>` in art/!pack_pal.txt,
+# yet utils.exe's own bucket listing prints them "FULLSIZE" with no ALPHA and
+# the shipped container gives all 14 of their sprites Flags = 0x02. The other
+# ten `<ALPHA>` buckets have semi > 0 and get 0x03 whatever their ratio --
+# `bonus0` enables alpha at 0.9 %, far under the 15 % auto threshold, while
+# untagged `splash_nam*` is forced opaque at 7.8 %.
+PACK_TXT_ALPHA_TAGGED_RATIO = 0.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────

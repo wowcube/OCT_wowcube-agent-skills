@@ -39,7 +39,8 @@ from config import (
     B_MAX, BYTES_PER_RGBA,
     DEFAULT_OFFSET_BITNESS, DEFAULT_QUALITY_THRESHOLD, G_MAX,
     HDR_OFF_BBOX, HDR_OFF_PIVOT_X,
-    HDR_OFF_COMPRESSION, HDR_OFF_NUM_PIXELS, HDR_OFF_PIDX, HDR_OFF_WIDTH,
+    HDR_OFF_COMPRESSION, HDR_OFF_NUM_PIXELS, HDR_OFF_PIDX, HDR_OFF_RATE,
+    HDR_OFF_WIDTH,
     HEADER_SIZE, MEDIAN_CUT_CHANNEL_WEIGHTS,
     PACKED_COLOR_MASK, PAL_DESCRIPTOR_SIZE, PAL_MAX_PALETTES,
     PAL_MAX_TOTAL_COLORS, PAL_TRANSPARENT_IDX, PALETTE_SIZES_TRIED,
@@ -1155,6 +1156,7 @@ def pack_sprite(
     pivot_rect: tuple[int, int, int, int] | None = None,
     bw: float = 0.0,
     bh: float = 0.0,
+    rate: int = 1,
 ) -> bytes | None:
     """Pack an exported RGBA PNG into the WowCube packed format.
 
@@ -1181,6 +1183,10 @@ def pack_sprite(
             compression = (offset_bitness << 8) | symbol_bitness
             struct.pack_into('<I', header, HDR_OFF_COMPRESSION, compression)
             header[HDR_OFF_PIDX] = pidx
+        # A header reused from a previous pack may predate the layer-mark rate
+        # rule (or the artist may have recoloured the layer since), and the PSL
+        # is authoritative — patch it in rather than shipping a stale multiplier.
+        struct.pack_into('<b', header, HDR_OFF_RATE, rate)
         header = bytes(header)
     else:
         # The palette group's own bitness also governs a freshly built header —
@@ -1194,7 +1200,7 @@ def pack_sprite(
             atlas_x=atlas_x, atlas_y=atlas_y,
             pivot_x=pivot_x, pivot_y=pivot_y,
             layer_x=layer_x, layer_y=layer_y, pivot_rect=pivot_rect,
-            bw=bw, bh=bh,
+            bw=bw, bh=bh, rate=rate,
         )
 
     # ── Vectorised pixel quantisation ──────────────────────────────────

@@ -575,21 +575,33 @@ def split_pal_entries(entries) -> tuple[list[int], list[int]]:
 
 def patch_palette_sprite(blob: bytes, *, pal_id: int, seq_id: int = 0,
                          extra_flags: int = 0) -> bytes:
-    """Convert a legacy packed-sprite blob into a beta one, payload untouched.
+    """Convert a packed-sprite blob from our intermediate layout to the beta
+    one, payload untouched.
 
-    The legacy octBmp_t (pack_codec.build_header) and the beta octBmp_t
-    (oct_types.h) are the same 48 bytes except for four fields:
+    :func:`pack_codec.build_header` writes an INTERMEDIATE header that keeps
+    the palette group and the sequence index inline, because nothing has
+    assigned asset ids yet at that point. This function is the seam that turns
+    it into the octBmp_t ``oct_types.h`` declares:
 
-        offset   legacy                     beta
+        offset   pack_codec.build_header    beta octBmp_t
         0..3     num_pixels (u32)           Pidx (u16) + Seq (u16)
         44       Flags (u8)                 Flags (u8)          (unchanged)
         45       Pidx (u8)                  Rate (i8)
         46       Seq (i8)                   Reserved = 0
         47       Rate (i8)                  Reserved = 0
 
-    Beta Pidx/Seq are ASSET IDS (index.bin record indices), not the legacy
-    palette-group / sibling-sprite indices, so the caller supplies them.
-    The legacy Rate byte is preserved by moving it into the beta slot.
+    Beta Pidx/Seq are ASSET IDS (index.bin record indices), not palette-group /
+    sibling-sprite indices, so the caller supplies them. The Rate byte is
+    preserved by moving it into the beta slot.
+
+    NOTE on the reference toolchain, measured rather than assumed: a golden
+    ``art/packed/*.raw`` written by ``utils.exe`` is ALREADY in the beta
+    layout — Pidx and Seq are asset ids at bytes 0..3 (``icon`` in ladybug
+    carries Pidx 1, the id of the ``ico*`` palette record) and Rate sits at
+    byte 45, with 46..47 zero. The three-column table above therefore
+    describes OUR intermediate format on the left, not ``utils.exe``'s output.
+    An earlier reading of byte 45 as "a Pidx placeholder that is 1 for every
+    golden sprite" was really the default Rate of 1.
 
     `extra_flags` ORs additional OCT_FLAG_* bits into the Flags byte @44 --
     the seam that lets manifest flags (fullsize/additive/bg) reach a palette

@@ -66,8 +66,8 @@ total size : 1666052 bytes, CRC32 0x58C97A88 recomputed OK
 | palette group vs `!pack.log` | — | **450/450** | exact |
 | symbol bit depth vs golden `.raw` | — | **450/450** | exact |
 | symbol bit depth vs `!pack.log` | — | **450/450** | exact |
-| flags byte vs golden `.raw` | — | **450/450** | exact |
-| flags byte vs `!pack.log` | — | 449/450 | 1 expected (§4.3) |
+| flags byte vs golden `.raw` | — | 450/451 | 1 expected (§5.4, §12.3) |
+| flags byte vs `!pack.log` | — | **451/451** | exact |
 | packed pivots (float pair) vs golden | — | **450/450** | exact |
 | sprite W×H vs golden | — | **450/450** | exact |
 | `Rate` byte vs golden | — | **450/450** | exact |
@@ -83,12 +83,21 @@ Every structural field the engine reads out of a sprite header now matches the
 reference toolchain exactly. The two remaining gaps are **container size**
 (§5) and **quantiser quality** (§6), both in the payload, neither structural.
 
-\* Not a direct byte read: byte 45 (`Pidx`) of a golden `art/packed/*.raw`
-sprite header is a placeholder that is **1 for every sprite** in the shipped
-dump, so it can't be compared straight against ours. The real group is only
-recoverable by resolving each sprite's `index.bin` SPRITE record to the PAL
-record it points at (`utils.exe`'s own `!pack.log` gives the same answer
-independently, which is the next row and the cross-check).
+\* Not a direct byte read: our intermediate header (`pack_codec.build_header`)
+keeps the palette group at byte 45, while a golden `art/packed/*.raw` is
+**already in the beta octBmp_t layout** — `Pidx` and `Seq` are asset ids at
+bytes 0..3 and byte 45 is `Rate`. The real group is therefore recoverable only
+by resolving each sprite's `index.bin` SPRITE record to the PAL record it
+points at (`utils.exe`'s own `!pack.log` gives the same answer independently,
+which is the next row and the cross-check).
+
+> **Corrected in §12.** This footnote used to read "byte 45 (`Pidx`) of a
+> golden `.raw` is a placeholder that is 1 for every sprite". It is 1 for
+> every get_started sprite because that is the **default Rate**, not because
+> the field is unused — ladybug's golden `.raw` files hold 4, 5 and 10 there.
+> Reading it as a placeholder is what hid the dropped-`Rate` bug for two
+> tasks. The corpus's own `art/qr_setalpha.py` documents the same layout
+> independently (`{Pidx,Seq}4 … Flags1` at offset 44).
 
 ---
 
@@ -185,7 +194,19 @@ putting it in the CI driver would leave `repack_app.py` and any direct
 **App-repo migration:** `git mv art/qr_code_transparent.png
 art/overrides/qr_code.png`. Seven tests in `tests/test_export_overrides.py`.
 
-### 4.2 `python qr_setalpha.py` → `<ALPHA>` in `!pack.txt`
+### 4.2 `python qr_setalpha.py` → `<ALPHA>` in `!pack.txt` — **RETRACTED, see §12.3**
+
+> **This section's conclusion is wrong and its migration step must not be
+> applied.** It rests on "Task 2 pinned `<ALPHA>` semantics: force bit 0x01
+> on", which §12.3 disproves by measurement: `<ALPHA>` lowers the
+> anti-aliasing threshold to a *strict* zero, so a group with **no**
+> semi-transparent pixel stays opaque. `qr_code.png` is alpha 255 on all
+> 14,400 pixels — the tag would be a no-op on exactly the sprite it was meant
+> to fix, and `qr_setalpha.py`'s own docstring says so ("A QR is deliberately
+> hard-edged … the detector leaves the flag off"). `art/qr_setalpha.py` stays.
+> The `art/overrides/` half of §4.1 is unaffected and still stands.
+>
+> The rest of this section is left as written, for the record.
 
 `qr_setalpha.py` does three things to the packed output: sets `OCT_FLAG_ALPHA`
 on `qr_code.raw`, writes a centre pivot, and rewrites that palette into the
@@ -272,12 +293,22 @@ the app compiles against is self-consistent. Asset ids are not an ABI across
 packs — the header ships with the container. Not a defect; noted so nobody
 diffs the two files expecting equality.
 
-### 5.4 `qr_code` flags vs `!pack.log` (449/450)
+### 5.4 `qr_code` flags vs the shipped bytes (450/451) — *restated*
 
 `!pack.log` records what `utils.exe` decided (`flags:00`); the shipped
-`art/packed/qr_code.raw` has `0x01` because `qr_setalpha.py` ran afterwards.
-We match the **shipped bytes** (450/450) and therefore differ from the raw log
-by exactly this one sprite. This is the expected and desired direction.
+`art/packed/qr_code.raw` has `0x01` because `art/qr_setalpha.py` ran
+afterwards, as the last line of `art/!pack.bat`.
+
+Built from the corpus's **committed** sources we reproduce `utils.exe`'s own
+decision exactly (`0x00`, 451/451 against `!pack.log`) and therefore differ
+from the *shipped* byte on this one sprite. This section originally claimed
+the opposite direction because it was measured against a scratch tree carrying
+the §4.2 `<ALPHA>` edit; that edit is retracted (§12.3), so the honest number
+is 450/451 against the shipped `.raw`.
+
+Closing it needs the post-pack step, not a tag: `qr_setalpha.py` remains part
+of the app's build. A packer-side equivalent would need a new declaration that
+`utils.exe` does not have.
 
 ### 5.5 Two extra exporter artefacts — *fixed in §10*
 
@@ -413,9 +444,12 @@ touched):
 
 ```
 git mv art/qr_code_transparent.png art/overrides/qr_code.png
-# art/!pack.txt: add <ALPHA> to the qr_code* block
-git rm art/qr_setalpha.py          # both of its jobs are now declarative
 ```
+
+> The two further steps this block used to list — adding `<ALPHA>` to the
+> `qr_code*` block and deleting `art/qr_setalpha.py` — are **retracted**
+> (§4.2, §12.3). `<ALPHA>` cannot flag a sprite that has no anti-aliased
+> pixel, which is precisely what a QR is.
 
 ---
 
@@ -626,3 +660,244 @@ text were the same bug.
   `0 font(s)`: it commits the `.fnt` files but never packs them.
 * `app_gbhotel` (full-colour, `oct-builder/_smoke`): `.oct` **byte-identical**
   at 2,650,632 B, SHA-256 `FC3AFBA3…0BA2`.
+
+---
+
+## 12. The `!marker` grammar and the layer-mark `Rate`, closed out
+
+Three defects of the same shape had been found in the layer-name parser by
+this point — `$name` declarations (§10.1), `!font` (§11), `!rate` (below).
+Each time a token the PSD carries and `psd.exe` faithfully forwards was
+dropped somewhere between the exporter and the header. This section stops
+finding them one at a time: it enumerates the **whole** vocabulary against the
+reference `utils.exe` and states, marker by marker, whether the packer honours
+it.
+
+**A second legacy reference was found and used throughout**, because the
+version caveat matters: `games for 0.98 beta/app_ladybug.oct` is APP_VERSION
+**13** while today's committed sources build as **261**, so it cannot settle
+anything on its own. `octava soft/Beta builds/app_ladybug.oct` is APP_VERSION
+**260** (`APP_VER(0,1,4)`, built 2026-07-28 17:09, one commit behind today's
+HEAD) — near-contemporary with the sources, and the two differ on exactly one
+sprite (`icon`, resized 101×99 → 145×141 and reflagged when `ico.psd` /
+`ico-idle.psd` joined `!pack.bat`). Everything below was additionally
+**re-derived from scratch** by running the real `psd.exe` + `utils.exe` on a
+clean `git archive` of today's ladybug sources, so no claim rests on an
+artifact of unknown provenance.
+
+### 12.1 `Rate` comes from the layer's colour swatch, not (mainly) from `!rate`
+
+`oct_scene.h` makes a sequence's frame delay `bmp->Rate * spr->FrameRate`, so
+`Rate` is not decoration. Ladybug's shipped container gives **70 of 493**
+sprites a non-default `Rate` — 36 at 4, 30 at 5, 4 at 10 — while its PSDs
+declare only **four** `!rate10` layers (`pat_00`, `pat_01`, `twist_00`,
+`twist_01`). The other 66 have no marker of any kind. (Nor did they ever: a
+sweep of every PSD blob in ladybug's git history finds `!rate10` and one
+`!rate5`, and never a `!rate4`.)
+
+Running `psd.exe` on today's sources shows where they come from. Its per-layer
+log prints a `mark:` field, and it splits exactly along the rate groups:
+
+```
+mark:FF000300   backtwist_* fly_* lb0_* lb2_* poisonbug_*      (36 sprites, Rate 4)
+mark:FF000400   eat_* hit_* lb1_* lb3_* rebound rotate_*       (30 sprites, Rate 5)
+mark:FF000000   everything else                                (Rate 1)
+```
+
+`0xFF0000CC` is the PSL `LayerMark` field, and `CC` is the **Photoshop layer
+sheet colour** — the swatch in the Layers panel (`lclr` tagged block; 3 =
+yellow, 4 = green). Confirmed by construction: a synthetic PSL whose eight
+records carry marks `0xFF000000 … 0xFF000700` packs to Rates **1 … 8**, and
+the record that additionally carries `rate10` packs to **10**. (Putting the
+colour in the *low* byte instead returns Rate 1 for all eight, which is how
+the field position was pinned rather than guessed.)
+
+```
+Rate = ((LayerMark >> 8) & 0xFF) + 1          # sheet colour + 1
+!rateN overrides it
+```
+
+The same rule drives `octPlace_t.Rate` (verified on a map PSL: colours 0/3/5
+gave place rates 1/4/6) — except for **label** places, which keep
+`Rate = ALIGN_CENTER = 0` (§11, unchanged).
+
+Two things had to change to carry it:
+
+* the exporter never read `lclr`, so every record went out as
+  `DEFAULT_LAYER_MARK` (`0xFF000000`);
+* `pack.py` never passed any rate to `build_header`, so even the four
+  `!rate10` sprites shipped at 1. `pack_codec.build_header` had a `rate`
+  parameter that nothing ever set — the same failure mode as `!font`.
+
+`_load_sprite_rates_from_psls` now reads both sources off the Assets/Font PSLs
+(map PSLs deliberately excluded: `octPlace_t.Rate` is a different field), and
+the reuse path patches a stale header rather than trusting it.
+
+### 12.2 The complete marker table
+
+Read out of `utils.exe`'s string pool, then measured token by token with
+synthetic PSLs — one record per token, everything else held constant.
+
+**Assets mode (`octBmp_t`)** — only one marker does anything at all:
+
+| marker | effect | honoured |
+|---|---|---|
+| `rateN` | `Rate = N` | **yes** (§12.1) |
+| `pause`, `font`, `font1..3`, `label`, `label1..3`, `pingpong`, `hide`, … | none — header byte-identical to an empty slot | n/a (no-op in `utils.exe`) |
+
+**Map mode (`octPlace_t`)** — the flag word, measured bit for bit:
+
+| marker | bits | field | honoured |
+|---|---|---|---|
+| `twistable` | `0x0001` | Twistable | **yes** |
+| `loop` | `0x0002` | Looped | **yes** |
+| `once` | `0x0000` | explicit "not looped" | **yes** (sets nothing, by design) |
+| `hide` | `0x0004` | Hidden | **yes** |
+| `pause` | `0x0008` | Paused | **yes** |
+| `pingpong` | `0x0010` | PingPong | **yes** — *was dropped; ladybug uses it* |
+| `font` / `font1` / `label` / `label1` | `0x0020` | Label = 1, Rate = 0 | **yes** (§11) |
+| `font2` / `label2` | `0x0040` | Label = 2, Rate = 0 | **yes** |
+| `font3` / `label3` | `0x0060` | Label = 3, Rate = 0 | **yes** |
+| `fliph` | `0x0080` | FlipH | **yes** |
+| `flipv` | `0x0100` | FlipV | **yes** |
+| `ccw` | `0x0200` | Rot = 1 | **yes** |
+| `cwcw` | `0x0400` | Rot = 2 | **yes** |
+| `cw` | `0x0600` | Rot = 3 | **yes** — real despite being only the tail of the pooled string `"cwcw"` |
+| `rateN` | — | `Rate = N` | **yes** |
+| bare `rate` | — | `Rate = 0` | parsed as `rateN` with no digits → 0, same as `utils.exe` |
+| anything else | `0x0000` | — | **inert, by measurement** |
+
+Two ladybug markers land in that last row and are now documented as no-ops
+rather than left as open questions:
+
+* **`!full_size`** (12 layers, all `lb0_0*` in `ladybug-assets_1.psd`) — a note
+  to the artist. `utils.exe` has no such token; `fullsize` and `full_size`
+  both pack to `Flags 0x0000 / Rate 1`. The FULLSIZE bit those sprites do
+  carry comes from the `<FULLSIZE>` tag on their `!pack_pal.txt` bucket, which
+  we already honour. (All 12 layers are hidden in the PSD anyway, so
+  `psd.exe` never exports them — the visible `lb0_*` live in
+  `ladybug-assets_2.psd`.)
+* **`!pingpong`** (2 layers, `winscreen_00` in `complete.psd` and `win.psd`) —
+  a real place flag, `0x0010`, and it *was* being dropped. Ladybug's
+  `win.psd` spells it `winscreen_00!rate5!pingpong` and the shipped container
+  gives that place `Flags 0x12` (Looped | PingPong) with `Rate 5`; before this
+  change we emitted `0x02`.
+
+The marker **slot** turned out to be a list, not a string: `psd.exe` writes
+each `!token` verbatim into its own 16-byte cell inside the 32-byte field
+(`'rate5'` at +0, `'pingpong'` at +16 — read straight off the golden
+`win.psl`). The writer only ever emitted a single `rateN`, so a second marker
+could not have survived even if it had been parsed.
+
+### 12.3 `<ALPHA>` is a lowered threshold, not a force — half of ours was a bug
+
+15 sprites had ALPHA where the legacy build has none: `eat_*`, `hit_*`,
+`rebound` at `0x03` vs `0x02`, and `icon` at `0x03` vs `0x00`. Decided from
+today's committed inputs, in the order the audit asked for.
+
+**(a) What the config declares.** `art/!pack.bat` feeds `utils.exe` the
+*generated* `art/!pack_pal.txt`. It tags `eat_*`, `hit_*`, `reboun*` **and**
+`ico*` `<FULLSIZE><ALPHA>` — so on the previous reading of `<ALPHA>` as
+"force the bit on", `0x03` was right for all four.
+
+**(b) What `utils.exe` actually does.** Running it on those very inputs prints
+its own bucket listing, and it disagrees:
+
+```
+18 [128] eat_*            FULLSIZE
+25 [128] hit_*            FULLSIZE
+30 [128] reboun*          FULLSIZE
+17 [128] fly_*            ALPHA FULLSIZE
+29 [128] ico*             ALPHA FULLSIZE
+```
+
+Pooling the anti-aliasing of today's exported PNGs with our own 8 / 230 / 0.15
+rule explains it exactly, once `<ALPHA>` is read correctly. Every one of the
+31 buckets reproduces `utils.exe`'s printed counters to the pixel, and the
+three dissenters are the three with **zero** anti-aliased pixels:
+
+| bucket | tag | semi / visible | utils.exe | ours |
+|---|---|---|---|---|
+| `eat_*` | `<FULLSIZE><ALPHA>` | **0** / 29,910 | no line printed, FULLSIZE | `0x02` |
+| `hit_*` | `<FULLSIZE><ALPHA>` | **0** / 23,834 | no line printed, FULLSIZE | `0x02` |
+| `reboun*` | `<FULLSIZE><ALPHA>` | **0** / 4,266 | no line printed, FULLSIZE | `0x02` |
+| `bonus0..2` | `<FULLSIZE><ALPHA>` | 56 / 6,248 = 0.9 % | `Alpha enabled` | `0x03` |
+| `winscreen_00..03` | *(none)* | 1,877 / 10,689 = 17.6 % | `Alpha enabled` | `0x01` |
+| `splash_nam*` | *(none)* | 734 / 9,439 = 7.8 % | `AA-tolerance … forced opaque` | `0x00` |
+
+So the rule is one threshold with three settings, and the comparison is always
+strict:
+
+```
+ALPHA  iff  semi / visible  >  ( 0.0    when <ALPHA>
+                               ( 0.15   when neither tag
+                               ( never  when <OPAQUE>
+```
+
+`<ALPHA>` is therefore "flag it if there is *any* anti-aliasing", not "flag
+it". A block whose alpha channel is purely binary packs OPAQUE despite the
+tag, and `utils.exe` prints no decision line for it at all — 26 lines for 31
+buckets, and the five silent ones are exactly the five with `semi == 0`.
+
+**Verdict: ours was the bug** for `eat_*` / `hit_*` / `rebound` (14 sprites),
+fixed by `PackBucket.alpha_ratio`.
+
+**(c) `icon` is legitimate drift, and ours is right.** `0x03` matches the
+APP_VERSION 260 reference exactly; only the APP_VERSION 13 artifact has
+`0x00`, and it also has the sprite at 101×99 instead of 145×141. The old
+`art/!pack_pal.txt` routed `icon` into an untagged `splash_mai*` bucket; the
+current one adds a late `ico*` block (`ico.psd` / `ico-idle.psd` were added to
+`!pack.bat` after v13) and last-match routing takes `icon` into it. The
+launcher icon does have anti-aliased edges (270 / 15,494 = 1.7 %), so the
+`<ALPHA>` threshold passes. **No code change.**
+
+This also retracts §4.2: `<ALPHA>` cannot flag `qr_code`, whose 14,400 pixels
+are all alpha 255. `art/qr_setalpha.py` stays (§5.4).
+
+### 12.4 Measured — `OCT_ladybug`, built from committed sources
+
+Ours is `C:\Users\igort\p3v\lb5`, a clean `git archive` of ladybug HEAD built
+by `oct-builder/ci_build.py`. Golden is
+`octava soft/Beta builds/app_ladybug.oct`, APP_VERSION 260, legacy toolchain.
+
+| check | golden | ours | verdict |
+|---|---|---|---|
+| container records | 544 | **544** | exact |
+| record kinds | 493 sprite / 31 pal / 8 map / 12 sound | **identical** | exact |
+| `Rate` distribution | `{1: 422, 4: 36, 5: 30, 10: 4, 0: 1}` | **identical** | exact |
+| `Rate` per sprite | — | **492 / 492**, 0 mismatches | exact |
+| `Flags` per sprite | — | **492 / 492**, 0 mismatches | exact |
+| `Flags` distribution | `{0x00: 135, 0x01: 4, 0x02: 14, 0x03: 340}` | `{0x00: 134, 0x01: 4, 0x02: 14, 0x03: 340, 0x82: 1}` | the extra record is `ico_idle` (§5.2) |
+| map places | 272 | **272** | exact |
+| place `Flags` | — | **272 / 272** | exact, incl. `0x12` on the `!pingpong` place |
+| place `Rate` | — | **272 / 272** | exact |
+| `.oct` | — | 997,751 B, 544 assets + 17,823 B ARM, CRC verified | pass |
+
+Before this task the same build produced `Rate 1` for all 493 sprites, `0x03`
+on the 14 binary-alpha sprites, and `0x02` on the `!pingpong` place.
+
+The 492/493 sprite comparison is the two containers' common name set: ours has
+`ico_idle` (the beta launcher icon, §5.2) where golden has the reserved `0`
+placeholder (§5.1). Both are pre-existing, understood deviations.
+
+Still-open ladybug deviations, unchanged by this task and out of its scope:
+map place `x`/`y` are consistently 1.5 units off golden, and the `Number`
+field of `=NN` marker places is written as 0 instead of `NN`.
+
+### 12.5 Regressions
+
+* `OCT_get_started`, staged fresh from `git ls-files`: **511 records**, `.oct`
+  **1,669,784 B** — and **byte-identical** to the pre-change build. Its 452
+  PSD records all carry `mark:FF000000` and not one `!marker`, so both fixes
+  are provable no-ops there. Exporter output still **18 / 18 CSV+PSL
+  byte-identical** to `psd.exe`, and `Rate` matches golden on 451 / 451
+  `.raw`.
+* `app_gbhotel` (full-colour): `.oct` **2,650,632 B**, byte-identical to the
+  committed reference once `APP_VERSION` is normalised — the only differing
+  bytes are the version word at offset 32 (the source has moved 103 → 104
+  since that `.oct` was built) and the CRC that covers it.
+* Suite: **612 passed**, up from 547. New: `tests/test_layer_markers.py` pins
+  the rate rule and the full marker table including the inert tokens,
+  `tests/test_sprite_rate.py` pins the PSL → header → beta-blob plumbing, and
+  `tests/test_packtxt.py` gains the `<ALPHA>` threshold cases. Nothing
+  removed, nothing skipped, no test weakened.

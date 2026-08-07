@@ -39,9 +39,10 @@ from config import (
     BMFONT_BLOCK_CHARS, BMFONT_BLOCK_COMMON, BMFONT_BLOCK_PAGES,
     BMFONT_CHAR_SIZE,
     BMFONT_FIRST_PRINTABLE, BMFONT_MAGIC, BMFONT_VERSION,
-    DEFAULT_ASSET_NAME, DEFAULT_LAYER_MARK,
+    DEFAULT_ASSET_NAME,
     HDR_OFF_HEIGHT, HDR_OFF_PIVOT_X, HDR_OFF_PIVOT_Y, HDR_OFF_WIDTH,
-    HEADER_SIZE, MAP_FILENAME_PREFIX,
+    HEADER_SIZE, LAYER_MARK_COLOR_MASK, MAP_FILENAME_PREFIX,
+    MAP_MARKER_LABEL, MAP_MARKER_PLACE_FLAGS, MARKER_RATE_PREFIX,
     NUMBER_FIELD_MASK,
     OCT_PLACE_FONT_MAX, OCT_PLACE_FONT_MIN,
     OCT_PLACE_LABEL_ALIGN_DEFAULT, OCT_PLACE_LABEL_MASK,
@@ -50,6 +51,7 @@ from config import (
     PLACEHOLDER_SPRITE_SIZE, PLACEHOLDER_SPRITE_COLOR,
     PSL_CENTER_X_OFFSET, PSL_CENTER_Y_OFFSET, PSL_GROUP_OFFSET,
     PSL_GROUP_SIZE, PSL_HEADER_SIZE, PSL_LAYERMARK_OFFSET,
+    PSL_MARKER_CELL_SIZE, PSL_MARKER_MAX,
     PSL_NAME_OFFSET, PSL_NAME_SIZE, PSL_NUMBER_OFFSET,
     PSL_PIVOT_MARK_ASSET, PSL_PIVOT_MARK_OFFSET, PSL_PIVOT_OFFSET,
     PSL_RATE_OFFSET,
@@ -59,6 +61,7 @@ from config import (
     PSL_SIDE_OFFSET, PSL_TYPE_ASSET, PSL_TYPE_FONT, PSL_TYPE_MAP,
     PSL_TYPE_OFFSET,
     PSL_TYPE_SIZE, PSL_XYWH_OFFSET, PlaceFlag,
+    layer_mark_of, rate_from_layer_mark,
 )
 
 from pack_codec import blob_to_packed_png
@@ -97,6 +100,10 @@ _RE_FONT_SUFFIX  = re.compile(r'!font(\d*)', re.I)
 _RE_FONT_INLINE  = re.compile(r'font(\d*)$', re.I)
 _RE_SPRITE_NUM   = re.compile(r'=([0-9]+)')
 _RE_SEQ_FRAME    = re.compile(r'^(.+?)_(\d{2,})$')
+# Every `!token` of a layer name, in source order. `psd.exe` does not know the
+# vocabulary -- it copies each token verbatim into the PSL marker slot, and
+# `utils.exe` is what interprets them (see config.MAP_MARKER_PLACE_FLAGS).
+_RE_MARKERS      = re.compile(r'!([^!%&=$#]*)')
 
 
 def _norm(s: str) -> str:
@@ -133,7 +140,7 @@ def is_name_declaration(name: str) -> bool:
 
 @dataclass(frozen=True)
 class LayerName:
-    """Parsed PSD layer name (with %type / &group / #tag / =num / !rate suffixes)."""
+    """Parsed PSD layer name (with %type / &group / #tag / =num / !marker suffixes)."""
     base: str
     png_name: str
     obj_name: str
@@ -144,6 +151,10 @@ class LayerName:
     sprite_number: int
     marker_number: int | None
     font: int | None = None
+    # every `!token`, in source order and lower-cased, capped at the
+    # PSL_MARKER_MAX cells the marker slot holds. `psd.exe` writes exactly
+    # these, verbatim; `utils.exe` interprets them.
+    markers: tuple[str, ...] = ()
 
     @property
     def is_marker(self) -> bool:
@@ -190,6 +201,9 @@ class LayerName:
         png_stem = _RE_META_SPLIT_PNG.split(name, 1)[0]
         png_name = _norm(png_stem)
 
+        markers = tuple(m.lower() for m in _RE_MARKERS.findall(name)
+                        if m)[:PSL_MARKER_MAX]
+
         return cls(
             base=base,
             png_name=png_name,
@@ -201,6 +215,7 @@ class LayerName:
             sprite_number=sprite_num,
             marker_number=marker_num,
             font=font,
+            markers=markers,
         )
 
 
@@ -226,6 +241,37 @@ def parse_layer_rate(name: str) -> int | None:
 def parse_layer_font(name: str) -> int | None:
     """Font index from a ``!font`` / ``!fontN`` suffix, else None."""
     return LayerName.parse(name).font
+
+
+def parse_layer_markers(name: str) -> tuple[str, ...]:
+    """Every ``!token`` of a layer name, in source order, lower-cased."""
+    return LayerName.parse(name).markers
+
+
+def layer_sheet_color(layer) -> int:
+    """The Photoshop sheet colour of a psd-tools layer (0 when unlabelled).
+
+    ``psd.exe`` folds this into the PSL LayerMark, and ``utils.exe`` turns it
+    into the default Rate — see :func:`config.rate_from_layer_mark`. It lives
+    in the layer's ``lclr`` tagged block; a layer with no colour swatch has no
+    block at all.
+    """
+    blocks = getattr(layer, 'tagged_blocks', None)
+    if blocks is None:
+        return 0
+    try:
+        value = blocks.get_data(b'lclr')
+    except Exception:                            # pragma: no cover - psd-tools
+        return 0
+    if value is None:
+        return 0
+    # psd-tools hands back either the bare enum/int or a 1-tuple of it
+    if isinstance(value, (tuple, list)):
+        value = value[0] if value else 0
+    try:
+        return int(value) & LAYER_MARK_COLOR_MASK
+    except (TypeError, ValueError):              # pragma: no cover
+        return 0
 
 
 def parse_marker_number(name: str) -> int | None:
@@ -263,6 +309,9 @@ class SpriteRecord:
     type_name: str
     group_name: str
     rate: int
+    # every `!token` of the layer name, in source order; written verbatim into
+    # the PSL marker slot, one per PSL_MARKER_CELL_SIZE-byte cell
+    markers: tuple[str, ...] = ()
     # ~sideN marker size (0 x 0 when the PSD declares no sides).
     side_w: int = 0
     side_h: int = 0
@@ -390,9 +439,18 @@ def _write_records_psl(psl_path: str, records: list[SpriteRecord], psl_type: int
                 struct.pack_into('<4i', rec_buf, PSL_PIVOT_OFFSET,
                                  r.pivot_x, r.pivot_y, r.pivot_w, r.pivot_h)
 
-            if r.rate:
-                rate_str = f'rate{r.rate}'.encode('ascii')[:PSL_RATE_SIZE - 1]
-                rec_buf[PSL_RATE_OFFSET:PSL_RATE_OFFSET + len(rate_str)] = rate_str
+            # Marker slot: psd.exe writes every `!token` of the layer name
+            # verbatim, one per PSL_MARKER_CELL_SIZE-byte cell, in source
+            # order ("winscreen_00!rate5!pingpong" -> 'rate5' at +0,
+            # 'pingpong' at +16). It interprets none of them.
+            markers = r.markers
+            if not markers and r.rate:
+                markers = (f'{MARKER_RATE_PREFIX}{r.rate}',)
+            for cell, marker in enumerate(markers[:PSL_MARKER_MAX]):
+                token = marker.encode('ascii', errors='replace')[
+                    :PSL_MARKER_CELL_SIZE - 1]
+                off = PSL_RATE_OFFSET + cell * PSL_MARKER_CELL_SIZE
+                rec_buf[off:off + len(token)] = token
 
             gname = r.group_name.encode('ascii', errors='replace')[:PSL_GROUP_SIZE - 1]
             rec_buf[PSL_GROUP_OFFSET:PSL_GROUP_OFFSET + len(gname)] = gname
@@ -480,7 +538,9 @@ def export_psd_file_python(psd_path: str, exported_dir: str,
             kind=kind,
             bmp='',
             x=x, y=y, w=w, h=h,
-            layer_mark=DEFAULT_LAYER_MARK,
+            # The layer's Photoshop colour swatch rides in the mark, and
+            # utils.exe reads it back as the default Rate.
+            layer_mark=layer_mark_of(layer_sheet_color(layer)),
             side=side,
             side_cx=side_cx, side_cy=side_cy,
             png_name=parsed.png_name,
@@ -490,6 +550,7 @@ def export_psd_file_python(psd_path: str, exported_dir: str,
             type_name=parsed.type_name,
             group_name=parsed.group_name,
             rate=parsed.rate or 0,
+            markers=parsed.markers,
             side_w=side_w, side_h=side_h,
             pivot_x=pivot_x, pivot_y=pivot_y,
             pivot_w=pivot_w, pivot_h=pivot_h,
@@ -884,13 +945,24 @@ def parse_psl(psl_path: str) -> tuple[int, list[dict]]:
         type_name  = _bytes_to_str_at(rec, PSL_TYPE_OFFSET,  PSL_TYPE_SIZE)
         number = struct.unpack_from('<I', rec, PSL_NUMBER_OFFSET)[0]
 
-        rate_str = _bytes_to_str_at(rec, PSL_RATE_OFFSET, PSL_RATE_SIZE)
+        # Marker slot: up to PSL_MARKER_MAX tokens, one per
+        # PSL_MARKER_CELL_SIZE-byte cell (see _write_records_psl).
+        markers = tuple(
+            m for m in (
+                _bytes_to_str_at(rec,
+                                 PSL_RATE_OFFSET + c * PSL_MARKER_CELL_SIZE,
+                                 PSL_MARKER_CELL_SIZE).lower()
+                for c in range(PSL_MARKER_MAX))
+            if m
+        )
         rate_val = 0
-        if rate_str.startswith('rate'):
-            try:
-                rate_val = int(rate_str[4:])
-            except ValueError:
-                rate_val = 0
+        for marker in markers:
+            if marker.startswith(MARKER_RATE_PREFIX):
+                try:
+                    rate_val = int(marker[len(MARKER_RATE_PREFIX):])
+                except ValueError:
+                    rate_val = 0
+                break
 
         parsed = {
             'name': name,
@@ -903,7 +975,11 @@ def parse_psl(psl_path: str) -> tuple[int, list[dict]]:
             'group_name': group_name,
             'type_name': type_name,
             'number': number,
+            # `rate` stays "the explicit !rateN, or 0" -- callers need to tell
+            # a declared rate from the layer-colour default below.
             'rate': rate_val,
+            'markers': markers,
+            'mark_rate': rate_from_layer_mark(layer_mark),
         }
 
         # Font PSLs reuse the tail of the record for BMFont metrics; the same
@@ -1190,6 +1266,8 @@ def psl_to_octplace(records: list[dict],
         group_name = rec.get('group_name', '')
         number = rec.get('number', 0)
         rate = rec.get('rate', 0)
+        markers = rec.get('markers', ())
+        mark_rate = rec.get('mark_rate', OCT_PLACE_RATE_DEFAULT)
 
         is_layer_marker = (not name and w <= 1 and h <= 1)
         is_decl = is_name_declaration(name)
@@ -1199,6 +1277,14 @@ def psl_to_octplace(records: list[dict],
             layer_meta.get((name, rec['x'], rec['y'], w, h)), name)
         if rec.get('font') is not None:
             font = rec['font']
+        if font is None:
+            # The PSL marker slot carries the label marker too, and it is the
+            # only place `!label`/`!labelN` (utils.exe's synonym for `!font`)
+            # survives -- LayerName only knows the `font` spelling.
+            for marker in markers:
+                if marker in MAP_MARKER_LABEL:
+                    font = MAP_MARKER_LABEL[marker]
+                    break
         name_byte = name_map.get(obj_name, 0) if obj_name else 0
         tags = tag_bits(tag_name, tag_map)
 
@@ -1217,14 +1303,32 @@ def psl_to_octplace(records: list[dict],
         type_idx = type_map.get(type_name, 0) if type_name else 0
         group_idx = group_map.get(group_name, 0) if group_name else 0
 
-        # Animation start flag: name ends with "_00" or explicit !rate suffix
+        # Animation start flag: name ends with "_00" or explicit !rate suffix.
+        #
+        # Both are PROXIES. utils.exe's actual rule, measured: a place is
+        # Looped iff the octBmp_t it references has Seq != 0, i.e. the sprite
+        # belongs to any `<base>_NN` group -- a place on eat_03, mid-sequence,
+        # comes back Looped too, and an explicit `!rate7` on a lone sprite
+        # does NOT. The two proxies happen to agree with it on all 272
+        # OCT_ladybug places (every animated place there is a `_00` head), so
+        # they are left alone rather than churned without a corpus that can
+        # tell the difference.
         flags = 0
         if name and name.endswith('_00'):
             flags |= int(PlaceFlag.LOOPED)
         if rate > 0:
             flags |= int(PlaceFlag.LOOPED)
 
-        rate_out = rate if rate > 0 else OCT_PLACE_RATE_DEFAULT
+        # Every other `!marker` the grammar allows. `!pingpong` is the one
+        # OCT_ladybug actually uses (win.psd's winscreen_00, place flags 0x12
+        # in the shipped container); the rest are here so the table is closed
+        # rather than discovered one crash at a time.
+        for marker in markers:
+            flags |= MAP_MARKER_PLACE_FLAGS.get(marker, 0)
+
+        # No `!rateN`? The Rate is the layer's Photoshop colour swatch + 1,
+        # exactly as for a sprite (config.rate_from_layer_mark).
+        rate_out = rate if rate > 0 else mark_rate
 
         # A `!font` layer is a text placement, not artwork: the font index goes
         # into the Label bits and Rate carries the alignment instead.

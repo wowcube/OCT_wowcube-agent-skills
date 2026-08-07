@@ -24,6 +24,7 @@ from PIL import Image
 
 from config import (
     PACK_TXT_ALPHA_ENABLE_RATIO,
+    PACK_TXT_ALPHA_TAGGED_RATIO,
     PACK_TXT_OPAQUE_MIN_ALPHA,
     PACK_TXT_TRANSPARENT_MAX_ALPHA,
     SpriteFlag,
@@ -314,19 +315,58 @@ def test_group_below_the_ratio_gets_no_alpha(tmp_path):
         {'hard_01': int(SpriteFlag.ALPHA)}
 
 
-def test_alpha_tag_overrides_a_clean_bucket(tmp_path):
+def test_alpha_tag_beats_the_auto_ratio_on_a_barely_soft_bucket(tmp_path):
     """The corpus's selectcube_* blocks: only 3.7 % anti-aliased pixels, so
-    auto-detection would say no — <ALPHA> forces it on."""
+    auto-detection would say no — <ALPHA> drops the threshold to zero and any
+    anti-aliasing at all is then enough."""
     cfg = parse_pack_txt_text("exported\n\n256\n<ALPHA><FULLSIZE>\nsel_*\n")
     _png(tmp_path, 'sel_00', [128] * 3 + [255] * 97)
     assert resolve_sprite_flags(cfg, tmp_path, ['sel_00']) == \
         {'sel_00': int(SpriteFlag.ALPHA | SpriteFlag.FULLSIZE)}
 
 
+def test_alpha_tag_does_not_force_a_bucket_with_no_anti_aliasing(tmp_path):
+    """`<ALPHA>` is a lowered threshold, not an override — and the threshold
+    is still a STRICT bound, so a block whose alpha channel is purely binary
+    packs OPAQUE despite the tag.
+
+    Measured on OCT_ladybug, whose art/!pack_pal.txt tags `eat_*`, `hit_*` and
+    `reboun*` `<FULLSIZE><ALPHA>`: all three pool 0 semi-transparent pixels
+    (0/29910, 0/23834, 0/4266), utils.exe's own bucket listing prints them
+    "FULLSIZE" with no ALPHA, and all 14 of their sprites carry Flags 0x02 in
+    the shipped container. utils.exe prints no decision line for them at all.
+    """
+    cfg = parse_pack_txt_text("exported\n\n128\n<ALPHA><FULLSIZE>\neat_*\n")
+    _png(tmp_path, 'eat_00', [0] * 20 + [255] * 80)     # keyed, never blended
+    assert resolve_sprite_flags(cfg, tmp_path, ['eat_00']) == \
+        {'eat_00': int(SpriteFlag.FULLSIZE)}
+    # one anti-aliased pixel anywhere in the pool is enough to flip it
+    _png(tmp_path, 'eat_01', [128] + [255] * 99)
+    assert resolve_sprite_flags(cfg, tmp_path, ['eat_00', 'eat_01']) == \
+        {'eat_00': int(SpriteFlag.ALPHA | SpriteFlag.FULLSIZE),
+         'eat_01': int(SpriteFlag.ALPHA | SpriteFlag.FULLSIZE)}
+
+
+def test_alpha_tag_lowers_the_threshold_to_a_strict_zero():
+    assert group_alpha_enabled(0, 10000, PACK_TXT_ALPHA_TAGGED_RATIO) is False
+    assert group_alpha_enabled(1, 10000, PACK_TXT_ALPHA_TAGGED_RATIO) is True
+    assert group_alpha_enabled(0, 0, PACK_TXT_ALPHA_TAGGED_RATIO) is False
+
+
+def test_alpha_ratio_reflects_the_tag():
+    auto = parse_pack_txt_text("exported\n\n16\np*\n").buckets[0]
+    on = parse_pack_txt_text("exported\n\n16\n<ALPHA>\np*\n").buckets[0]
+    off = parse_pack_txt_text("exported\n\n16\n<OPAQUE>\np*\n").buckets[0]
+    assert auto.alpha_ratio == PACK_TXT_ALPHA_ENABLE_RATIO
+    assert on.alpha_ratio == PACK_TXT_ALPHA_TAGGED_RATIO == 0.0
+    assert off.alpha_ratio is None       # never, whatever the pixels say
+
+
 def test_opaque_tag_overrides_a_soft_bucket(tmp_path):
     cfg = parse_pack_txt_text("exported\n\n16\n<OPAQUE>\nsoft_*\n")
     _png(tmp_path, 'soft_00', [128] * 90 + [255] * 10)
     assert resolve_sprite_flags(cfg, tmp_path, ['soft_00']) == {'soft_00': 0}
+    assert group_alpha_enabled(9000, 10000, None) is False
 
 
 def test_fullsize_flag_reaches_the_packed_header(tmp_path):

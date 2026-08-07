@@ -54,7 +54,7 @@ reading octBmp_t offset 44 back:
 ``<BUMP>``       ``SpriteFlag.BUMP``     (0x10)
 ``<DUDV>``       ``SpriteFlag.DUDV``     (0x20)
 ``<REFL>``       ``SpriteFlag.REFL``     (0x40)
-``<ALPHA>``      forces ``SpriteFlag.ALPHA`` **on**
+``<ALPHA>``      lowers the ALPHA threshold to zero (see below)
 ``<OPAQUE>``     forces ``SpriteFlag.ALPHA`` **off**
 ===============  =====================================
 
@@ -65,16 +65,24 @@ dropped tag both scales and mis-anchors the sprite.
 Auto-detected ALPHA
 -------------------
 
-Without ``<ALPHA>``/``<OPAQUE>``, ``utils.exe`` decides per palette group
-from the share of anti-aliased pixels, printing either
+``utils.exe`` decides ALPHA per palette group from the pooled share of
+anti-aliased pixels, printing either
 
   ``Alpha enabled: 24108/140544 (17.2%) semi-transparent pixels`` or
   ``AA-tolerance: 5535/39906 (13.9%) semi-transparent pixels forced opaque``
 
-The three constants below were pinned by binary-searching the real
-``utils.exe`` with synthetic sprites (see the module constants), and they
-reproduce the ALPHA decision for all 46 palette groups of the
-``OCT_get_started`` corpus, matching both counters exactly.
+(and nothing at all when the group has no anti-aliased pixel to report).
+The pixel thresholds were pinned by binary-searching the real ``utils.exe``
+with synthetic sprites (see the module constants), and they reproduce the
+decision for all 46 palette groups of the ``OCT_get_started`` corpus and all
+31 of ``OCT_ladybug``, matching both counters exactly.
+
+``<ALPHA>`` is **not** a force-on: it lowers the comparison threshold from
+0.15 to 0.0, still strictly. A tagged group with binary alpha therefore packs
+OPAQUE — ``OCT_ladybug``'s ``eat_*`` (0/29910 semi-transparent), ``hit_*``
+(0/23834) and ``reboun*`` (0/4266) are tagged ``<FULLSIZE><ALPHA>`` and
+``utils.exe``'s own bucket listing prints them ``FULLSIZE`` alone. Only
+``<OPAQUE>`` is an unconditional override.
 """
 from __future__ import annotations
 
@@ -85,6 +93,7 @@ from pathlib import Path
 
 from config import (
     PACK_TXT_ALPHA_ENABLE_RATIO,
+    PACK_TXT_ALPHA_TAGGED_RATIO,
     PACK_TXT_FILENAME,
     PACK_TXT_OPAQUE_MIN_ALPHA,
     PACK_TXT_TAG_ALPHA,
@@ -125,12 +134,32 @@ class PackBucket:
 
     @property
     def alpha_override(self) -> bool | None:
-        """True for ``<ALPHA>``, False for ``<OPAQUE>``, None for auto."""
+        """Which alpha tag the block carries: True ``<ALPHA>``, False
+        ``<OPAQUE>``, None neither.
+
+        This is the tag, not the outcome — see :attr:`alpha_ratio`.
+        ``<ALPHA>`` does not force the bit on.
+        """
         if PACK_TXT_TAG_OPAQUE in self.tags:
             return False
         if PACK_TXT_TAG_ALPHA in self.tags:
             return True
         return None
+
+    @property
+    def alpha_ratio(self) -> float | None:
+        """Semi-transparent share this block must EXCEED to get ALPHA.
+
+        ``None`` for ``<OPAQUE>`` (never). ``<ALPHA>`` does not force the bit
+        on, it drops the threshold to zero: the block gets ALPHA iff it has at
+        least one anti-aliased pixel. Without either tag the auto threshold
+        applies. See :data:`config.PACK_TXT_ALPHA_TAGGED_RATIO`.
+        """
+        if PACK_TXT_TAG_OPAQUE in self.tags:
+            return None
+        if PACK_TXT_TAG_ALPHA in self.tags:
+            return PACK_TXT_ALPHA_TAGGED_RATIO
+        return PACK_TXT_ALPHA_ENABLE_RATIO
 
     @property
     def unknown_tags(self) -> tuple[str, ...]:
@@ -295,12 +324,21 @@ def sprite_alpha_counts(png_path: str | Path) -> tuple[int, int]:
     return int(semi.sum()), int(visible.sum())
 
 
-def group_alpha_enabled(semi_px: int, visible_px: int) -> bool:
+def group_alpha_enabled(semi_px: int, visible_px: int,
+                        ratio: float | None = PACK_TXT_ALPHA_ENABLE_RATIO
+                        ) -> bool:
     """utils.exe's rule: alpha iff ``semi / visible`` is *strictly* above
-    :data:`config.PACK_TXT_ALPHA_ENABLE_RATIO`."""
-    if visible_px <= 0:
+    ``ratio``.
+
+    ``ratio`` is :attr:`PackBucket.alpha_ratio`: the auto threshold by
+    default, :data:`config.PACK_TXT_ALPHA_TAGGED_RATIO` (0.0) for a
+    ``<ALPHA>`` block, and ``None`` for ``<OPAQUE>``. Note that even 0.0 is
+    a *strict* bound, which is what makes a fully binary-alpha ``<ALPHA>``
+    block pack opaque.
+    """
+    if ratio is None or visible_px <= 0:
         return False
-    return (semi_px / visible_px) > PACK_TXT_ALPHA_ENABLE_RATIO
+    return (semi_px / visible_px) > ratio
 
 
 def resolve_sprite_flags(
@@ -310,10 +348,14 @@ def resolve_sprite_flags(
 ) -> dict[str, int]:
     """Per-sprite octBmp_t flag bytes implied by ``!pack.txt``.
 
-    Tags apply per palette group; the ALPHA bit is decided per group too —
-    forced by ``<ALPHA>``/``<OPAQUE>``, otherwise auto-detected from the
-    group's pooled anti-aliasing. Every sprite of a group therefore ends up
-    with the same flags, exactly as ``utils.exe`` does it.
+    Tags apply per palette group; the ALPHA bit is decided per group too, by
+    pooling the group's anti-aliasing and comparing it against the block's
+    :attr:`PackBucket.alpha_ratio` threshold. Every sprite of a group
+    therefore ends up with the same flags, exactly as ``utils.exe`` does it.
+
+    ``<ALPHA>`` only moves that threshold to zero — a tagged block whose alpha
+    channel is purely binary still packs OPAQUE. `OCT_ladybug`'s `eat_*`,
+    `hit_*` and `reboun*` are exactly that case.
     """
     exported_dir = Path(exported_dir)
     groups, _unmatched = config.group_sprites(sprite_names)
@@ -323,17 +365,15 @@ def resolve_sprite_flags(
         members = groups.get(bucket.index, [])
         if not members:
             continue
-        alpha = bucket.alpha_override
-        if alpha is None:
-            semi = visible = 0
-            for name in members:
-                png = exported_dir / f'{name}.png'
-                if not png.is_file():
-                    continue
-                s, v = sprite_alpha_counts(png)
-                semi += s
-                visible += v
-            alpha = group_alpha_enabled(semi, visible)
+        semi = visible = 0
+        for name in members:
+            png = exported_dir / f'{name}.png'
+            if not png.is_file():
+                continue
+            s, v = sprite_alpha_counts(png)
+            semi += s
+            visible += v
+        alpha = group_alpha_enabled(semi, visible, bucket.alpha_ratio)
         value = bucket.base_flags | (int(SpriteFlag.ALPHA) if alpha else 0)
         for name in members:
             flags[name] = value
