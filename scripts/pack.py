@@ -123,9 +123,11 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument('--pack-config', default=None,
                    help='Path to a legacy !pack.txt (palette buckets + '
                         '<FULLSIZE>/<ALPHA>/... tags). Auto-detected as '
-                        '<art-dir>/!pack.txt when present. Ignored when '
-                        '--manifest is given: the manifest is the newer, '
-                        'richer source and always wins.')
+                        '<art-dir>/!pack.txt when present, but an '
+                        'auto-detected file is ignored when --manifest is '
+                        'given (the manifest is the newer, richer source '
+                        'and wins). An explicit --pack-config still applies '
+                        'alongside --manifest.')
     p.add_argument('--no-pack-config', action='store_true',
                    help='Ignore any !pack.txt and use the auto median-cut '
                         'palette grouping instead')
@@ -255,14 +257,17 @@ def _resolve_pack_config(args: argparse.Namespace):
 
     Precedence (documented in the CLI help too):
 
-      1. ``--manifest`` — the manifest is the modern asset spec and wins
-         outright; a ``!pack.txt`` sitting next to it is ignored, so
-         manifest-driven apps are untouched by this feature.
-      2. ``--no-pack-config`` — explicit opt-out, back to auto-grouping.
-      3. ``--pack-config <path>`` — explicit config.
-      4. ``<art-dir>/!pack.txt`` — auto-detected for legacy apps.
+      1. ``--no-pack-config`` — explicit opt-out, back to auto-grouping,
+         wins over everything else.
+      2. ``--pack-config <path>`` — explicit config; honoured even when
+         ``--manifest`` is also given.
+      3. ``--manifest`` without an explicit ``--pack-config`` — the
+         manifest is the modern asset spec and wins outright; an
+         auto-detected ``!pack.txt`` sitting next to it is ignored.
+      4. ``<art-dir>/!pack.txt`` — auto-detected for legacy apps when
+         none of the above apply.
     """
-    from packtxt import find_pack_txt, parse_pack_txt
+    from packtxt import PackTxtError, find_pack_txt, parse_pack_txt
 
     if args.no_pack_config:
         return None
@@ -281,7 +286,11 @@ def _resolve_pack_config(args: argparse.Namespace):
         print(f"Error: --pack-config {path} not found")
         sys.exit(1)
 
-    config = parse_pack_txt(path)
+    try:
+        config = parse_pack_txt(path)
+    except PackTxtError as exc:
+        print(f"Error: {exc}")
+        sys.exit(1)
     print(f"  Using palette config {path} "
           f"({len(config.buckets)} palette groups, "
           f"exported dir '{config.exported_dir}')")
@@ -587,6 +596,12 @@ def _phase_pack_sprites(
                 pidx = header_bytes[HDR_OFF_PIDX]
                 palette = palettes.get(pidx, next(iter(palettes.values())))
             else:
+                # No !pack.txt bucket claimed this sprite (or there's no
+                # !pack.txt at all) and no reusable header was found: it is
+                # packed into palette group 0, or group 1 when its name
+                # contains "font" -- not skipped. sym_override stays None,
+                # so it gets the default 8-bit symbol bitness rather than
+                # inheriting any bucket's reduced bitness.
                 pidx = 1 if 'font' in name else 0
                 palette = palettes.get(pidx, next(iter(palettes.values())))
 

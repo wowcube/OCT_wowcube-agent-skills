@@ -477,3 +477,27 @@ def test_no_pack_txt_no_config(tmp_path):
     from pack import _resolve_pack_config
 
     assert _resolve_pack_config(_args(art_dir=str(tmp_path))) is None
+
+
+def test_malformed_auto_detected_pack_txt_is_a_clean_error(tmp_path, capsys):
+    """A bad block boundary in an auto-detected !pack.txt must exit cleanly
+    (print + sys.exit(1)) instead of propagating a raw PackTxtError
+    traceback, matching the --pack-config-not-found error path above."""
+    from pack import _resolve_pack_config
+
+    (tmp_path / '!pack.txt').write_text("exported\n\n16\n*\n\nfont*\n16\n")
+    with pytest.raises(SystemExit):
+        _resolve_pack_config(_args(art_dir=str(tmp_path)))
+    assert "expected a palette size" in capsys.readouterr().out
+
+
+def test_malformed_explicit_pack_config_is_a_clean_error(tmp_path, capsys):
+    """Same clean-exit behaviour when the malformed file is passed
+    explicitly via --pack-config rather than auto-detected."""
+    from pack import _resolve_pack_config
+
+    p = tmp_path / 'custom.txt'
+    p.write_text("exported\n\n16\n*\n\nfont*\n16\n")
+    with pytest.raises(SystemExit):
+        _resolve_pack_config(_args(pack_config=str(p)))
+    assert "expected a palette size" in capsys.readouterr().out

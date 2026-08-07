@@ -62,7 +62,7 @@ total size : 1666052 bytes, CRC32 0x58C97A88 recomputed OK
 | record kinds | 452 SPRITE / 46 PAL / 2 MAP / 11 SOUND | **identical** | exact |
 | record *names* | — | 510/511 identical | 1 differs (§4.2) |
 | sprites compared (present in both) | 450 | 450 | — |
-| palette group vs golden `.raw` | — | **450/450** | exact |
+| palette group vs golden, resolved via `index.bin`* | — | **450/450** | exact |
 | palette group vs `!pack.log` | — | **450/450** | exact |
 | symbol bit depth vs golden `.raw` | — | **450/450** | exact |
 | symbol bit depth vs `!pack.log` | — | **450/450** | exact |
@@ -82,6 +82,13 @@ total size : 1666052 bytes, CRC32 0x58C97A88 recomputed OK
 Every structural field the engine reads out of a sprite header now matches the
 reference toolchain exactly. The two remaining gaps are **container size**
 (§5) and **quantiser quality** (§6), both in the payload, neither structural.
+
+\* Not a direct byte read: byte 45 (`Pidx`) of a golden `art/packed/*.raw`
+sprite header is a placeholder that is **1 for every sprite** in the shipped
+dump, so it can't be compared straight against ours. The real group is only
+recoverable by resolving each sprite's `index.bin` SPRITE record to the PAL
+record it points at (`utils.exe`'s own `!pack.log` gives the same answer
+independently, which is the next row and the cross-check).
 
 ---
 
@@ -302,7 +309,7 @@ Flat art compresses well, which is precisely why the wrong pack was *smaller*.
 **Fix.** `extract_per_sprite_color_counts()` now returns pixel counts,
 `pool_color_weights()` sums them per group, and both `build_config_palettes`
 and `build_grouped_palettes` pass real weights to `median_cut` (which has
-always accepted them). Nine tests in `tests/test_palette_weights.py`.
+always accepted them). Seven tests in `tests/test_palette_weights.py`.
 
 **Cost/benefit, measured:**
 

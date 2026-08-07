@@ -31,7 +31,10 @@ File format
 * A sprite is routed into the **last** block whose globs match it, so the
   usual layout is a ``*`` catch-all first and increasingly specific blocks
   after it (``selectcube_*`` then ``selectcube_transit_*``).
-* A sprite matching no block at all is skipped by ``utils.exe``
+* A sprite matching no block at all is not skipped by this toolchain: it is
+  packed into palette group 0, or group 1 when its name contains "font",
+  with the default 8-bit symbol bitness (it does not inherit any bucket's
+  reduced bitness). ``utils.exe`` itself instead skips such a sprite
   ("Unmatched palette %s, skipped").
 
 Symbol bitness is ``ceil(log2(size))`` — verified against ``utils.exe`` for

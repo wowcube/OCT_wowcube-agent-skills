@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import struct
 import subprocess
@@ -65,10 +66,20 @@ def test_sound_asset_name_empty_falls_back():
     assert sound_asset_name("!!!") == "___"
 
 
+def test_sound_asset_name_strips_non_ascii():
+    # isalnum() is Unicode-aware ("é".isalnum() is True), so the normaliser
+    # must also require isascii() or non-ASCII letters leak straight through
+    # into a SND_<name> enum member the C compiler can't tokenise.
+    result = gen_sounds.sound_asset_name("café")
+    assert re.match(r"^[a-z_][a-z0-9_]*$", result)
+    assert result == "caf_"
+
+
 @pytest.mark.parametrize("stem,fragment", [
     ("", "empty name"),
     ("Congratulations-007", "illegal character"),
     ("007intro", "starts with a digit"),
+    ("café", "illegal character"),
 ])
 def test_sound_asset_name_problem_explains(stem, fragment):
     why = sound_asset_name_problem(stem)

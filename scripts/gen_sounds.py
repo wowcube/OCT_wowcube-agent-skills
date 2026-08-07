@@ -63,8 +63,8 @@ def sound_asset_name_problem(stem: str) -> str | None:
     """Why `stem` cannot become a `SND_<stem>` C enum member, or None."""
     if not stem:
         return "empty name"
-    if not all(c.isalnum() or c == "_" for c in stem):
-        bad = sorted({c for c in stem if not (c.isalnum() or c == "_")})
+    if not all((c.isascii() and c.isalnum()) or c == "_" for c in stem):
+        bad = sorted({c for c in stem if not ((c.isascii() and c.isalnum()) or c == "_")})
         return f"illegal character(s) {''.join(bad)!r}"
     if stem[0].isdigit():
         return "starts with a digit"
@@ -82,7 +82,7 @@ def sound_asset_name(stem: str) -> str:
     Idempotent — a name that is already legal is returned unchanged, so
     re-running a build never renames an already-encoded asset.
     """
-    out = "".join(c if (c.isalnum() or c == "_") else "_" for c in stem).lower()
+    out = "".join(c if ((c.isascii() and c.isalnum()) or c == "_") else "_" for c in stem).lower()
     if not out:
         return DEFAULT_SOUND_NAME
     return f"{DIGIT_PREFIX}{out}" if out[0].isdigit() else out

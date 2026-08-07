@@ -438,8 +438,28 @@ tags OR'd into every member sprite's header flags. Point it elsewhere with
 `--pack-config <path>`, or opt out with `--no-pack-config` to fall back to the
 auto median-cut grouping.
 
-**Precedence: `--manifest` wins.** When a manifest is given, any `!pack.txt`
-next to it is ignored (with a printed note) — the manifest is the newer,
-richer spec and manifest-driven apps must not change behaviour because a
-legacy config file happens to sit in `art/`. An explicit `--pack-config` is
+**Precedence: `--manifest` wins.** When a manifest is given, any auto-detected
+`!pack.txt` next to it is ignored (with a printed note) — the manifest is the
+newer, richer spec and manifest-driven apps must not change behaviour because
+a legacy config file happens to sit in `art/`. An explicit `--pack-config` is
 still honoured alongside a manifest, for the deliberate mixed case.
+
+**Palette builder is population-weighted — a size increase alone is not a
+regression.** The median-cut palette builder weighs each colour by how many
+pixels use it, not by unique-colour count, so a mostly-flat sprite with a
+small accent (e.g. a black field with a tiny white eye) keeps both colours
+instead of the rare one being averaged away. This is a correctness fix: it
+can make packed `.raw` output noticeably larger than an older build of the
+same app (a real corpus measured +12.9%), because a better-fitting palette
+maps smooth gradients onto more distinct indices, which compresses worse.
+If a repack grows, check decoded-pixel fidelity against the source art before
+assuming something broke.
+
+**`.pal` files now use the alpha-spread word format for alpha-flagged
+groups.** A palette group whose sprites carry `OCT_FLAG_ALPHA` now serialises
+its `.pal` in the spread form the engine's `OCT_BLEND_alpha` path actually
+reads (5-bit alpha + RGB spread over `0x07E0F81F`), instead of the plain
+RGB565 form meant for `OCT_BLEND_opaque`. This changes the bytes of every
+alpha-flagged `.pal` file versus older builds — expected, and it fixes
+previously-broken antialiased rendering (wrong backdrop colours, hard rims
+instead of feathered edges). Do not treat the byte diff as a bug to revert.

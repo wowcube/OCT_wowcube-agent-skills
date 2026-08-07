@@ -758,8 +758,12 @@ def build_config_palettes(
     is the Pidx written into every member sprite's header).
 
     Returns ``(sprite_assignments, all_palette_data, unmatched_names)``.
-    ``utils.exe`` skips a sprite that matches no block ("Unmatched palette %s,
-    skipped"); the caller decides what to do with the third element.
+    A sprite that matches no block is NOT skipped: it falls out of
+    ``sprite_assignments`` and the caller (``pack.py``) packs it into
+    palette group 0, or group 1 when its name contains "font", at the
+    default 8-bit symbol bitness. (``utils.exe`` itself instead skips such
+    a sprite: "Unmatched palette %s, skipped".) The third element is only
+    for the warning printed below.
     """
     print("  Scanning sprites for per-sprite color analysis...")
     sprite_counts = extract_per_sprite_color_counts(
@@ -804,7 +808,8 @@ def build_config_palettes(
 
     if unmatched:
         print(f"  WARNING: {len(unmatched)} sprite(s) match no !pack.txt mask "
-              f"and will be packed into group 0: {', '.join(unmatched[:8])}"
+              f"and will be packed into group 0 (group 1 if the name "
+              f"contains 'font'), 8-bit: {', '.join(unmatched[:8])}"
               + (" ..." if len(unmatched) > 8 else ""))
 
     total_colors = sum(len(c) for c, _ in all_palette_data)
