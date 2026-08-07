@@ -63,6 +63,31 @@ class PlaceFlag(IntFlag):
     LOOPED = 0x0002
 
 
+# octPlace_t's bitfield, LSB first (oct_types.h)::
+#
+#     Twistable:1 Looped:1 Hidden:1 Paused:1 PingPong:1 Label:2 FlipH:1
+#     FlipV:1 Rot:2
+#
+# `Label` is the font index of a text placement, straight from the layer's
+# `!font` / `!fontN` suffix. OCT_add_map copies it verbatim
+# (`spr->Label = plc->Label`) and OCT_label_set returns immediately when it is
+# zero, so a place that loses this field is not a mis-styled label -- it draws
+# nothing at all.
+OCT_PLACE_LABEL_SHIFT = 5
+OCT_PLACE_LABEL_MASK  = 0x0060
+
+# OCT_add_label asserts `font_idx` is in [1..3] and calls OCT_terminate
+# otherwise, so an out-of-range suffix must fail the build, not ship.
+OCT_PLACE_FONT_MIN = 1
+OCT_PLACE_FONT_MAX = 3
+
+# A label place stores its ALIGNMENT in the Rate byte (OCT_add_map does
+# `spr->Data2 = plc->Rate`, which OCT_add_label consumes as `align`).
+# ALIGN_CENTER == 0 (oct_shared.h), which is what all 64 legacy label places
+# carry -- labels must not inherit OCT_PLACE_RATE_DEFAULT.
+OCT_PLACE_LABEL_ALIGN_DEFAULT = 0
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Compression / RLE
 # ─────────────────────────────────────────────────────────────────────────────

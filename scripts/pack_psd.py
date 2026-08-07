@@ -42,7 +42,10 @@ from config import (
     DEFAULT_ASSET_NAME, DEFAULT_LAYER_MARK,
     HDR_OFF_HEIGHT, HDR_OFF_PIVOT_X, HDR_OFF_PIVOT_Y, HDR_OFF_WIDTH,
     HEADER_SIZE, MAP_FILENAME_PREFIX,
-    NUMBER_FIELD_MASK, OCT_PLACE_RATE_DEFAULT,
+    NUMBER_FIELD_MASK,
+    OCT_PLACE_FONT_MAX, OCT_PLACE_FONT_MIN,
+    OCT_PLACE_LABEL_ALIGN_DEFAULT, OCT_PLACE_LABEL_MASK,
+    OCT_PLACE_LABEL_SHIFT, OCT_PLACE_RATE_DEFAULT,
     PALETTE_SPRITE_NAME, PLACEHOLDER_SPRITE_NAME,
     PLACEHOLDER_SPRITE_SIZE, PLACEHOLDER_SPRITE_COLOR,
     PSL_CENTER_X_OFFSET, PSL_CENTER_Y_OFFSET, PSL_GROUP_OFFSET,
@@ -86,6 +89,12 @@ _RE_META_SPLIT_PNG  = re.compile(rf'[{_META_STOPS_PNG}]')
 _RE_META_CSV_SPL    = re.compile(r'([%&=!])')
 _RE_RATE_SUFFIX  = re.compile(r'!rate(\d+)', re.I)
 _RE_RATE_INLINE  = re.compile(r'rate(\d+)', re.I)
+# `!font` marks a text placement and carries its font index. The digit is
+# optional: ladybug's win.psd spells all 14 of its anchors `$pat!font`, and the
+# legacy container gives every one of them Label == 1, so a bare suffix is
+# font 1. `$score!font2` -> 2.
+_RE_FONT_SUFFIX  = re.compile(r'!font(\d*)', re.I)
+_RE_FONT_INLINE  = re.compile(r'font(\d*)$', re.I)
 _RE_SPRITE_NUM   = re.compile(r'=([0-9]+)')
 _RE_SEQ_FRAME    = re.compile(r'^(.+?)_(\d{2,})$')
 
@@ -134,6 +143,7 @@ class LayerName:
     rate: int | None
     sprite_number: int
     marker_number: int | None
+    font: int | None = None
 
     @property
     def is_marker(self) -> bool:
@@ -154,6 +164,10 @@ class LayerName:
 
         m = _RE_RATE_SUFFIX.search(name)
         rate = int(m.group(1)) if m else None
+
+        # `!font` with no digit is font 1 (see _RE_FONT_SUFFIX).
+        m = _RE_FONT_SUFFIX.search(name)
+        font = (int(m.group(1)) if m.group(1) else 1) if m else None
 
         marker_num: int | None = None
         sprite_num = 0
@@ -186,6 +200,7 @@ class LayerName:
             rate=rate,
             sprite_number=sprite_num,
             marker_number=marker_num,
+            font=font,
         )
 
 
@@ -206,6 +221,11 @@ def parse_layer_metadata(name: str) -> tuple[str, str, str, str, str]:
 
 def parse_layer_rate(name: str) -> int | None:
     return LayerName.parse(name).rate
+
+
+def parse_layer_font(name: str) -> int | None:
+    """Font index from a ``!font`` / ``!fontN`` suffix, else None."""
+    return LayerName.parse(name).font
 
 
 def parse_marker_number(name: str) -> int | None:
@@ -536,6 +556,42 @@ def derive_font_glyph_metrics(ch: dict, common: dict
             float(common['lineHeight']))
 
 
+def resolve_font_atlas(fnt_path: str, page: int, declared: str) -> str | None:
+    """Locate page ``page``'s atlas PNG for a BMFont ``.fnt``.
+
+    The name embedded in the ``.fnt`` pages block is NOT authoritative. It is
+    whatever the generating tool happened to write, and it goes stale: ladybug's
+    ``art/font_3.fnt`` declares ``font_1_0.png`` while its real atlas
+    ``font_3_0.png`` sits beside it. Trusting the declared name silently
+    exported all 94 font_3 glyphs as crops of the font_1 atlas — and because
+    font_3 is a 25px face indexing into a 45px sheet, its rects landed on the
+    inter-glyph padding, so glyphs came out nearly blank ('R' kept 1 ink pixel
+    of 120) rather than obviously wrong.
+
+    So resolve by the ``<stem>_<page>.png`` convention first, which is what the
+    legacy ``psd.exe`` does (it derives the atlas from the ``.fnt`` filename and
+    ignores the embedded name), and fall back to the declared name only when the
+    conventional file is absent. Returns None when neither exists.
+    """
+    fnt_dir = os.path.dirname(fnt_path)
+    stem = Path(fnt_path).stem
+
+    conventional = os.path.join(fnt_dir, f"{stem}_{page}.png")
+    if os.path.isfile(conventional):
+        # A stale page name is a real authoring defect in the .fnt; say so
+        # rather than fixing it silently a second time.
+        if declared and declared != f"{stem}_{page}.png":
+            print(f"    NOTE: {os.path.basename(fnt_path)} page {page} declares "
+                  f"{declared!r}; using {stem}_{page}.png (filename convention, "
+                  f"matching psd.exe)")
+        return conventional
+
+    fallback = os.path.join(fnt_dir, declared) if declared else None
+    if fallback and os.path.isfile(fallback):
+        return fallback
+    return None
+
+
 def export_font_python(fnt_path: str, exported_dir: str) -> int | None:
     """Export a BMFont binary (.fnt + atlas PNG) into individual glyph PNGs."""
     fnt_dir = str(Path(fnt_path).parent)
@@ -596,11 +652,12 @@ def export_font_python(fnt_path: str, exported_dir: str) -> int | None:
 
     atlases: dict[int, Image.Image] = {}
     for i, page_file in enumerate(pages):
-        atlas_path = os.path.join(fnt_dir, page_file)
-        if os.path.isfile(atlas_path):
+        atlas_path = resolve_font_atlas(fnt_path, i, page_file)
+        if atlas_path is not None:
             atlases[i] = Image.open(atlas_path).convert('RGBA')
         else:
-            print(f"    WARNING: atlas not found: {atlas_path}")
+            print(f"    WARNING: atlas not found for page {i} of {fnt_path} "
+                  f"(declared {page_file!r})")
 
     glyphs = [ch for ch in chars
               if ch['w'] > 0 and ch['h'] > 0
@@ -916,6 +973,7 @@ def parse_map_csv(csv_path: str) -> list[dict]:
                 'png_name': parsed.png_name,
                 'obj_name': parsed.obj_name,
                 'tag_name': parsed.tag_name,
+                'font': parsed.font,
                 'type_name': type_name,
                 'group_name': group_name,
                 'number': number,
@@ -1054,6 +1112,36 @@ def _pack_octplace(x: float, y: float, w: int, h: int, bmp_idx: int,
     ))
 
 
+def _label_bits(font: int, where: str = '') -> int:
+    """``!font`` index -> the Label bits of an octPlace_t flags word.
+
+    Refuses an out-of-range index rather than shipping it: OCT_add_label
+    asserts ``font_idx`` is in [1..3] and calls OCT_terminate otherwise, so a
+    bad suffix would take the app down on the cube instead of here.
+    """
+    if not (OCT_PLACE_FONT_MIN <= font <= OCT_PLACE_FONT_MAX):
+        raise ValueError(
+            f"layer {where!r}: !font{font} is out of the [{OCT_PLACE_FONT_MIN}.."
+            f"{OCT_PLACE_FONT_MAX}] range the engine accepts "
+            f"(OCT_add_label terminates outside it)")
+    return (font << OCT_PLACE_LABEL_SHIFT) & OCT_PLACE_LABEL_MASK
+
+
+def _unpack_layer_meta(entry, name: str) -> tuple[str, str, int | None]:
+    """``layer_meta`` lookup -> ``(obj_name, tag_name, font)``.
+
+    Falls back to what the layer name alone still carries when the PSD was
+    exported without its CSV sidecar.
+    """
+    if entry is None:
+        parsed = LayerName.parse(name) if name else None
+        return (parsed.obj_name if parsed else '', '',
+                parsed.font if parsed else None)
+    if len(entry) == 2:          # sidecar written before !font was carried
+        return entry[0], entry[1], None
+    return entry[0], entry[1], entry[2]
+
+
 def psl_to_octplace(records: list[dict],
                     bmp_index: dict[str, int],
                     type_map: dict[str, int],
@@ -1074,11 +1162,16 @@ def psl_to_octplace(records: list[dict],
     artwork: its place keeps the rect and the ``Name`` byte but gets
     ``BmpIdx = 0``, matching the legacy container where no ``$`` asset exists.
 
-    ``layer_meta`` maps ``(png_name, x, y, w, h)`` to ``(obj_name, tag_name)``
-    recovered from the PSD's own CSV, because the PSL record layout we mirror
-    from ``psd.exe`` has slots for the group and type suffixes but none for
-    ``$name``/``#tag``. Without it those two fall back to what the PSL name
-    alone can carry (the ``$`` prefix) and no tags.
+    ``layer_meta`` maps ``(png_name, x, y, w, h)`` to
+    ``(obj_name, tag_name, font)`` recovered from the PSD's own CSV, because
+    the PSL record layout we mirror from ``psd.exe`` has slots for the group
+    and type suffixes but none for ``$name``/``#tag``/``!font``. Without it
+    those fall back to what the PSL name alone can carry (the ``$`` prefix),
+    no tags, and no font index.
+
+    A layer carrying ``!font``/``!fontN`` becomes a LABEL place: the font index
+    goes into the ``Label`` bits of the flags word and the ``Rate`` byte
+    becomes the label's alignment (``ALIGN_CENTER``), not the animation rate.
     """
     if packed_pivots is None:
         packed_pivots = {}
@@ -1102,9 +1195,10 @@ def psl_to_octplace(records: list[dict],
         is_decl = is_name_declaration(name)
         bmp_idx = 0 if (is_decl or not name) else bmp_index.get(name, 0)
 
-        obj_name, tag_name = layer_meta.get(
-            (name, rec['x'], rec['y'], w, h),
-            (LayerName.parse(name).obj_name if name else '', ''))
+        obj_name, tag_name, font = _unpack_layer_meta(
+            layer_meta.get((name, rec['x'], rec['y'], w, h)), name)
+        if rec.get('font') is not None:
+            font = rec['font']
         name_byte = name_map.get(obj_name, 0) if obj_name else 0
         tags = tag_bits(tag_name, tag_map)
 
@@ -1131,6 +1225,12 @@ def psl_to_octplace(records: list[dict],
             flags |= int(PlaceFlag.LOOPED)
 
         rate_out = rate if rate > 0 else OCT_PLACE_RATE_DEFAULT
+
+        # A `!font` layer is a text placement, not artwork: the font index goes
+        # into the Label bits and Rate carries the alignment instead.
+        if font is not None:
+            flags |= _label_bits(font, name)
+            rate_out = OCT_PLACE_LABEL_ALIGN_DEFAULT
 
         if is_layer_marker:
             bmp_idx = type_idx = group_idx = name_byte = 0
@@ -1200,9 +1300,20 @@ def csv_to_octplace(csv_records: list[dict],
             name_byte = name_map.get(obj, 0) if obj else 0
             tags = tag_bits(rec.get('tag_name', ''), tag_map or {})
 
+        # A `!font` layer is a label: font index into the Label bits, and Rate
+        # carries the alignment rather than an animation rate.
+        font = rec.get('font')
+        if font is None:
+            font = LayerName.parse(raw_name).font
+        flags = 0
+        rate_out = rec['rate']
+        if font is not None:
+            flags = _label_bits(font, raw_name)
+            rate_out = OCT_PLACE_LABEL_ALIGN_DEFAULT
+
         places.append(_pack_octplace(
             float(x), float(y), w, h, bmp_idx, rec['number'],
-            0, -1, rec['rate'], name_byte, group_idx, 0, type_idx,
+            flags, -1, rate_out, name_byte, group_idx, 0, type_idx,
             tags=tags,
         ))
         name_counter += 1
@@ -1210,23 +1321,28 @@ def csv_to_octplace(csv_records: list[dict],
     return struct.pack('<ii', 1, len(places)) + b''.join(places)
 
 
-def _csv_layer_meta(csv_path) -> dict[tuple, tuple[str, str]]:
-    """``(png_name, x, y, w, h) -> ($name, #tag)`` from a per-PSD CSV.
+def _csv_layer_meta(csv_path) -> dict[tuple, tuple[str, str, int | None]]:
+    """``(png_name, x, y, w, h) -> ($name, #tag, !font)`` from a per-PSD CSV.
 
     The PSL record layout we mirror from ``psd.exe`` has fixed slots for the
-    ``&group`` and ``%type`` suffixes but none for ``$name`` or ``#tag``, so
-    a map built from the PSL alone would lose both. The CSV written by the
-    same export carries the raw layer name, and (name, rect) identifies the
-    layer in it — that is the sidecar this reads. Returns {} when the PSD was
-    exported without ``-log`` (no CSV).
+    ``&group`` and ``%type`` suffixes but none for ``$name``, ``#tag`` or
+    ``!font``, so a map built from the PSL alone would lose all three. The CSV
+    written by the same export carries the raw layer name, and (name, rect)
+    identifies the layer in it — that is the sidecar this reads. Returns {}
+    when the PSD was exported without ``-log`` (no CSV).
+
+    Losing ``!font`` here is what silenced every ladybug label: the PSL name is
+    already split at ``!`` (``$score!font2`` arrives as ``$score``), so this
+    sidecar is the only place the font index still exists.
     """
     if csv_path is None or not Path(csv_path).is_file():
         return {}
-    meta: dict[tuple, tuple[str, str]] = {}
+    meta: dict[tuple, tuple[str, str, int | None]] = {}
     try:
         for rec in parse_map_csv(str(csv_path)):
             key = (rec['png_name'], rec['x'], rec['y'], rec['w'], rec['h'])
-            meta.setdefault(key, (rec['obj_name'], rec['tag_name']))
+            meta.setdefault(key, (rec['obj_name'], rec['tag_name'],
+                                  rec.get('font')))
     except Exception:
         return {}
     return meta
