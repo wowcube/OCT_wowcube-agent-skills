@@ -18,7 +18,7 @@
 3. **Palette alpha format**: across 451 shipping sprites the rule is exact — `.pal` words are either `(alpha5<<27) | ((c|c<<16) & 0x07E0F81F)` **with** `OCT_FLAG_ALPHA`, or plain `c|c<<16` **without** it. `pack_beta.build_pal` always writes the second form while `pack_codec` always sets the flag — a combination that occurs in no shipping pack; the engine's `OCT_BLEND_alpha` (`alpha = pe >> 27`) would read the red channel as alpha. Measured effect: every antialiased pixel flattened to opaque (2328/2328 on `t_welcome`, 9596/9596 on `selector_00`).
 4. Housekeeping blocking CI: sound basenames must be valid C identifiers (`Congratulations-007.wav` breaks `SND_*`); generated files tracked in app repos; unpinned deps; `oct-builder/scripts` snapshot diverged; the `APP_VER(x,y,z)` parser fix lives only in the oct-builder copy.
 
-**Testing:** `$env:PYTHONPATH='scripts'; python -m pytest tests/ -q` from the repo root. Baseline on this branch: **271 passed** (347 after Task 2, 369 after Task 3). Every task adds tests. No AI attribution in commits. Do not push until the owner asks.
+**Testing:** `$env:PYTHONPATH='scripts'; python -m pytest tests/ -q` from the repo root. Baseline on this branch: **271 passed** (347 after Task 2, 369 after Task 3, 400 after Task 4, 426 after Task 5). Every task adds tests. No AI attribution in commits. Do not push until the owner asks.
 
 **Simulator: OUT of the verification loop (owner decision, 2026-08-07).** Getting the simulator out of the build and verification path is the point of this workstream, so no task in this plan builds or launches it. Verification is byte-level against the reference toolchain's own output — `art/!pack.log`, the shipped `art/packed/*.raw` + `*.pal`, `index.bin`, `sound/assets/*.mp3` — plus decoded-pixel comparison and `.oct` structural checks (header/CRC/ARM tail). Task 3 Step 5's one simulator run was a one-off to prove the `.pal` alpha-format hypothesis; it is done and stays as recorded evidence. Task 4 Step 4 was removed outright. The engine source is at `..\octavios` for reading.
 
@@ -100,23 +100,52 @@
 
 - [x] ~~**Step 4:** Build the simulator for the freshly built app and smoke it (8 s alive); if the app renders, screenshot a couple of faces as evidence.~~ **Removed by owner decision (2026-08-07)** — the simulator is out of the verification loop for this whole plan (see the header). Replaced by byte-level verification against the reference toolchain's output plus decoded-pixel MAE, which is strictly stronger and needs no GUI.
 
-- [ ] **Step 5: Commit** the report + any `ci_build` fixes: `docs: legacy corpus parity report (full-python build)`
+- [x] **Step 5: Commit** the report + any `ci_build` fixes: `docs: legacy corpus parity report (full-python build)` — landed as `25b5834`. The `ci_build.py` fixes themselves could not be committed here (oct-builder is outside this repo); Task 5 Step 5 folds them into a consistent on-disk snapshot.
 
 ### Task 5: Regression + housekeeping
 
 **Files:** `scripts/gen_sounds.py` (name normalisation), `oct-builder/*` (re-sync, pinned deps), `scripts/pack_beta.py` (upstream the `APP_VER` parser fix), docs.
 
-- [ ] **Step 1: Full-color regression (must be byte-identical).** Rebuild `app_gbhotel` and `app_photoframe` (copies, not the originals) with the part-3 packer and confirm the `.oct` bytes match the current ones (modulo `APP_VERSION`). Any drift = a bug in Tasks 1-3; fix before proceeding.
-- [ ] **Step 2: Sound name normalisation.** Sound asset ids must be valid C identifiers: normalise WAV basenames (lowercase, non-alphanumerics → `_`, leading digit → prefixed) consistently in `gen_sounds.py` and the packer, so `Congratulations-007.wav` → `congratulations_007`. Tests: the corpus's 11 names, plus a leading-digit case. Verify the corpus's `SND_getAssetId("...")` call sites still resolve.
+- [x] **Step 1: Full-color regression (must be byte-identical).** Rebuild `app_gbhotel` and `app_photoframe` (copies, not the originals) with the part-3 packer and confirm the `.oct` bytes match the current ones (modulo `APP_VERSION`). Any drift = a bug in Tasks 1-3; fix before proceeding.
+
+  **Measured — clean, no drift.** Both apps copied to `C:\p3\` (a short path: the deep scratch path overruns the ARM toolchain's object-path limit) and rebuilt end-to-end: pack (`repack_app.detect_pack_command`'s own invocation, version bump skipped so the comparison is exact), ARM cmake+ninja from scratch, `.oct`.
+
+  | | gbhotel | photoframe |
+  |---|---|---|
+  | packed artefacts (`art/packed/*`, `index.bin`, `src/*_ids.h`) | **30/30 identical**, 2,648,570 B | **76/76 identical**, 7,587,452 B |
+  | ARM `out/<app>.bin` | identical, `d14c628a…`, 1144 B | identical, `afd423e6…`, 1588 B |
+  | `.oct` | **2,650,632 B, `bf58858d…`** | **7,590,980 B, `e419567a…`** |
+
+  The shipped `app_gbhotel.oct` on disk (`494fddc4…`) differs from the rebuild in **exactly 5 bytes**: offset 32 (`APP_VERSION` 103 → 104; `src/app.h` was bumped after that pack was made) and offsets 4-7 (the CRC32 that follows from it). Rebuilding with `--version 103` reproduces `494fddc4…` **md5-identical**. `app_photoframe` ships no `.oct`, so its reference was built from the untouched original dir and matches the rebuild byte-for-byte. Both manifests are 100 % `color: full`, so no palette code path is reached — which is why Tasks 1-3 cannot and do not touch them.
+
+- [x] **Step 2: Sound name normalisation.** Sound asset ids must be valid C identifiers: normalise WAV basenames (lowercase, non-alphanumerics → `_`, leading digit → prefixed) consistently in `gen_sounds.py` and the packer, so `Congratulations-007.wav` → `congratulations_007`. Tests: the corpus's 11 names, plus a leading-digit case. Verify the corpus's `SND_getAssetId("...")` call sites still resolve.
 
   **Partly done in Task 4:** the rule lives in `ci_build.sound_asset_name()` (lowercase, non-`[a-z0-9_]` → `_`, leading digit → `s_`, collisions are a hard error) and reproduces all 11 corpus names — the encoded mp3s came out byte-identical to golden. Still to do here: make `gen_sounds.py` agree, share one implementation, and add the tests.
+
+  **Done, and it is now one implementation, not two.** `sound_asset_name()`, `sound_asset_name_problem()` and a new `resolve_sound_asset_names()` (collision → `ValueError` naming the sources) live in `scripts/gen_sounds.py`; `ci_build.py` **imports** them instead of restating them, so the CI driver and the agent pipeline cannot drift. `encode_beta_mp3()` now names its output `sound_asset_name(wav.stem) + '.mp3'`, and `generate()` names its WAVs the same way — the WAV, the mp3 and the `SND_` id are one name end to end. 26 tests in `tests/test_gen_sounds.py` (12 → 38): all 11 corpus names as a parametrised table, idempotence, empty/illegal fallbacks, the `problem()` messages, two leading-digit cases (`007intro` → `s_007intro`, `3-2-1 go` → `s_3_2_1_go`), and two collision cases (`resolve_…` directly, and via `generate()`).
+
+  **Call sites verified (read-only) against `OCT_get_started`:** the corpus has no `SND_getAssetId("...")` string lookups — `src/*.h` reference the generated enum. All **11** distinct `SND_<name>` symbols used across `src/*.h` resolve against the normalised names, and the normalised set equals the golden `sound/assets/*.mp3` stems exactly.
 
 - [x] **Step 3: Upstream the `APP_VER(x,y,z)` macro parsing** from `oct-builder/scripts/pack_beta.py` into the skills repo copy, with a test (`APP_VERSION APP_VER(0,1,3)` and plain-int forms).
 
   **Done in Task 4** (it blocked the `.oct` step): function-like macro expansion + an AST whitelist of C integer operators in `read_app_defines`, 10 tests in `tests/test_app_defines.py`.
-- [ ] **Step 4: Pin dependency versions** in both `scripts/requirements.txt` and `oct-builder/requirements.txt` (`==` pins for Pillow, numpy, psd-tools) so CI output stays reproducible.
-- [ ] **Step 5: Re-sync `oct-builder/scripts`** as a verbatim snapshot of the skills-repo scripts (they diverged), and update `oct-builder/README.md`: the CI contract for legacy apps is now "commit sources (PSD, `!pack.txt`, fonts, WAV, src); CI generates everything else", plus the app-repo cleanup (`git rm --cached index.bin src/*_ids.h art/*_ids.h`).
-- [ ] **Step 6: Full suite green**, then commit: `chore: sound-name normalisation, pinned deps, oct-builder re-sync`
+
+  **Confirmed in Task 5:** `scripts/pack_beta.py` carries the fix (committed in `25b5834`), `tests/test_app_defines.py` holds the 10 tests, and the re-synced `oct-builder/scripts/pack_beta.py` is now byte-identical to the repo copy — so the divergence this step existed to close is gone in both directions. Nothing further to do.
+- [x] **Step 4: Pin dependency versions** in both `scripts/requirements.txt` and `oct-builder/requirements.txt` (`==` pins for Pillow, numpy, psd-tools) so CI output stays reproducible.
+
+  **Done**, pinned to the versions the parity measurements were taken with: `Pillow==12.2.0`, `numpy==2.4.4`, `psd-tools==1.9.34`, and in the skills repo also `pytoshop==1.2.1`, `requests==2.34.2`. Both files carry a note saying why the pins are exact (a quantiser or PNG-decoder change moves bytes we compare byte-for-byte) and that bumping means re-running the parity measurements.
+- [x] **Step 5: Re-sync `oct-builder/scripts`** as a verbatim snapshot of the skills-repo scripts (they diverged), and update `oct-builder/README.md`: the CI contract for legacy apps is now "commit sources (PSD, `!pack.txt`, fonts, WAV, src); CI generates everything else", plus the app-repo cleanup (`git rm --cached index.bin src/*_ids.h art/*_ids.h`).
+
+  **Done.** Ten modules copied verbatim — the nine the folder already had plus **`packtxt.py`** (the transitive closure of what the CI flow imports: `pack.py` pulls `packtxt`, `config`, `pack_codec`, `pack_psd`, `manifest_schema`; `pack_beta` and `gen_sounds` stand alone; `unpack.py` is the debug tool). `cmp` reports all ten identical to the repo copies. The agent-pipeline-only modules (`build_pipeline.py`, `build_psd.py`, `gen_sprites.py`, `genimg.py`, `image_providers.py`, `repack_app.py`) stay out, as before.
+
+  **Proof the snapshot is consistent on disk:** the corpus was stripped back to committed sources and rebuilt with the *real* `oct-builder/ci_build.py` (not Task 4's hand-staged copy). It reproduces Task 4's output exactly — `index.bin`, `src/app_get_started_ids.h` and the 1,666,052-byte `.oct` all md5-identical, CRC32 `0x58C97A88`, 511 descriptors, 11 normalised mp3s.
+
+  README rewritten where it was stale: the legacy contract table (commit PSD + `!pack.txt` + `art/overrides/*` + fonts + WAV + src; CI generates `exported/`, `packed/`, `index.bin`, `_ids.h`, mp3), the `git rm --cached` cleanup, the `art/overrides/` convention, `<ALPHA>` replacing `qr_setalpha.py`, the tag vocabulary and the group-pooled ALPHA rule, and the palette-alpha "known defect" section replaced by the fixed behaviour. The `OCT_get_started` smoke section now carries the part-3 parity numbers, and the full-color regression numbers from Step 1.
+
+  ⚠️ **`oct-builder/` is outside this repo and is not under version control**, so none of this could be committed here — `ci_build.py`, `requirements.txt`, `README.md` and `scripts/` are edited on disk only. The devops owner still has to put that tree in its own repo and commit it; until then a machine without these local edits will not reproduce the build.
+- [x] **Step 6: Full suite green**, then commit: `chore: sound-name normalisation, pinned deps, oct-builder re-sync`
+
+  **426 passed** (400 baseline + 26 in `test_gen_sounds.py`), nothing skipped or weakened.
 
 ### Task 6: Final review + PR
 
@@ -134,5 +163,5 @@
 | `.pal` format vs golden (spread-vs-plain) | 451/451 agreement |
 | Antialiased alpha preserved | verified in the simulator, screenshots |
 | Total packed size vs golden 1,291,936 B | within ±10 % — **now +12.90 %, see the Task 4 report §6**: traded for a 2.4× fidelity gain (population-weighted median cut). Owner call whether to accept or chase the quantiser. |
-| Full-color apps (gbhotel/photoframe) | byte-identical `.oct` (both manifests are 100 % `color: full`, so Task 4's median-cut change cannot reach them) |
+| Full-color apps (gbhotel/photoframe) | byte-identical `.oct` (both manifests are 100 % `color: full`, so Task 4's median-cut change cannot reach them) — **measured in Task 5 Step 1: PASS.** 106 packed artefacts, both ARM binaries and both `.oct`s byte-identical; the shipped `app_gbhotel.oct` differs only in `APP_VERSION` (103 vs 104) and its CRC, and matches md5-exactly when built with `--version 103` |
 | Legacy corpus builds fully in python from committed sources | yes, `.oct` verified (header/CRC/ARM tail) + byte-level parity vs the reference pack; **no simulator** |

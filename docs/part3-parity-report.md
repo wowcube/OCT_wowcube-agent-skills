@@ -384,10 +384,18 @@ Task 5 Step 2's normalisation rule, in the one place Task 4 needed it;** Task 5
 still owns making `gen_sounds.py` agree and adding its tests.
 
 > `oct-builder/` lives outside this repo and is not under version control, so
-> the `ci_build.py` change could not be committed here. Task 5 Step 5 re-syncs
-> that tree; until then, the current `oct-builder/scripts` snapshot is stale
-> (it predates Tasks 1–3 and has no `packtxt.py`), and this build was run with
-> the skills-repo `scripts/` staged next to `ci_build.py`.
+> the `ci_build.py` change could not be committed here, and this build was run
+> with the skills-repo `scripts/` staged next to `ci_build.py`.
+>
+> **Resolved in Task 5 Step 5.** `oct-builder/scripts` is now a verbatim
+> ten-module snapshot of the repo's `scripts/` (`packtxt.py` included), and
+> `ci_build.py` **imports** `sound_asset_name`/`sound_asset_name_problem` from
+> `scripts/gen_sounds.py` rather than restating them, so the rule has one
+> definition and one set of tests. Re-running the *real* `oct-builder/ci_build.py`
+> against a freshly stripped corpus reproduces every number in this report:
+> `index.bin`, `src/app_get_started_ids.h` and the 1,666,052-byte `.oct` are
+> md5-identical, CRC32 `0x58C97A88`. The tree still needs its own repo and a
+> commit from the devops owner — the edits exist only on this machine.
 
 **App-repo migration** (applied to the scratch copy; the corpus was never
 touched):
