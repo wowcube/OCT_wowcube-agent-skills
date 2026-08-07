@@ -132,11 +132,18 @@ PSL_NAME_OFFSET      = 0
 PSL_NAME_SIZE        = 24
 PSL_XYWH_OFFSET      = 24        # 4 × int32
 PSL_LAYERMARK_OFFSET = 40        # int32
-PSL_SIDE_OFFSET      = 44        # uint32
-PSL_CENTER_X_OFFSET  = 48        # uint32
-PSL_CENTER_Y_OFFSET  = 52        # uint32
-PSL_RESERVED_1       = 56        # uint32 (=1)
-PSL_RESERVED_2       = 60        # uint32 (=1)
+PSL_SIDE_OFFSET      = 44        # int32  - ~sideN id, -1 when the PSD has none
+PSL_CENTER_X_OFFSET  = 48        # int32  - ~sideN marker left
+PSL_CENTER_Y_OFFSET  = 52        # int32  - ~sideN marker top
+PSL_SIDE_W_OFFSET    = 56        # int32  - ~sideN marker width  (0 when no side)
+PSL_SIDE_H_OFFSET    = 60        # int32  - ~sideN marker height (0 when no side)
+PSL_RESERVED_1       = 56        # deprecated alias of PSL_SIDE_W_OFFSET
+PSL_RESERVED_2       = 60        # deprecated alias of PSL_SIDE_H_OFFSET
+# Pivot block. psd.exe writes a sentinel then the pivot rect the packer turns
+# into octBmp_t.PivotX/Y as  pivot = 2*(rect_centre - layer_xy) - 0.5 .
+PSL_PIVOT_MARK_OFFSET = 84       # int32 - PSL_PIVOT_MARK_ASSET in Assets mode, 0 in Map mode
+PSL_PIVOT_OFFSET      = 88       # 4 × int32 (x, y, w, h)
+PSL_PIVOT_MARK_ASSET  = -3       # constant psd.exe stores at PSL_PIVOT_MARK_OFFSET
 PSL_RATE_OFFSET      = 120       # "rateN" string, up to 32 bytes
 PSL_RATE_SIZE        = 32
 PSL_GROUP_OFFSET     = 392

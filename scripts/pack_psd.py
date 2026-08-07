@@ -46,8 +46,10 @@ from config import (
     PLACEHOLDER_SPRITE_SIZE, PLACEHOLDER_SPRITE_COLOR,
     PSL_CENTER_X_OFFSET, PSL_CENTER_Y_OFFSET, PSL_GROUP_OFFSET,
     PSL_GROUP_SIZE, PSL_HEADER_SIZE, PSL_LAYERMARK_OFFSET,
-    PSL_NAME_OFFSET, PSL_NAME_SIZE, PSL_NUMBER_OFFSET, PSL_RATE_OFFSET,
-    PSL_RATE_SIZE, PSL_RECORD_SIZE, PSL_RESERVED_1, PSL_RESERVED_2,
+    PSL_NAME_OFFSET, PSL_NAME_SIZE, PSL_NUMBER_OFFSET,
+    PSL_PIVOT_MARK_ASSET, PSL_PIVOT_MARK_OFFSET, PSL_PIVOT_OFFSET,
+    PSL_RATE_OFFSET,
+    PSL_RATE_SIZE, PSL_RECORD_SIZE, PSL_RESERVED_1,
     PSL_SIDE_OFFSET, PSL_TYPE_ASSET, PSL_TYPE_MAP, PSL_TYPE_OFFSET,
     PSL_TYPE_SIZE, PSL_XYWH_OFFSET, PlaceFlag,
 )
@@ -214,14 +216,88 @@ class SpriteRecord:
     type_name: str
     group_name: str
     rate: int
+    # ~sideN marker size (0 x 0 when the PSD declares no sides).
+    side_w: int = 0
+    side_h: int = 0
+    # Pivot rect: the ~pivot marker blob overlapping this layer, else the
+    # layer's own rect.  The packer turns it into the octBmp_t pivot as
+    #     pivot = 2 * (rect_centre - layer_xy) - 0.5
+    pivot_x: int = 0
+    pivot_y: int = 0
+    pivot_w: int = 0
+    pivot_h: int = 0
+
+
+def find_pivot_markers(psd) -> list[tuple[int, int, int, int]]:
+    """Bounding boxes of every marker blob on the PSD's ``~pivot*`` layer(s).
+
+    psd.exe treats each 4-connected run of non-transparent pixels on a layer
+    whose name starts with ``~pivot`` as one pivot marker, and gives a sprite
+    layer the marker whose bbox overlaps it.  Returned in raster (top-left
+    first) order, in canvas coordinates, as ``(x, y, w, h)``.
+    """
+    blobs: list[tuple[int, int, int, int]] = []
+    for layer in psd:
+        if not layer.name.startswith('~pivot'):
+            continue
+        try:
+            img = layer.composite()
+        except Exception as e:                      # pragma: no cover - psd-tools
+            print(f"    WARNING: failed to composite '{layer.name}': {e}")
+            continue
+        if img is None:
+            continue
+        alpha = np.array(img.convert('RGBA'))[:, :, 3] > 0
+        ys, xs = np.nonzero(alpha)
+        remaining = set(zip(ys.tolist(), xs.tolist()))
+        ox, oy = layer.left, layer.top
+        for seed in sorted(remaining):
+            if seed not in remaining:
+                continue
+            remaining.discard(seed)
+            stack = [seed]
+            min_y = max_y = seed[0]
+            min_x = max_x = seed[1]
+            while stack:
+                cy, cx = stack.pop()
+                if cy < min_y: min_y = cy
+                if cy > max_y: max_y = cy
+                if cx < min_x: min_x = cx
+                if cx > max_x: max_x = cx
+                for nb in ((cy + 1, cx), (cy - 1, cx), (cy, cx + 1), (cy, cx - 1)):
+                    if nb in remaining:
+                        remaining.discard(nb)
+                        stack.append(nb)
+            blobs.append((min_x + ox, min_y + oy,
+                          max_x - min_x + 1, max_y - min_y + 1))
+    blobs.sort(key=lambda b: (b[1], b[0]))
+    return blobs
+
+
+def pivot_for_layer(x: int, y: int, w: int, h: int,
+                    markers: list[tuple[int, int, int, int]]
+                    ) -> tuple[int, int, int, int]:
+    """Pivot rect for a layer: the first overlapping marker, else its own rect."""
+    for mx, my, mw, mh in markers:
+        if _rects_overlap((x, y, w, h), (mx, my, mw, mh)):
+            return mx, my, mw, mh
+    return x, y, w, h
+
+
+def _rects_overlap(a: tuple[int, int, int, int],
+                   b: tuple[int, int, int, int]) -> bool:
+    """Half-open (x, y, w, h) rectangle overlap test."""
+    return (a[0] < b[0] + b[2] and a[0] + a[2] > b[0]
+            and a[1] < b[1] + b[3] and a[1] + a[3] > b[1])
 
 
 def nearest_side(x: int, y: int, w: int, h: int,
-                 side_centers: dict[int, tuple[int, int]]) -> int:
+                 side_centers: dict[int, tuple[int, ...]]) -> int:
     """Return the ~sideN id whose marker is closest to the layer center."""
     cx, cy = x + w / 2.0, y + h / 2.0
     best_side, best_dist = -1, math.inf
-    for sn, (sx, sy) in side_centers.items():
+    for sn, rect in side_centers.items():
+        sx, sy = rect[0], rect[1]
         d = math.hypot(cx - sx, cy - sy)
         if d < best_dist:
             best_dist, best_side = d, sn
@@ -243,6 +319,9 @@ def _write_records_csv(csv_path: str, records: list[SpriteRecord]) -> None:
 
 
 def _write_records_psl(psl_path: str, records: list[SpriteRecord], psl_type: int) -> None:
+    # psd.exe keeps zero-area layers in the CSV but drops them from the PSL.
+    records = [r for r in records if r.w > 0 and r.h > 0]
+    is_map = psl_type == PSL_TYPE_MAP
     with open(psl_path, 'wb') as f:
         f.write(struct.pack('<4I', psl_type, 0, 0, len(records)))
         for r in records:
@@ -254,10 +333,15 @@ def _write_records_psl(psl_path: str, records: list[SpriteRecord], psl_type: int
 
             struct.pack_into('<4i', rec_buf, PSL_XYWH_OFFSET, r.x, r.y, r.w, r.h)
             struct.pack_into('<i',  rec_buf, PSL_LAYERMARK_OFFSET, r.layer_mark)
-            struct.pack_into('<4I', rec_buf, PSL_SIDE_OFFSET,
-                             r.side if r.side >= 0 else 0,
-                             r.side_cx, r.side_cy, 1)
-            struct.pack_into('<I',  rec_buf, PSL_RESERVED_2, 1)
+            # side block: id then the ~sideN marker rect (all zero when absent)
+            struct.pack_into('<5i', rec_buf, PSL_SIDE_OFFSET,
+                             r.side, r.side_cx, r.side_cy, r.side_w, r.side_h)
+            # pivot block: only Assets-mode PSLs carry it
+            if not is_map:
+                struct.pack_into('<i', rec_buf, PSL_PIVOT_MARK_OFFSET,
+                                 PSL_PIVOT_MARK_ASSET)
+                struct.pack_into('<4i', rec_buf, PSL_PIVOT_OFFSET,
+                                 r.pivot_x, r.pivot_y, r.pivot_w, r.pivot_h)
 
             if r.rate:
                 rate_str = f'rate{r.rate}'.encode('ascii')[:PSL_RATE_SIZE - 1]
@@ -288,22 +372,25 @@ def export_psd_file_python(psd_path: str, exported_dir: str,
     psd = PSDImage.open(psd_path)
     stem = Path(psd_path).stem
 
-    # Pass 1: collect ~sideN centers. The ~pivot layer is intentionally
-    # skipped — utils.exe ignores its markers and so do we, to stay
-    # byte-identical with the legacy psd.exe/utils.exe pipeline.
-    side_centers: dict[int, tuple[int, int]] = {}
+    # Pass 1a: collect ~sideN marker rects (used by Map-mode PSLs).
+    side_centers: dict[int, tuple[int, int, int, int]] = {}
     for layer in psd:
         if layer.name.startswith('~side'):
             try:
                 sn = int(layer.name[5:])
-                side_centers[sn] = (layer.left, layer.top)
+                side_centers[sn] = (layer.left, layer.top,
+                                    layer.width, layer.height)
             except ValueError:
                 pass
+
+    # Pass 1b: collect ~pivot marker blobs (Assets-mode PSLs only — psd.exe
+    # leaves the pivot block zeroed in -map mode).
+    pivot_markers = [] if is_map else find_pivot_markers(psd)
 
     types_seen: dict[str, int] = {}
     groups_seen: dict[str, int] = {}
     records: list[SpriteRecord] = []
-    layer_id = 1
+    fallback_id = 1
 
     for layer in psd:
         name = layer.name
@@ -326,14 +413,21 @@ def export_psd_file_python(psd_path: str, exported_dir: str,
         group_id = groups_seen.get(parsed.group_name, 0)
 
         # Nearest side (for maps)
-        side, side_cx, side_cy = -1, 0, 0
+        side, side_cx, side_cy, side_w, side_h = -1, 0, 0, 0, 0
         if side_centers:
             side = nearest_side(x, y, w, h, side_centers)
             if side in side_centers:
-                side_cx, side_cy = side_centers[side]
+                side_cx, side_cy, side_w, side_h = side_centers[side]
+
+        pivot_x, pivot_y, pivot_w, pivot_h = pivot_for_layer(
+            x, y, w, h, pivot_markers)
+
+        # psd.exe writes Photoshop's own layer id + 1 into the CSV Id column.
+        psd_layer_id = getattr(layer, 'layer_id', None)
+        csv_id = fallback_id if psd_layer_id is None else psd_layer_id + 1
 
         records.append(SpriteRecord(
-            id=layer_id,
+            id=csv_id,
             name=name,
             group_id=group_id,
             kind=kind,
@@ -349,11 +443,16 @@ def export_psd_file_python(psd_path: str, exported_dir: str,
             type_name=parsed.type_name,
             group_name=parsed.group_name,
             rate=parsed.rate or 0,
+            side_w=side_w, side_h=side_h,
+            pivot_x=pivot_x, pivot_y=pivot_y,
+            pivot_w=pivot_w, pivot_h=pivot_h,
         ))
-        layer_id += 1
+        fallback_id += 1
 
-        # Export PNG (skip markers, zero-size, already-exported names)
-        if not parsed.is_marker and w > 0 and h > 0:
+        # Export PNG (skip markers, zero-size, already-exported names).
+        # -map PSDs are placement documents: psd.exe emits no PNGs for them,
+        # their layers only reference sprites another PSD already exported.
+        if not is_map and not parsed.is_marker and w > 0 and h > 0:
             out_png = os.path.join(exported_dir, f"{parsed.png_name}.png")
             if not os.path.exists(out_png):
                 try:
@@ -598,6 +697,8 @@ def parse_psl(psl_path: str) -> tuple[int, list[dict]]:
         side = struct.unpack_from('<I', rec, PSL_SIDE_OFFSET)[0]
         center_x = struct.unpack_from('<I', rec, PSL_CENTER_X_OFFSET)[0]
         center_y = struct.unpack_from('<I', rec, PSL_CENTER_Y_OFFSET)[0]
+        pivot_x, pivot_y, pivot_w, pivot_h = \
+            struct.unpack_from('<4i', rec, PSL_PIVOT_OFFSET)
 
         group_name = _bytes_to_str_at(rec, PSL_GROUP_OFFSET, PSL_GROUP_SIZE)
         type_name  = _bytes_to_str_at(rec, PSL_TYPE_OFFSET,  PSL_TYPE_SIZE)
@@ -617,6 +718,8 @@ def parse_psl(psl_path: str) -> tuple[int, list[dict]]:
             'layer_mark': layer_mark,
             'side': side,
             'center_x': center_x, 'center_y': center_y,
+            'pivot_x': pivot_x, 'pivot_y': pivot_y,
+            'pivot_w': pivot_w, 'pivot_h': pivot_h,
             'group_name': group_name,
             'type_name': type_name,
             'number': number,
