@@ -38,6 +38,7 @@ from config import (
     A_MAX, ALPHA5_MASK, ALPHA5_SHIFT,
     B_MAX, BYTES_PER_RGBA,
     DEFAULT_OFFSET_BITNESS, DEFAULT_QUALITY_THRESHOLD, G_MAX,
+    HDR_OFF_BBOX, HDR_OFF_PIVOT_X,
     HDR_OFF_COMPRESSION, HDR_OFF_NUM_PIXELS, HDR_OFF_PIDX, HDR_OFF_WIDTH,
     HEADER_SIZE, MEDIAN_CUT_CHANNEL_WEIGHTS,
     PACKED_COLOR_MASK, PAL_DESCRIPTOR_SIZE, PAL_MAX_PALETTES,
@@ -1101,6 +1102,23 @@ def build_header(w: int, h: int, symbol_bitness: int, offset_bitness: int,
     return header
 
 
+def patch_font_metrics(header: bytes, pivot_x: float, pivot_y: float,
+                       bw: float, bh: float) -> bytes:
+    """Overwrite PivotX/PivotY and the Bx/By/Bw/Bh block of an octBmp_t header.
+
+    Used on the header-reuse path: a glyph descriptor reused from a previous
+    pack may predate the font-metrics fix, and a stale pivot collapses every
+    label the engine draws. The `.fnt` is authoritative, so it wins over
+    whatever the old header held. Bx/By are zeroed — the engine reads Bw as
+    the pen advance and Bh as the line height, and legacy glyph descriptors
+    keep Bx = By = 0.
+    """
+    buf = bytearray(header)
+    struct.pack_into('<ff', buf, HDR_OFF_PIVOT_X, pivot_x, pivot_y)
+    struct.pack_into('<ffff', buf, HDR_OFF_BBOX, 0.0, 0.0, bw, bh)
+    return bytes(buf)
+
+
 def read_existing_header(packed_png_path: str) -> bytes | None:
     """Read the HEADER_SIZE-byte header from an existing packed sprite.
 
@@ -1135,6 +1153,8 @@ def pack_sprite(
     layer_x: int | None = None,
     layer_y: int | None = None,
     pivot_rect: tuple[int, int, int, int] | None = None,
+    bw: float = 0.0,
+    bh: float = 0.0,
 ) -> bytes | None:
     """Pack an exported RGBA PNG into the WowCube packed format.
 
@@ -1174,6 +1194,7 @@ def pack_sprite(
             atlas_x=atlas_x, atlas_y=atlas_y,
             pivot_x=pivot_x, pivot_y=pivot_y,
             layer_x=layer_x, layer_y=layer_y, pivot_rect=pivot_rect,
+            bw=bw, bh=bh,
         )
 
     # ── Vectorised pixel quantisation ──────────────────────────────────

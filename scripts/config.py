@@ -146,8 +146,6 @@ PSL_CENTER_X_OFFSET  = 48        # int32  - ~sideN marker left
 PSL_CENTER_Y_OFFSET  = 52        # int32  - ~sideN marker top
 PSL_SIDE_W_OFFSET    = 56        # int32  - ~sideN marker width  (0 when no side)
 PSL_SIDE_H_OFFSET    = 60        # int32  - ~sideN marker height (0 when no side)
-PSL_RESERVED_1       = 56        # deprecated alias of PSL_SIDE_W_OFFSET
-PSL_RESERVED_2       = 60        # deprecated alias of PSL_SIDE_H_OFFSET
 # Pivot block. psd.exe writes a sentinel then the pivot rect the packer turns
 # into octBmp_t.PivotX/Y as  pivot = 2*(rect_centre - layer_xy) - 0.5 .
 PSL_PIVOT_MARK_OFFSET = 84       # int32 - PSL_PIVOT_MARK_ASSET in Assets mode, 0 in Map mode
@@ -163,6 +161,19 @@ PSL_NUMBER_OFFSET    = 440       # uint32
 
 PSL_TYPE_ASSET = 1               # non-map PSL
 PSL_TYPE_MAP   = 2               # map PSL with side centers
+PSL_TYPE_FONT  = 3               # BMFont PSL: one record per glyph
+
+# Font PSL extras. `psd.exe <font>.fnt` writes a type-3 PSL whose records
+# carry the BMFont metrics the packer needs to fill octBmp_t. The XYWH block
+# holds the glyph's atlas rect; the four fields below hold everything else.
+# Verified byte-for-byte against a legacy-toolchain `font_1.psl`
+# (rogue_escape_vibe/assets/exported) and against the glyph descriptors of the
+# shipped `app_ladybug.oct` — see `derive_font_glyph_metrics`.
+PSL_FONT_ADVANCE_OFFSET    = 76   # int32 - BMFont xadvance   -> octBmp_t.Bw
+PSL_FONT_LINEHEIGHT_OFFSET = 80   # int32 - BMFont lineHeight -> octBmp_t.Bh
+PSL_FONT_PIVOT_X_OFFSET    = 112  # float - octBmp_t.PivotX
+PSL_FONT_PIVOT_Y_OFFSET    = 116  # float - octBmp_t.PivotY
+PSL_FONT_RATE_STRING       = 'letter'   # what psd.exe puts in the rate slot
 
 
 # ─────────────────────────────────────────────────────────────────────────────

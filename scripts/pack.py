@@ -52,6 +52,7 @@ from config import (
     PLACEHOLDER_SPRITE_NAME,
     PLACEHOLDER_SPRITE_PIVOT,
     PSL_TYPE_ASSET,
+    PSL_TYPE_FONT,
     RESERVED_MAP_NAMES,
     SpriteFlag,
 )
@@ -63,6 +64,7 @@ from pack_codec import (
     build_config_palettes,
     build_grouped_palettes,
     load_palette_for_encoding,
+    patch_font_metrics,
     pack_sprite,
     read_existing_header,
     save_palette_png,
@@ -567,6 +569,37 @@ def _load_sprite_pivot_rects_from_psls(
     return rects
 
 
+def _load_font_metrics_from_psls(
+        exported_dir: str
+) -> dict[str, tuple[float, float, float, float]]:
+    """Map glyph_name -> (PivotX, PivotY, Bw, Bh) from the exported font PSLs.
+
+    A font glyph is not a sprite: ``oct_scene.h::OCT_label_set`` reads ``Bw``
+    as the pen advance, ``Bh`` as the line height and ``PivotX`` as the left
+    bearing. Left to the sprite defaults every glyph anchors at its own
+    bottom-right corner with a zero advance, so a whole label collapses onto
+    one spot. The values come from the ``.fnt`` via
+    :func:`pack_psd.derive_font_glyph_metrics`, carried in the type-3 PSL the
+    font exporter writes.
+    """
+    metrics: dict[str, tuple[float, float, float, float]] = {}
+    for psl_file in sorted(Path(exported_dir).glob('*.psl')):
+        try:
+            psl_type, records = parse_psl(str(psl_file))
+        except Exception:
+            continue
+        if psl_type != PSL_TYPE_FONT:
+            continue
+        for rec in records:
+            if not rec['name']:
+                continue
+            metrics[rec['name']] = (
+                rec['font_pivot_x'], rec['font_pivot_y'],
+                float(rec['font_advance']), float(rec['font_lineheight']),
+            )
+    return metrics
+
+
 def _load_sprite_atlas_xy_from_csvs(exported_dir: str
                                     ) -> dict[str, tuple[int, int]]:
     """Map png_name → (atlas_x, atlas_y) extracted from every CSV.
@@ -642,12 +675,15 @@ def _phase_pack_sprites(
     sprite_pivot_rects: dict[str, tuple[int, int, tuple[int, int, int, int]]]
     | None = None,
     sprite_flags: dict[str, int] | None = None,
+    font_metrics: dict[str, tuple[float, float, float, float]] | None = None,
 ) -> int:
     """Pack every sprite PNG. Returns the number of per-sprite errors."""
     if sprite_pivot_rects is None:
         sprite_pivot_rects = {}
     if sprite_flags is None:
         sprite_flags = {}
+    if font_metrics is None:
+        font_metrics = {}
     ok = skip = err = 0
     total_orig = total_packed = 0
 
@@ -704,15 +740,25 @@ def _phase_pack_sprites(
                 pidx = 1 if 'font' in name else 0
                 palette = palettes.get(pidx, next(iter(palettes.values())))
 
-            # Pivot precedence: CSV-provided per-sprite pivot wins, then the
-            # placeholder sprite's hard-coded pivot, then the PSD ~pivot
-            # marker rect carried by the exporter's PSL (utils.exe parity),
-            # then build_header's default scheme. Re-use path
-            # (header_bytes != None) ignores all of it and keeps the existing
-            # pivot from the previous pack.
-            pvx, pvy = sprite_pivots.get(name, (None, None))
-            if name == PLACEHOLDER_SPRITE_NAME:
-                pvx, pvy = PLACEHOLDER_SPRITE_PIVOT
+            # Pivot precedence: a font glyph's `.fnt` metrics win outright
+            # (they are the engine's text layout, not a sprite anchor), then
+            # the CSV-provided per-sprite pivot, then the placeholder sprite's
+            # hard-coded pivot, then the PSD ~pivot marker rect carried by the
+            # exporter's PSL (utils.exe parity), then build_header's default
+            # scheme. The re-use path (header_bytes != None) keeps the
+            # existing pivot from the previous pack for everything except
+            # glyphs, whose stale descriptors are patched below.
+            glyph = font_metrics.get(name)
+            bw = bh = 0.0
+            if glyph is not None:
+                pvx, pvy, bw, bh = glyph
+                if header_bytes is not None:
+                    header_bytes = patch_font_metrics(
+                        header_bytes, pvx, pvy, bw, bh)
+            else:
+                pvx, pvy = sprite_pivots.get(name, (None, None))
+                if name == PLACEHOLDER_SPRITE_NAME:
+                    pvx, pvy = PLACEHOLDER_SPRITE_PIVOT
 
             layer_x = layer_y = pivot_rect = None
             if pvx is None and name in sprite_pivot_rects:
@@ -727,6 +773,7 @@ def _phase_pack_sprites(
                 pivot_x=pvx,
                 pivot_y=pvy,
                 layer_x=layer_x, layer_y=layer_y, pivot_rect=pivot_rect,
+                bw=bw, bh=bh,
             )
             if blob is None:
                 skip += 1
@@ -1106,6 +1153,11 @@ def main() -> None:
         print(f"  Loaded PSD pivot markers for {len(sprite_pivot_rects)} "
               f"sprites from PSLs")
 
+    font_metrics = _load_font_metrics_from_psls(args.exported_dir)
+    if font_metrics:
+        print(f"  Loaded BMFont metrics (pivot + advance + line height) for "
+              f"{len(font_metrics)} glyphs from PSLs")
+
     # !pack.txt decides the per-group flag byte (<FULLSIZE>/<BG>/<ADD>/... plus
     # the ALPHA bit, forced by <ALPHA>/<OPAQUE> or auto-detected from the
     # group's anti-aliasing). These must reach pack_sprite BEFORE the header is
@@ -1127,6 +1179,7 @@ def main() -> None:
         map_skip_names, sprite_pivots, has_palette,
         sprite_pivot_rects=sprite_pivot_rects,
         sprite_flags=sprite_flags,
+        font_metrics=font_metrics,
     )
     if sprite_errors:
         # A sprite that failed to pack means a missing .raw in the container;

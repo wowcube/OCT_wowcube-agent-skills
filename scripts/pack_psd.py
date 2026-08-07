@@ -36,7 +36,8 @@ except ImportError:
     sys.exit(1)
 
 from config import (
-    BMFONT_BLOCK_CHARS, BMFONT_BLOCK_PAGES, BMFONT_CHAR_SIZE,
+    BMFONT_BLOCK_CHARS, BMFONT_BLOCK_COMMON, BMFONT_BLOCK_PAGES,
+    BMFONT_CHAR_SIZE,
     BMFONT_FIRST_PRINTABLE, BMFONT_MAGIC, BMFONT_VERSION,
     DEFAULT_ASSET_NAME, DEFAULT_LAYER_MARK,
     HDR_OFF_HEIGHT, HDR_OFF_PIVOT_X, HDR_OFF_PIVOT_Y, HDR_OFF_WIDTH,
@@ -49,8 +50,11 @@ from config import (
     PSL_NAME_OFFSET, PSL_NAME_SIZE, PSL_NUMBER_OFFSET,
     PSL_PIVOT_MARK_ASSET, PSL_PIVOT_MARK_OFFSET, PSL_PIVOT_OFFSET,
     PSL_RATE_OFFSET,
-    PSL_RATE_SIZE, PSL_RECORD_SIZE, PSL_RESERVED_1,
-    PSL_SIDE_OFFSET, PSL_TYPE_ASSET, PSL_TYPE_MAP, PSL_TYPE_OFFSET,
+    PSL_RATE_SIZE, PSL_RECORD_SIZE,
+    PSL_FONT_ADVANCE_OFFSET, PSL_FONT_LINEHEIGHT_OFFSET,
+    PSL_FONT_PIVOT_X_OFFSET, PSL_FONT_PIVOT_Y_OFFSET, PSL_FONT_RATE_STRING,
+    PSL_SIDE_OFFSET, PSL_TYPE_ASSET, PSL_TYPE_FONT, PSL_TYPE_MAP,
+    PSL_TYPE_OFFSET,
     PSL_TYPE_SIZE, PSL_XYWH_OFFSET, PlaceFlag,
 )
 
@@ -499,6 +503,39 @@ def export_psd_file_python(psd_path: str, exported_dir: str,
 # Font (BMFont) export
 # ─────────────────────────────────────────────────────────────────────────────
 
+def derive_font_glyph_metrics(ch: dict, common: dict
+                              ) -> tuple[float, float, float, float]:
+    """BMFont char + `common` block -> octBmp_t (PivotX, PivotY, Bw, Bh).
+
+    The engine treats a glyph descriptor as font metrics, not as a plain
+    sprite (``oct_scene.h::OCT_label_set``)::
+
+        cx += zoom * bmp->Bw;                       // pen advance
+        cy -= bmp->Bh;                              // newline
+        OCT_add(..., cx + 2 * bmp->PivotX, cy, ...) // left bearing
+
+    so ``Bw`` is the advance, ``Bh`` the line height and ``PivotX`` the left
+    bearing (doubled at the call site to cancel the renderer's ``-PivotX``
+    shift). ``PivotY`` lifts the glyph off the baseline. Hence:
+
+        PivotX = xoffset
+        PivotY = base - yoffset
+        Bw     = xadvance
+        Bh     = lineHeight
+        Bx = By = 0
+
+    Reproduces all 282 font glyph descriptors of the shipped legacy
+    ``app_ladybug.oct`` with zero residual, and the pivot/advance/lineHeight
+    fields of a legacy-toolchain ``font_1.psl``. Note the values are *not*
+    scaled by the FULLSIZE draw zoom: the engine applies ``zoom`` itself and
+    reads ``zoom = 1`` off the FULLSIZE bit, which every glyph carries.
+    """
+    return (float(ch['xoff']),
+            float(common['base'] - ch['yoff']),
+            float(ch['xadvance']),
+            float(common['lineHeight']))
+
+
 def export_font_python(fnt_path: str, exported_dir: str) -> int | None:
     """Export a BMFont binary (.fnt + atlas PNG) into individual glyph PNGs."""
     fnt_dir = str(Path(fnt_path).parent)
@@ -516,6 +553,7 @@ def export_font_python(fnt_path: str, exported_dir: str) -> int | None:
 
         pages: list[str] = []
         chars: list[dict] = []
+        common: dict = {}
 
         while True:
             block_header = f.read(5)
@@ -526,7 +564,10 @@ def export_font_python(fnt_path: str, exported_dir: str) -> int | None:
             if len(block_data) < block_size:
                 break
 
-            if block_type == BMFONT_BLOCK_PAGES:
+            if block_type == BMFONT_BLOCK_COMMON:
+                line_height, base = struct.unpack_from('<HH', block_data, 0)
+                common = {'lineHeight': line_height, 'base': base}
+            elif block_type == BMFONT_BLOCK_PAGES:
                 parts = block_data.rstrip(b'\x00').split(b'\x00')
                 pages = [p.decode('ascii', errors='replace') for p in parts if p]
             elif block_type == BMFONT_BLOCK_CHARS:
@@ -545,6 +586,13 @@ def export_font_python(fnt_path: str, exported_dir: str) -> int | None:
     if not pages:
         print(f"    WARNING: no atlas pages in {fnt_path}")
         return 0
+    if not common:
+        # Without `common` there is no baseline and no line height, so every
+        # glyph would silently fall back to a sprite-shaped pivot and the
+        # engine's pen would never advance (all text drawn on top of itself).
+        print(f"    WARNING: no `common` block in {fnt_path} - "
+              f"cannot derive glyph metrics")
+        return None
 
     atlases: dict[int, Image.Image] = {}
     for i, page_file in enumerate(pages):
@@ -554,10 +602,12 @@ def export_font_python(fnt_path: str, exported_dir: str) -> int | None:
         else:
             print(f"    WARNING: atlas not found: {atlas_path}")
 
+    glyphs = [ch for ch in chars
+              if ch['w'] > 0 and ch['h'] > 0
+              and ch['id'] >= BMFONT_FIRST_PRINTABLE]
+
     exported_count = 0
-    for ch in chars:
-        if ch['w'] == 0 or ch['h'] == 0 or ch['id'] < BMFONT_FIRST_PRINTABLE:
-            continue
+    for ch in glyphs:
         atlas = atlases.get(ch['page'])
         if atlas is None:
             continue
@@ -566,19 +616,29 @@ def export_font_python(fnt_path: str, exported_dir: str) -> int | None:
         glyph.save(os.path.join(exported_dir, f"{font_stem}_{ch['id']:05d}.png"))
         exported_count += 1
 
-    # Lightweight PSL for font (no side data)
+    # Font PSL (type 3), mirroring what `psd.exe <font>.fnt` emits: the atlas
+    # rect in the XYWH block, the BMFont metrics the packer turns into
+    # octBmp_t.PivotX/PivotY/Bw/Bh, and a "letter" rate slot. The layer-mark,
+    # side and ~pivot-marker blocks stay zeroed - a glyph is not a PSD layer,
+    # it has no side and no marker rect, and the pivot arrives as a float pair
+    # rather than as a rect to be reduced.
     psl_path = os.path.join(exported_dir, f"{font_stem}.psl")
     with open(psl_path, 'wb') as f:
-        f.write(struct.pack('<4I', PSL_TYPE_ASSET, 0, 0, len(chars)))
-        for ch in chars:
+        f.write(struct.pack('<4I', PSL_TYPE_FONT, 0, 0, len(glyphs)))
+        for ch in glyphs:
+            pivot_x, pivot_y, bw, bh = derive_font_glyph_metrics(ch, common)
             rec_buf = bytearray(PSL_RECORD_SIZE)
             name = f"{font_stem}_{ch['id']:05d}"
             name_bytes = name.encode('ascii', errors='replace')[:PSL_NAME_SIZE - 1]
             rec_buf[:len(name_bytes)] = name_bytes
-            struct.pack_into('<4I', rec_buf, PSL_XYWH_OFFSET,
+            struct.pack_into('<4i', rec_buf, PSL_XYWH_OFFSET,
                              ch['x'], ch['y'], ch['w'], ch['h'])
-            struct.pack_into('<i', rec_buf, PSL_LAYERMARK_OFFSET, DEFAULT_LAYER_MARK)
-            struct.pack_into('<I', rec_buf, PSL_RESERVED_1, 1)
+            struct.pack_into('<i', rec_buf, PSL_FONT_ADVANCE_OFFSET, int(bw))
+            struct.pack_into('<i', rec_buf, PSL_FONT_LINEHEIGHT_OFFSET, int(bh))
+            struct.pack_into('<f', rec_buf, PSL_FONT_PIVOT_X_OFFSET, pivot_x)
+            struct.pack_into('<f', rec_buf, PSL_FONT_PIVOT_Y_OFFSET, pivot_y)
+            rate_bytes = PSL_FONT_RATE_STRING.encode('ascii')[:PSL_RATE_SIZE - 1]
+            rec_buf[PSL_RATE_OFFSET:PSL_RATE_OFFSET + len(rate_bytes)] = rate_bytes
             f.write(rec_buf)
 
     print(f"    {exported_count} glyphs exported")
@@ -775,7 +835,7 @@ def parse_psl(psl_path: str) -> tuple[int, list[dict]]:
             except ValueError:
                 rate_val = 0
 
-        records.append({
+        parsed = {
             'name': name,
             'x': x, 'y': y, 'w': w, 'h': h,
             'layer_mark': layer_mark,
@@ -787,7 +847,22 @@ def parse_psl(psl_path: str) -> tuple[int, list[dict]]:
             'type_name': type_name,
             'number': number,
             'rate': rate_val,
-        })
+        }
+
+        # Font PSLs reuse the tail of the record for BMFont metrics; the same
+        # offsets mean something else (or nothing) in Assets/Map mode, so they
+        # are only surfaced for type 3.
+        if psl_type == PSL_TYPE_FONT:
+            parsed['font_advance'] = struct.unpack_from(
+                '<i', rec, PSL_FONT_ADVANCE_OFFSET)[0]
+            parsed['font_lineheight'] = struct.unpack_from(
+                '<i', rec, PSL_FONT_LINEHEIGHT_OFFSET)[0]
+            parsed['font_pivot_x'] = struct.unpack_from(
+                '<f', rec, PSL_FONT_PIVOT_X_OFFSET)[0]
+            parsed['font_pivot_y'] = struct.unpack_from(
+                '<f', rec, PSL_FONT_PIVOT_Y_OFFSET)[0]
+
+        records.append(parsed)
 
     return psl_type, records
 

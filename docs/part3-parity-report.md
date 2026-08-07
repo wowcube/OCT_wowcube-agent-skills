@@ -524,9 +524,105 @@ populated too, recovered from the per-PSD CSV (the PSL layout mirrored from
 * **Per-sprite bytes for ladybug are unverified against the legacy binaries**,
   because the app commits neither `art/packed/` nor `art/exported/` and no
   `!pack.log`. The sprite headers are cross-checked against the app's own
-  `!pack_pal.txt` declaration instead.
+  `!pack_pal.txt` declaration instead. *(Superseded for the 282 font glyphs by
+  §11, which compares them against a shipped legacy `.oct`.)*
 * **`copy /Y` post-steps in `!pack.bat` are not honoured.** get_started's batch
   copies `qr_code_transparent.png` over the exported `qr_code.png`; that case
   is covered by the `art/overrides/` convention (§4.1), but the batch line
   itself is parsed and ignored. An app using `copy` without an `overrides/`
   dir would ship the PSD layer instead.
+
+---
+
+## 11. Font glyphs are font metrics, not sprites
+
+Hardware feedback on the freshly built `OCT_ladybug`: **all text collapsed**,
+every glyph drawn on top of the previous one. Every font glyph descriptor
+carried the sprite default pivot `(w-0.5, h-0.5)` and `Bw = 0`.
+
+### 11.1 What the engine actually reads
+
+`oct_scene.h::OCT_label_set` lays a label out straight off each glyph's
+`octBmp_t` — the sizes were never the problem, the layout fields were:
+
+```c
+if (bmp->Flags & OCT_FLAG_FULLSIZE) zoom = 1;   // every glyph is FULLSIZE
+...
+cy -= bmp->Bh;                                   // newline
+bmpidx = OCT_FONT_glyph(label->Label, code);
+// PivotX is the left bearing, not part of the advance.
+// Doubled to cancel the renderer's -PivotX shift.
+int i = OCT_add(label->Layer, ..., cx + 2 * bmp->PivotX, cy, ...);
+cx += zoom * bmp->Bw;                            // pen advance
+...
+cx += zoom * (bmp->W - bmp->Bw);                 // caret at end of last char
+```
+
+So **`Bw` is the advance, `Bh` the line height, `PivotX` the left bearing** and
+`PivotY` the lift off the baseline. With the sprite default every glyph anchors
+at its own bottom-right corner and `cx` never moves. `Bx`/`By`, `Number`,
+`Group`, `Type` and `Tags` play no part; `Rate` is `1`, which `build_header`
+already defaults to.
+
+### 11.2 The formula, derived from the corpus
+
+Pairing all 282 font descriptors of the shipped legacy
+`app_ladybug.oct` with `OCT_ladybug/art/font_{1,2,3}.fnt`:
+
+```
+PivotX = xoffset
+PivotY = base - yoffset          (base from the BMFont `common` block)
+Bw     = xadvance
+Bh     = lineHeight
+Bx = By = 0
+W, H   = the glyph's atlas w, h
+```
+
+**Residual: zero on all 282 glyphs**, across three fonts
+(base 31/24/17, lineHeight 45/35/25) and the full sign range of `xoffset`
+(-2 … +1). The values are *not* multiplied by the FULLSIZE draw zoom: the
+engine applies `zoom` itself and reads `zoom = 1` off the FULLSIZE bit.
+
+### 11.3 The carrier: a type-3 font PSL
+
+`psd.exe <font>.fnt` writes a PSL of type **3** (not 1) whose records hold the
+BMFont metrics. Recovered from a legacy-toolchain `font_1.psl`
+(`rogue_escape_vibe/assets/exported/`) and now reproduced exactly:
+
+| offset | field |
+|---|---|
+| 0 | `name[24]` — `font_N_000CC` |
+| 24 | atlas `x, y, w, h` (int32 ×4) |
+| 40 – 75 | zero (a glyph has no layer mark, no `~sideN`, no `~pivot` rect) |
+| 76 | `xadvance` (int32) → `Bw` |
+| 80 | `lineHeight` (int32) → `Bh` |
+| 112 | `PivotX` (float) |
+| 116 | `PivotY` (float) |
+| 120 | rate slot, the literal string `letter` |
+
+Record count is the printable, non-empty glyph set — **94** for a 95-char
+font, `space` having no bitmap.
+
+The previous writer emitted type 1 with `DEFAULT_LAYER_MARK` at 40 and a
+hardcoded `1` at what the post-`1a50c1a` convention calls the `~sideN` marker
+*width*; nothing downstream could read a pivot out of it, so `pack.py` fell
+through to `compute_default_pivot`. That stale-convention bug and the collapsed
+text were the same bug.
+
+### 11.4 Measured
+
+| check | result |
+|---|---|
+| font PSL vs legacy `psd.exe` output (rogue_escape, 3 fonts) | **byte-identical**, 197,448 B, 0 differing bytes |
+| glyph pivots vs shipped `app_ladybug.oct` | **282 / 282 exact** |
+| `Bx By Bw Bh W H Flags Kind Number Group Type Rate Tags Seq` | **282 / 282 exact** |
+| `Pidx`, `Compression` | differ on all 282 — *and on 209 / 106 of the 259 non-font records*: the §5.3 record-ordering difference (our palette `1` is asset id 1, legacy's is 5) and the global `DEFAULT_OFFSET_BITNESS = 7` vs utils.exe's per-sprite 4/5. Symbol bitness agrees (4-bit). Pre-existing, unrelated to fonts |
+| container | 544 records, 493 / 31 / 8 / 12, `.oct` 996,607 B |
+
+### 11.5 Regressions
+
+* `OCT_get_started`, staged fresh from `git ls-files`: **511 records**
+  (452/46/2/11), `.oct` **1,669,784 B** — unchanged. Its `!pack.bat` declares
+  `0 font(s)`: it commits the `.fnt` files but never packs them.
+* `app_gbhotel` (full-colour, `oct-builder/_smoke`): `.oct` **byte-identical**
+  at 2,650,632 B, SHA-256 `FC3AFBA3…0BA2`.
