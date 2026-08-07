@@ -883,6 +883,7 @@ placeholder (§5.1). Both are pre-existing, understood deviations.
 Still-open ladybug deviations, unchanged by this task and out of its scope:
 map place `x`/`y` are consistently 1.5 units off golden, and the `Number`
 field of `=NN` marker places is written as 0 instead of `NN`.
+*(Both closed in §13.)*
 
 ### 12.5 Regressions
 
@@ -900,4 +901,183 @@ field of `=NN` marker places is written as 0 instead of `NN`.
   the rate rule and the full marker table including the inert tokens,
   `tests/test_sprite_rate.py` pins the PSL → header → beta-blob plumbing, and
   `tests/test_packtxt.py` gains the `<ALPHA>` threshold cases. Nothing
+  removed, nothing skipped, no test weakened.
+
+---
+
+## 13. Where a map place lands, and what a `=NN` marker carries
+
+The two deviations §12.4 left open. Both turned out to be ours, and both live
+in the **exporter**, not (only) in the packer. Method: run the real
+`psd.exe` + `utils.exe` over the committed `OCT_ladybug` sources into a scratch
+tree and diff its PSLs and its packed map payloads against ours, then drive
+`psd.exe` over synthetic PSDs to pin down each rule it disagreed on.
+
+The reference chain on today's ladybug sources reproduces the v260 golden
+container's 272 places **exactly** (x, y, w, h, Number, Flags, Rate, Name,
+Group, Type, Tags — 0 mismatches). So there is no drift in the reference: the
+golden numbers are what today's PSDs are supposed to produce, and every
+difference was ours.
+
+### 13.1 A place is a pivot measured from the side centre
+
+```
+place.x =  2 * (layer_x + pivot_local_x - side_centre_x)
+place.y = -2 * (layer_y + pivot_local_y - side_centre_y)
+```
+
+`pivot_local` is the pivot in sprite-local pixels; the packed `octBmp_t`
+stores it already doubled and biased (`pivot = 2*pivot_local - 0.5`, §11 /
+`test_pivot_parity`), so in terms of the stored field
+
+```
+place.x =  2 * (layer_x - side_centre_x) + pivot_x + 0.5
+place.y = -2 * (layer_y - side_centre_y) - pivot_y - 0.5
+```
+
+with `side_centre = ~sideN.left + ~sideN.width / 2`. Y is negated because PSD
+coordinates grow downwards and side space grows up. A place with no artwork (a
+layer marker, a `$name` anchor) simply has `pivot = 0`.
+
+There is no zoom term and no FULLSIZE case: places are always in the 2x
+half-pixel space, unlike the pivot itself.
+
+The old packer had three separate errors that partly cancelled:
+
+| old | correct |
+|---|---|
+| anchored on the marker's **top-left** (`center_x`) | the marker's **centre** (`center_x + side_w/2`) |
+| no half-pixel term | `+0.5` on x, `-0.5` on y, undoing the pivot's own bias |
+| `if x < 0: x -= 1` / `if y > 0: y += 1` | *(removed — a sign-dependent kink at the side centre)* |
+
+Residual against the reference before: `dx` in `{-1.5: 25, -0.5: 33, +0.5: 104,
++1.5: 109}` and `dy` likewise — the "consistently 1.5 off" of §12.4 was really
+four buckets two units apart. After: **0 on both axes, all 272 places.**
+
+### 13.2 `psd.exe` rewrites a 1x1 `~sideN` marker
+
+The PSL's side block is the `~sideN` marker layer's rect. `psd.exe` copies it
+verbatim — **except** for a layer that is exactly 1x1, which it emits as a 2x2
+rect whose origin is shifted by a per-side constant:
+
+| side | 0 | 1 | 2 | 3 | 4 | 5 |
+|---|---|---|---|---|---|---|
+| shift | (-1, -1) | (-1, 0) | (0, 0) | (0, 0) | (-1, 0) | (-1, 0) |
+
+Measured by rewriting the `~sideN` rects of `complete.psd` (and of `ico.psd`)
+with `psd_tools` and re-running `psd.exe`: 4 origins x 8 sizes plus a
+layer-order permutation. The shift tracks the side **index**, not the marker's
+position and not the layer order; 1x2, 2x1, 1x3, 3x1 and everything larger
+pass through untouched.
+
+That one pixel is worth one engine unit on every place of the side, because the
+side centre is `left + w/2`. `OCT_ladybug`'s seven map PSDs all ship 1x1
+markers (which `psd-tools` reports faithfully as 1x1 — we were reading the PSD
+right and writing the PSL wrong); `OCT_get_started`'s two ship 2x2 ones, which
+is why its PSLs were already byte-identical and never caught this.
+
+Applying the table makes ladybug's map PSLs match `psd.exe` on the whole side
+block: `side_cx` 213 → 0, `side_cy` 70 → 0, `side_w`/`side_h` 271 → 0
+differing bytes.
+
+### 13.3 The side of a layer is decided by its top-left corner
+
+`psd.exe` files a layer under the `~sideN` marker nearest **the layer's
+top-left corner**, not its centre, measuring to the *normalised* marker origin
+and keeping the first marker on a tie. `ico.psd` is the discriminating case:
+its 145x141 icon at (403, 261) is nearer side 1 by its centre and nearer side 0
+by its corner, and `psd.exe` files it under side 0. Probed directly too — with
+two markers 100 px apart the boundary sits between +50 and +51 from the first
+marker's origin, and between +49 and +50 once the markers are 1x1 (i.e. after
+the §13.2 shift), which is only consistent with corner-to-origin distance.
+
+### 13.4 `=NN` markers exported with `Number = 0`
+
+`LayerName.is_marker` tested `base.startswith('=')`, but `base` is already
+split on `=` (so `eat=3` keeps `eat`) — which leaves a bare `=20` with an
+*empty* base. The property therefore never fired, and `_write_records_psl`
+took the `sprite_number` branch, writing 0 into the PSL Number slot for every
+layer marker. `marker_number` is the field that actually holds the token, so
+`is_marker` now asks it.
+
+This is not cosmetic. `OCT_add_map` (oct_scene.h) treats a place as a
+draw-layer mark only when everything *except* Number is zero **and**
+`Number > 0`:
+
+```c
+if (plc->BmpIdx == 0 && plc->Name == 0 && plc->Tags == 0
+    && plc->Type == 0 && plc->Number > 0) { layer = plc->Number; continue; }
+```
+
+With `Number == 0` the test fails, so the marker is not consumed at all: it
+becomes a stray invisible sprite and every place behind it stays on layer 0 —
+the whole map draws in one plane, in PSD order. The eleven ladybug markers
+(layers 1, 20, 21, 40, 42, 50) now come through exactly.
+
+### 13.5 Measured — `OCT_ladybug`, rebuilt from committed sources
+
+`C:\Users\igort\p3v\lb6`, a clean `git archive` of ladybug HEAD built by
+`oct-builder/ci_build.py`. Golden is `octava soft/Beta builds/app_ladybug.oct`,
+APP_VERSION 260.
+
+| check | golden | ours | verdict |
+|---|---|---|---|
+| container records | 544 | **544** | exact |
+| record kinds | 493 sprite / 12 sound / 31 pal / 8 map | **identical** | exact |
+| sprite `Rate` | — | **492 / 492** | exact |
+| sprite `Flags` | — | **492 / 492** | exact |
+| `Rate` distribution | `{0: 1, 1: 421, 4: 36, 5: 30, 10: 4}` | **identical** | exact |
+| map places | 272 | 272 | — |
+| place `x` | — | **271 / 272** | the `ico` place, §13.6 |
+| place `y` | — | **271 / 272** | ditto |
+| place `Number` | — | **272 / 272** | exact |
+| place `Flags` | — | **272 / 272** | exact |
+| place `Rate` | — | **272 / 272** | exact |
+| place `BmpIdx` (by name) | — | **271 / 272** | ditto |
+| place `Name` / `Group` / `Type` / `Tags` | — | **272 / 272** | exact |
+| `.oct` | — | 997,751 B, 544 assets + 17,823 B ARM, CRC verified | pass |
+
+Payload-level diff against the pre-change build: **7 files, all of them the
+PSD-derived map payloads** (`complete`, `countdown`, `game_over`, `hud`,
+`splash`, `splash_wo_saves`, `win`). `index.bin` byte-identical, every sprite,
+palette and sound byte-identical. The sprite side did not move.
+
+### 13.6 The one place that still differs is the synthesised launcher icon
+
+`ico` is not exported from `ico.psd` in the beta pipeline. `pack_beta`
+synthesises the reserved launcher maps from `art/icon.png` on purpose (see
+`emit_beta_layout`: a legacy `ico.psd` map points into the legacy enum space,
+while the beta launcher wants the RAW565 icon at a low, launcher-visible asset
+id). Ours is therefore `ico_idle` 160x160 at (120, 120) where golden has
+`icon` 145x141 at (67, -338). Pre-existing (identical in the pre-change build),
+deliberate, and the same for `OCT_get_started`'s `ico`/`ahover`. Every place
+that *does* come from a PSD — 271 of 272 — is now exact.
+
+### 13.7 Still open, and out of scope
+
+`psd.exe` gives the PSL dedicated slots for `$name` (offset 376) and `#tag`
+(offset 444) and blanks the sprite-name slot for a `$name` declaration; our
+exporter keeps the `$name` in the name slot and leaves both dedicated slots
+zero. Ladybug's map PSLs therefore still differ from `psd.exe` in those two
+fields (537 + 473 + 168 bytes). It costs nothing today — the packer recovers
+`$name`/`#tag`/`!font` from the PSD's own CSV sidecar (`_csv_layer_meta`) and
+every place's `Name` and `Tags` matches golden — but it is the last known PSL
+byte-parity gap.
+
+### 13.8 Regressions
+
+* `OCT_get_started`, staged fresh from `git ls-files`: **511 records**, `.oct`
+  **1,669,784 B**, **byte-identical** to the pre-change build. Exporter output
+  still **18 / 18 CSV+PSL byte-identical** to `psd.exe` — its 2x2 side markers
+  make §13.2 a no-op and its side assignments are unchanged by §13.3. Its two
+  map places are the synthesised launcher pair (§13.6) and are unchanged.
+* `app_gbhotel` (full-colour): `.oct` **2,650,632 B**, **0 differing bytes**
+  against the committed reference (already at APP_VERSION 104).
+* `OCT_ladybug` asset PSDs: `ladybug-assets_1/_2.psl`, `ico-idle.psl` and
+  `ico-idle.csv` still byte-identical to `psd.exe`; 492 / 492 exported PNGs,
+  same set as before. (The two asset *CSVs* differ from `psd.exe` in their Id
+  column — pre-existing, identical before and after.)
+* Suite: **628 passed**, up from 612. New: `tests/test_map_place_geometry.py`
+  pins the place formula against twelve golden places, the full 1x1 marker
+  table, the side-assignment anchor and the eleven `=NN` markers. Nothing
   removed, nothing skipped, no test weakened.

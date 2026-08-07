@@ -297,6 +297,36 @@ PSL_TYPE_ASSET = 1               # non-map PSL
 PSL_TYPE_MAP   = 2               # map PSL with side centers
 PSL_TYPE_FONT  = 3               # BMFont PSL: one record per glyph
 
+# ~sideN marker normalisation, as psd.exe performs it.
+#
+# psd.exe copies the marker layer's rect into the PSL verbatim, except when the
+# layer is exactly 1x1: then it writes a SIDE_MARKER_MIN_SIZE square whose
+# origin is shifted by a per-side constant. Measured by rewriting the ~sideN
+# rects of a real map PSD and re-running psd.exe (see
+# tests/test_map_place_geometry.py): the shift follows the side *index* — not
+# the marker's position, not the layer order — and fires only for 1x1 (1x2,
+# 2x1, 1x3, 3x1 and everything larger pass through untouched).
+#
+# It is a one-pixel correction with a two-unit consequence: the side centre is
+# marker_left + marker_w/2, so half a pixel there moves every place on that
+# side by one engine unit. OCT_ladybug's seven map PSDs all ship 1x1 markers.
+SIDE_MARKER_MIN_SIZE = 2
+SIDE_MARKER_1PX_ORIGIN_SHIFT = {
+    0: (-1, -1),
+    1: (-1,  0),
+    2: ( 0,  0),
+    3: ( 0,  0),
+    4: (-1,  0),
+    5: (-1,  0),
+}
+
+# octPlace_t.X/Y half-pixel bias. The packed octBmp_t pivot is stored as
+# 2*pivot_local - 0.5 (see PIVOT_MODE below), so undoing that bias is what
+# turns "the sprite's pivot" into "the place's position":
+#     place.x =  2*(layer_x - side_centre_x) + pivot_x + PLACE_PIVOT_BIAS
+#     place.y = -2*(layer_y - side_centre_y) - pivot_y - PLACE_PIVOT_BIAS
+PLACE_PIVOT_BIAS = 0.5
+
 # Font PSL extras. `psd.exe <font>.fnt` writes a type-3 PSL whose records
 # carry the BMFont metrics the packer needs to fill octBmp_t. The XYWH block
 # holds the glyph's atlas rect; the four fields below hold everything else.

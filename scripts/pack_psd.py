@@ -47,7 +47,7 @@ from config import (
     OCT_PLACE_FONT_MAX, OCT_PLACE_FONT_MIN,
     OCT_PLACE_LABEL_ALIGN_DEFAULT, OCT_PLACE_LABEL_MASK,
     OCT_PLACE_LABEL_SHIFT, OCT_PLACE_RATE_DEFAULT,
-    PALETTE_SPRITE_NAME, PLACEHOLDER_SPRITE_NAME,
+    PALETTE_SPRITE_NAME, PLACE_PIVOT_BIAS, PLACEHOLDER_SPRITE_NAME,
     PLACEHOLDER_SPRITE_SIZE, PLACEHOLDER_SPRITE_COLOR,
     PSL_CENTER_X_OFFSET, PSL_CENTER_Y_OFFSET, PSL_GROUP_OFFSET,
     PSL_GROUP_SIZE, PSL_HEADER_SIZE, PSL_LAYERMARK_OFFSET,
@@ -58,9 +58,11 @@ from config import (
     PSL_RATE_SIZE, PSL_RECORD_SIZE,
     PSL_FONT_ADVANCE_OFFSET, PSL_FONT_LINEHEIGHT_OFFSET,
     PSL_FONT_PIVOT_X_OFFSET, PSL_FONT_PIVOT_Y_OFFSET, PSL_FONT_RATE_STRING,
-    PSL_SIDE_OFFSET, PSL_TYPE_ASSET, PSL_TYPE_FONT, PSL_TYPE_MAP,
+    PSL_SIDE_H_OFFSET, PSL_SIDE_OFFSET, PSL_SIDE_W_OFFSET,
+    PSL_TYPE_ASSET, PSL_TYPE_FONT, PSL_TYPE_MAP,
     PSL_TYPE_OFFSET,
     PSL_TYPE_SIZE, PSL_XYWH_OFFSET, PlaceFlag,
+    SIDE_MARKER_1PX_ORIGIN_SHIFT, SIDE_MARKER_MIN_SIZE,
     layer_mark_of, rate_from_layer_mark,
 )
 
@@ -158,7 +160,15 @@ class LayerName:
 
     @property
     def is_marker(self) -> bool:
-        return self.base.startswith('=')
+        """True for a ``=NN`` layer marker: the whole name is the token.
+
+        ``base`` is already split on ``=`` (so ``eat=3`` keeps ``eat``), which
+        leaves a bare ``=20`` with an *empty* base — testing ``base`` for a
+        leading ``=`` therefore never fired, and every layer marker exported
+        with ``Number = 0``. ``marker_number`` is the field that actually
+        records the token, so ask it instead.
+        """
+        return self.marker_number is not None
 
     @classmethod
     def parse(cls, name: str) -> 'LayerName':
@@ -387,14 +397,37 @@ def _rects_overlap(a: tuple[int, int, int, int],
             and a[1] < b[1] + b[3] and a[1] + a[3] > b[1])
 
 
+def side_marker_rect(side: int, x: int, y: int, w: int, h: int
+                     ) -> tuple[int, int, int, int]:
+    """A ``~sideN`` layer's rect as ``psd.exe`` writes it into the PSL.
+
+    Verbatim, except for a 1x1 marker: that becomes a 2x2 square whose origin
+    is shifted by :data:`config.SIDE_MARKER_1PX_ORIGIN_SHIFT` for its side.
+    See that constant for how the table was measured and why the pixel
+    matters (the side centre is ``left + w/2``, so it is worth one engine unit
+    on every place of that side).
+    """
+    if (w, h) != (1, 1):
+        return (x, y, w, h)
+    dx, dy = SIDE_MARKER_1PX_ORIGIN_SHIFT.get(side, (0, 0))
+    return (x + dx, y + dy, SIDE_MARKER_MIN_SIZE, SIDE_MARKER_MIN_SIZE)
+
+
 def nearest_side(x: int, y: int, w: int, h: int,
                  side_centers: dict[int, tuple[int, ...]]) -> int:
-    """Return the ~sideN id whose marker is closest to the layer center."""
-    cx, cy = x + w / 2.0, y + h / 2.0
+    """Return the ``~sideN`` id whose marker is closest to the layer.
+
+    ``psd.exe`` measures from the layer's **top-left corner**, not its centre,
+    to the *normalised* marker origin (:func:`side_marker_rect`), and keeps
+    the first marker on a tie. ``OCT_ladybug``'s ``ico.psd`` is the case that
+    tells the two apart: its 145x141 icon is nearer side 1 by its centre and
+    nearer side 0 by its corner, and the reference toolchain files it under
+    side 0. ``w``/``h`` are part of the signature but deliberately unused.
+    """
     best_side, best_dist = -1, math.inf
     for sn, rect in side_centers.items():
         sx, sy = rect[0], rect[1]
-        d = math.hypot(cx - sx, cy - sy)
+        d = math.hypot(x - sx, y - sy)
         if d < best_dist:
             best_dist, best_side = d, sn
     return best_side
@@ -483,8 +516,8 @@ def export_psd_file_python(psd_path: str, exported_dir: str,
         if layer.name.startswith('~side'):
             try:
                 sn = int(layer.name[5:])
-                side_centers[sn] = (layer.left, layer.top,
-                                    layer.width, layer.height)
+                side_centers[sn] = side_marker_rect(
+                    sn, layer.left, layer.top, layer.width, layer.height)
             except ValueError:
                 pass
 
@@ -938,6 +971,8 @@ def parse_psl(psl_path: str) -> tuple[int, list[dict]]:
         side = struct.unpack_from('<I', rec, PSL_SIDE_OFFSET)[0]
         center_x = struct.unpack_from('<I', rec, PSL_CENTER_X_OFFSET)[0]
         center_y = struct.unpack_from('<I', rec, PSL_CENTER_Y_OFFSET)[0]
+        side_w = struct.unpack_from('<i', rec, PSL_SIDE_W_OFFSET)[0]
+        side_h = struct.unpack_from('<i', rec, PSL_SIDE_H_OFFSET)[0]
         pivot_x, pivot_y, pivot_w, pivot_h = \
             struct.unpack_from('<4i', rec, PSL_PIVOT_OFFSET)
 
@@ -969,7 +1004,11 @@ def parse_psl(psl_path: str) -> tuple[int, list[dict]]:
             'x': x, 'y': y, 'w': w, 'h': h,
             'layer_mark': layer_mark,
             'side': side,
+            # `center_*` is the ~sideN marker's top-left and `side_*` its size;
+            # the side CENTRE the packer anchors places on is
+            # `center + side/2` (see psl_to_octplace).
             'center_x': center_x, 'center_y': center_y,
+            'side_w': side_w, 'side_h': side_h,
             'pivot_x': pivot_x, 'pivot_y': pivot_y,
             'pivot_w': pivot_w, 'pivot_h': pivot_h,
             'group_name': group_name,
@@ -1292,13 +1331,25 @@ def psl_to_octplace(records: list[dict],
         if name and name in packed_pivots:
             stored_pvx, stored_pvy, _, _ = packed_pivots[name]
 
-        # Position formula matching utils.exe exactly
-        local_x = 2.0 * (x_psd - cx) + stored_pvx
-        local_y = -2.0 * (y_psd - cy) - stored_pvy
-        if local_x < 0:
-            local_x -= 1
-        if local_y > 0:
-            local_y += 1
+        # Position formula matching utils.exe exactly.
+        #
+        # A place is the sprite's PIVOT POINT, measured from the CENTRE of its
+        # cube side, in the engine's 2x (half-pixel) units:
+        #
+        #     place.x =  2 * (layer_x + pivot_local_x - side_centre_x)
+        #     place.y = -2 * (layer_y + pivot_local_y - side_centre_y)
+        #
+        # The packed octBmp_t pivot already carries the doubling and the
+        # half-pixel bias (`pivot = 2*pivot_local - 0.5`, test_pivot_parity),
+        # so undoing the bias with PLACE_PIVOT_BIAS is all that is left. Y is
+        # negated because PSD coordinates grow downwards and side space up.
+        #
+        # The side centre is the ~sideN marker's centre, `left + w/2` -- not
+        # its top-left corner, which is what the PSL stores.
+        side_cx = cx + rec.get('side_w', 0) / 2.0
+        side_cy = cy + rec.get('side_h', 0) / 2.0
+        local_x = 2.0 * (x_psd - side_cx) + stored_pvx + PLACE_PIVOT_BIAS
+        local_y = -2.0 * (y_psd - side_cy) - stored_pvy - PLACE_PIVOT_BIAS
 
         type_idx = type_map.get(type_name, 0) if type_name else 0
         group_idx = group_map.get(group_name, 0) if group_name else 0
