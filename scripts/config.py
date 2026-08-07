@@ -192,6 +192,13 @@ PALETTE_SPRITE_NAME     = 'pal'
 DEFAULT_ASSET_NAME = 'assets'
 MAP_FILENAME_PREFIX = 'map_'
 
+# Placement maps the launcher looks up BY NAME, so a PSD called this is a map
+# whatever its filename prefix. The engine reads "ico" directly
+# (oct_shell.h: OCT_external_map(guid1, guid2, "ico")); "ahover" is its hover
+# twin. Reference corpus check: art/!pack.bat runs psd.exe -map on exactly
+# ico.psd and ahover.psd.
+RESERVED_MAP_NAMES = ('ico', 'ahover')
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # !pack.txt — the legacy utils.exe palette-bucket config (see packtxt.py)

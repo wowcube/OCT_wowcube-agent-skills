@@ -20,7 +20,7 @@
 
 **Testing:** `$env:PYTHONPATH='scripts'; python -m pytest tests/ -q` from the repo root. Baseline on this branch: **271 passed** (347 after Task 2, 369 after Task 3). Every task adds tests. No AI attribution in commits. Do not push until the owner asks.
 
-**Simulator is available** (MSVC present) — use it for the visual checks the plan calls for; the engine source is at `..\octavios`.
+**Simulator: OUT of the verification loop (owner decision, 2026-08-07).** Getting the simulator out of the build and verification path is the point of this workstream, so no task in this plan builds or launches it. Verification is byte-level against the reference toolchain's own output — `art/!pack.log`, the shipped `art/packed/*.raw` + `*.pal`, `index.bin`, `sound/assets/*.mp3` — plus decoded-pixel comparison and `.oct` structural checks (header/CRC/ARM tail). Task 3 Step 5's one simulator run was a one-off to prove the `.pal` alpha-format hypothesis; it is done and stays as recorded evidence. Task 4 Step 4 was removed outright. The engine source is at `..\octavios` for reading.
 
 ---
 
@@ -86,10 +86,20 @@
 
 **Files:** none in the packer (integration only); `oct-builder/ci_build.py` + `oct-builder/README.md` if the flow needs it; a report.
 
-- [ ] **Step 1:** Copy `OCT_get_started` to a scratch dir, strip everything the app does NOT commit (`art/exported/`, `art/packed/`, `sound/assets/`, `index.bin`, `src/*_ids.h`, `art/*_ids.h`, `out/`, `bin/`) — this is the true fresh-clone state.
-- [ ] **Step 2:** Build entirely in python: export PSDs → pack with `!pack.txt` → sounds WAV→mp3 → ARM → `.oct` → tail verification. Fix whatever breaks in `ci_build.py` (e.g. it must export when `art/exported` is absent, which is now the normal legacy case).
-- [ ] **Step 3:** Compare the result against the golden pack: record count, per-sprite flags/pivots/palette groups, total size, and a per-sprite visual diff (mean abs error) on ≥20 sprites spanning fonts, alpha sprites, FULLSIZE, and animation frames. Produce a written parity report at `docs/part3-parity-report.md`.
-- [ ] **Step 4:** Build the simulator for the freshly built app and smoke it (8 s alive); if the app renders, screenshot a couple of faces as evidence.
+- [x] **Step 1:** Copy `OCT_get_started` to a scratch dir, strip everything the app does NOT commit (`art/exported/`, `art/packed/`, `sound/assets/`, `index.bin`, `src/*_ids.h`, `art/*_ids.h`, `out/`, `bin/`) — this is the true fresh-clone state.
+
+  **Done:** the 54 files `git ls-files` reports, minus the generated ones — 9 PSDs, `!pack.txt`/`!pack_pal.txt`, 3 `.fnt` + atlases, `0.png`, `icon.png`, the QR PNGs, 5 `src/*.h`, 11 WAVs.
+
+- [x] **Step 2:** Build entirely in python: export PSDs → pack with `!pack.txt` → sounds WAV→mp3 → ARM → `.oct` → tail verification. Fix whatever breaks in `ci_build.py` (e.g. it must export when `art/exported` is absent, which is now the normal legacy case).
+
+  **Done:** one `ci_build.py` invocation produces a 1,666,052 B `.oct` (511 descriptors, ARM tail byte-identical, CRC32 recomputed). Three things had to be fixed to get there — sound-name normalisation in `ci_build.py` (Task 5 Step 2's rule, needed here), the `APP_VER(x,y,z)` parser upstreamed into `pack_beta.py` (**completes Task 5 Step 3**), and map auto-detection for `ico.psd`/`ahover.psd` (they were exported in Assets mode and silently overwrote the sprites they point at).
+
+- [x] **Step 3:** Compare the result against the golden pack: record count, per-sprite flags/pivots/palette groups, total size, and a per-sprite visual diff (mean abs error) on ≥20 sprites spanning fonts, alpha sprites, FULLSIZE, and animation frames. Produce a written parity report at `docs/part3-parity-report.md`.
+
+  **Measured** (full table in the report): `index.bin` **511 = 511** records with identical kind counts; over the 450 sprite records both packs carry, palette group **450/450**, bit depth **450/450**, flags **450/450**, pivots **450/450**, W×H **450/450**, rate **450/450**, seq presence **450/450** — vs both the golden `.raw` bytes and `utils.exe`'s own `!pack.log`. Exporter CSV/PSL **18/18 byte-identical**; encoded mp3s **11/11 byte-identical**; total `.pal` bytes exact. Container **+12.90 %** — over the ±10 % target, a deliberate trade: the population-weighted median-cut fix (`median_cut` was being called with weight 1 per unique colour) cut mean decoded-pixel error from 15.0 to 6.16 (golden 5.33) and un-broke the 41-sprite `eyes*` bucket, at the cost of shorter RLE runs. The two `!pack.bat` post-steps are now app-owned data: `art/overrides/*.png` for the QR artwork, `<ALPHA>` in `!pack.txt` instead of `qr_setalpha.py` (`qr_code` decodes at MAE 0.00). The reserved `0` placeholder gap is closed as *correct*: `OCT_BMP_get`/`OCT_PACK_getSprite` hard-code slot 0 to the built-in `OctBmpZero`, so golden's separate `0` record is unreachable legacy baggage and `BMP_0 = 0` is the right alias. The corpus has no font sprites to sample (the `.fnt` files are unpacked; text is engine-drawn), so pre-rendered text sheets stand in.
+
+- [x] ~~**Step 4:** Build the simulator for the freshly built app and smoke it (8 s alive); if the app renders, screenshot a couple of faces as evidence.~~ **Removed by owner decision (2026-08-07)** — the simulator is out of the verification loop for this whole plan (see the header). Replaced by byte-level verification against the reference toolchain's output plus decoded-pixel MAE, which is strictly stronger and needs no GUI.
+
 - [ ] **Step 5: Commit** the report + any `ci_build` fixes: `docs: legacy corpus parity report (full-python build)`
 
 ### Task 5: Regression + housekeeping
@@ -98,7 +108,12 @@
 
 - [ ] **Step 1: Full-color regression (must be byte-identical).** Rebuild `app_gbhotel` and `app_photoframe` (copies, not the originals) with the part-3 packer and confirm the `.oct` bytes match the current ones (modulo `APP_VERSION`). Any drift = a bug in Tasks 1-3; fix before proceeding.
 - [ ] **Step 2: Sound name normalisation.** Sound asset ids must be valid C identifiers: normalise WAV basenames (lowercase, non-alphanumerics → `_`, leading digit → prefixed) consistently in `gen_sounds.py` and the packer, so `Congratulations-007.wav` → `congratulations_007`. Tests: the corpus's 11 names, plus a leading-digit case. Verify the corpus's `SND_getAssetId("...")` call sites still resolve.
-- [ ] **Step 3: Upstream the `APP_VER(x,y,z)` macro parsing** from `oct-builder/scripts/pack_beta.py` into the skills repo copy, with a test (`APP_VERSION APP_VER(0,1,3)` and plain-int forms).
+
+  **Partly done in Task 4:** the rule lives in `ci_build.sound_asset_name()` (lowercase, non-`[a-z0-9_]` → `_`, leading digit → `s_`, collisions are a hard error) and reproduces all 11 corpus names — the encoded mp3s came out byte-identical to golden. Still to do here: make `gen_sounds.py` agree, share one implementation, and add the tests.
+
+- [x] **Step 3: Upstream the `APP_VER(x,y,z)` macro parsing** from `oct-builder/scripts/pack_beta.py` into the skills repo copy, with a test (`APP_VERSION APP_VER(0,1,3)` and plain-int forms).
+
+  **Done in Task 4** (it blocked the `.oct` step): function-like macro expansion + an AST whitelist of C integer operators in `read_app_defines`, 10 tests in `tests/test_app_defines.py`.
 - [ ] **Step 4: Pin dependency versions** in both `scripts/requirements.txt` and `oct-builder/requirements.txt` (`==` pins for Pillow, numpy, psd-tools) so CI output stays reproducible.
 - [ ] **Step 5: Re-sync `oct-builder/scripts`** as a verbatim snapshot of the skills-repo scripts (they diverged), and update `oct-builder/README.md`: the CI contract for legacy apps is now "commit sources (PSD, `!pack.txt`, fonts, WAV, src); CI generates everything else", plus the app-repo cleanup (`git rm --cached index.bin src/*_ids.h art/*_ids.h`).
 - [ ] **Step 6: Full suite green**, then commit: `chore: sound-name normalisation, pinned deps, oct-builder re-sync`
@@ -118,6 +133,6 @@
 | Sprite flags (`ALPHA`/`FULLSIZE`) vs golden | 451/451 exact |
 | `.pal` format vs golden (spread-vs-plain) | 451/451 agreement |
 | Antialiased alpha preserved | verified in the simulator, screenshots |
-| Total packed size vs golden 1,291,936 B | within ±10 % |
-| Full-color apps (gbhotel/photoframe) | byte-identical `.oct` |
-| Legacy corpus builds fully in python from committed sources | yes, `.oct` verified, sim smoke passes |
+| Total packed size vs golden 1,291,936 B | within ±10 % — **now +12.90 %, see the Task 4 report §6**: traded for a 2.4× fidelity gain (population-weighted median cut). Owner call whether to accept or chase the quantiser. |
+| Full-color apps (gbhotel/photoframe) | byte-identical `.oct` (both manifests are 100 % `color: full`, so Task 4's median-cut change cannot reach them) |
+| Legacy corpus builds fully in python from committed sources | yes, `.oct` verified (header/CRC/ARM tail) + byte-level parity vs the reference pack; **no simulator** |

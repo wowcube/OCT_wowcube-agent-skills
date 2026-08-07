@@ -480,12 +480,17 @@ def snap_color(r5: int, g6: int, b5: int, a5: int,
     )
 
 
-def extract_per_sprite_colors(
+def extract_per_sprite_color_counts(
     file_list: Iterable[str],
     color_tolerance: int = 0,
     skip_names: Iterable[str] | None = None,
-) -> dict[str, set[tuple[int, int, int, int]]]:
-    """Return the set of quantized colors each sprite uses.
+) -> dict[str, dict[tuple[int, int, int, int], int]]:
+    """Per sprite, ``{quantized_color: pixel_count}``.
+
+    The pixel count is what makes :func:`median_cut` a median cut: without it
+    a 14,400-pixel black field and one stray antialiased pixel pull the box
+    boundaries equally hard, which is exactly how the corpus's 41-sprite
+    ``eyes*`` bucket lost both black and white out of its 4-colour palette.
 
     ``skip_names`` defaults to the reserved ``pal``/``0`` sprites. The
     ``!pack.txt`` path narrows it to ``pal`` only, because utils.exe does route
@@ -493,7 +498,7 @@ def extract_per_sprite_colors(
 
     Vectorised via numpy.unique so large sheets process in milliseconds.
     """
-    result: dict[str, set[tuple[int, int, int, int]]] = {}
+    result: dict[str, dict[tuple[int, int, int, int], int]] = {}
     skip = set(skip_names) if skip_names is not None \
         else {PALETTE_SPRITE_NAME, PLACEHOLDER_SPRITE_NAME}
 
@@ -505,12 +510,12 @@ def extract_per_sprite_colors(
         try:
             pixels = np.asarray(Image.open(fpath).convert('RGBA')).reshape(-1, 4)
         except Exception:
-            result[name] = set()
+            result[name] = {}
             continue
 
         opaque = pixels[pixels[:, 3] > 0]
         if opaque.size == 0:
-            result[name] = set()
+            result[name] = {}
             continue
 
         # Vectorised RGB565+A5 quantisation
@@ -522,17 +527,50 @@ def extract_per_sprite_colors(
         # Encode into a single uint32 key so np.unique can dedup fast
         keys = (r5.astype(np.uint32) << 24) | (g6.astype(np.uint32) << 16) \
              | (b5.astype(np.uint32) << 8)  |  a5.astype(np.uint32)
-        unique = np.unique(keys)
+        unique, counts = np.unique(keys, return_counts=True)
 
-        colors: set[tuple[int, int, int, int]] = set()
-        for k in unique.tolist():
+        colors: dict[tuple[int, int, int, int], int] = {}
+        for k, n in zip(unique.tolist(), counts.tolist()):
             tup = ((k >> 24) & 0xFF, (k >> 16) & 0xFF,
                    (k >> 8) & 0xFF, k & 0xFF)
             if color_tolerance > 0:
                 tup = snap_color(*tup, color_tolerance)
-            colors.add(tup)
+            colors[tup] = colors.get(tup, 0) + n
         result[name] = colors
     return result
+
+
+def extract_per_sprite_colors(
+    file_list: Iterable[str],
+    color_tolerance: int = 0,
+    skip_names: Iterable[str] | None = None,
+) -> dict[str, set[tuple[int, int, int, int]]]:
+    """Return the set of quantized colors each sprite uses.
+
+    The set view of :func:`extract_per_sprite_color_counts`, for the grouping
+    logic that only cares which colors co-occur.
+    """
+    return {name: set(counts) for name, counts in
+            extract_per_sprite_color_counts(
+                file_list, color_tolerance=color_tolerance,
+                skip_names=skip_names).items()}
+
+
+def pool_color_weights(
+    members: Iterable[str],
+    sprite_counts: dict[str, dict[tuple[int, int, int, int], int]],
+) -> list[tuple[tuple[int, int, int, int], int]]:
+    """Sum the per-sprite pixel counts of a palette group's members.
+
+    A colour used by several sprites in the group weighs the sum of its
+    occurrences, which is what a palette shared by the whole group should
+    optimise for.
+    """
+    pooled: dict[tuple[int, int, int, int], int] = {}
+    for name in members:
+        for color, n in sprite_counts.get(name, {}).items():
+            pooled[color] = pooled.get(color, 0) + n
+    return sorted(pooled.items())
 
 
 def _pick_tier(tiers: list[int], need: int) -> int:
@@ -659,7 +697,9 @@ def build_grouped_palettes(
     if color_tolerance > 0:
         print(f"  Color tolerance: {color_tolerance} "
               f"(merging similar colors in 565 space)")
-    sprite_colors = extract_per_sprite_colors(file_list, color_tolerance=color_tolerance)
+    sprite_counts = extract_per_sprite_color_counts(
+        file_list, color_tolerance=color_tolerance)
+    sprite_colors = {n: set(c) for n, c in sprite_counts.items()}
 
     total_sprites = len(sprite_colors)
     total_unique = len(set().union(*sprite_colors.values())) if sprite_colors else 0
@@ -681,11 +721,10 @@ def build_grouped_palettes(
         pal_size = tier + 1
         sym_bits = symbol_bitness_for_size(pal_size)
 
-        unique_colors = list(group.colors)
-        if len(unique_colors) <= tier:
-            pal_q = unique_colors
+        weighted = pool_color_weights(group.sprite_names, sprite_counts)
+        if len(weighted) <= tier:
+            pal_q = [c for c, _n in weighted]
         else:
-            weighted = [(c, 1) for c in unique_colors]
             pal_q = median_cut(weighted, tier)
 
         palette_rgba = [(0, 0, 0, 0)] + [expand_565_a5(*q) for q in pal_q]
@@ -723,9 +762,10 @@ def build_config_palettes(
     skipped"); the caller decides what to do with the third element.
     """
     print("  Scanning sprites for per-sprite color analysis...")
-    sprite_colors = extract_per_sprite_colors(
+    sprite_counts = extract_per_sprite_color_counts(
         file_list, color_tolerance=color_tolerance,
         skip_names={PALETTE_SPRITE_NAME})
+    sprite_colors = {n: set(c) for n, c in sprite_counts.items()}
 
     groups, unmatched = config.group_sprites(sorted(sprite_colors))
 
@@ -741,15 +781,13 @@ def build_config_palettes(
         usable = pal_size - 1
         sym_bits = symbol_bitness_for_size(pal_size)
 
-        unique_colors: set[tuple[int, int, int, int]] = set()
-        for name in members:
-            unique_colors |= sprite_colors.get(name, set())
+        weighted = pool_color_weights(members, sprite_counts)
+        unique_colors = {c for c, _n in weighted}
 
-        colors = list(unique_colors)
-        if len(colors) > usable:
-            pal_q = median_cut([(c, 1) for c in colors], usable)
+        if len(weighted) > usable:
+            pal_q = median_cut(weighted, usable)
         else:
-            pal_q = colors
+            pal_q = [c for c, _n in weighted]
 
         palette_rgba = [(0, 0, 0, 0)] + [expand_565_a5(*q) for q in pal_q]
         palette_rgba = _pad_palette_to_size(palette_rgba, pal_size)

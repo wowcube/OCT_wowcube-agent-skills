@@ -17,6 +17,7 @@ utils.exe (from the app_hulk example).
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import struct
 import sys
@@ -1008,28 +1009,141 @@ def emit_beta_layout(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _parse_c_int(token: str) -> int | None:
-    """Parse a C integer literal ('102', '0xDF...', with u/U/l/L suffixes)."""
+    """Parse a C integer literal ('102', '001', '0xDF...', u/U/l/L suffixes).
+
+    Decimal is read base 10, not base 0: `#define APP_VERSION 001` is a real
+    app.h shape and int('001', 0) raises.  C would read a leading zero as
+    octal, but every app.h using it means plain decimal (001 == v0.01).
+    """
     m = re.fullmatch(r"(0[xX][0-9a-fA-F]+|\d+)[uUlL]*", token)
-    return int(m.group(1), 0) if m else None
+    if not m:
+        return None
+    lit = m.group(1)
+    return int(lit, 16) if lit[:2] in ("0x", "0X") else int(lit, 10)
 
 
-def _parse_int_expr(text: str, define: str) -> int:
-    """Evaluate a `#define` value that is an OR of int literals and the
-    APP_CATEGORY_*/OCT_CAT_* macros (the only expressions app.h files use).
-    Parens are transparent because `|` is the sole operator."""
-    total = 0
-    for term in text.replace("(", " ").replace(")", " ").split("|"):
-        term = term.strip()
-        if not term:
-            raise ValueError(f"{define}: empty term in '{text}'")
-        value = _parse_c_int(term)
-        if value is None:
-            value = _CATEGORY_MACROS.get(term)
-        if value is None:
-            raise ValueError(f"{define}: unknown token '{term}' in '{text}' - "
-                             f"use an integer or an APP_CATEGORY_*/OCT_CAT_* macro")
-        total |= value
-    return total
+# Function-like `#define NAME(a, b) body` in the app's own app.h.  Real apps
+# define version helpers this way -- `#define APP_VERSION APP_VER(0, 1, 3)`
+# with `#define APP_VER(ma, mi, pa) (((ma) << 16) | ((mi) << 8) | (pa))` is the
+# shape shipped by OCT_get_started and app_seabattle -- so the define values
+# below cannot be read without expanding them first.
+_FUNC_MACRO_RE = re.compile(r"^[ \t]*#[ \t]*define[ \t]+(\w+)\(([^)]*)\)[ \t]+(.+)$",
+                            re.M)
+
+# Integer operators a #define value may legally use.  Anything else (calls,
+# attributes, comparisons, names that are not known macros) is rejected: this
+# evaluates untrusted-ish source text, so the node whitelist is the guard.
+_AST_BINOPS = {ast.BitOr: lambda a, b: a | b, ast.BitAnd: lambda a, b: a & b,
+               ast.BitXor: lambda a, b: a ^ b, ast.LShift: lambda a, b: a << b,
+               ast.RShift: lambda a, b: a >> b, ast.Add: lambda a, b: a + b,
+               ast.Sub: lambda a, b: a - b, ast.Mult: lambda a, b: a * b}
+
+
+def _collect_func_macros(text: str) -> dict[str, tuple[list[str], str]]:
+    """Function-like macros defined in this header, as {name: (params, body)}."""
+    out: dict[str, tuple[list[str], str]] = {}
+    for m in _FUNC_MACRO_RE.finditer(text):
+        params = [p.strip() for p in m.group(2).split(",") if p.strip()]
+        out[m.group(1)] = (params, m.group(3).split("//", 1)[0].strip())
+    return out
+
+
+def _split_macro_args(text: str, open_idx: int) -> tuple[list[str], int] | None:
+    """Split the argument list of a call starting at text[open_idx] == '('.
+
+    Returns (args, index_just_past_the_closing_paren), or None when the parens
+    are unbalanced.  Nested parens inside an argument are preserved.
+    """
+    depth, arg, args = 0, [], []
+    for i in range(open_idx, len(text)):
+        ch = text[i]
+        if ch == "(":
+            depth += 1
+            if depth == 1:
+                continue
+        elif ch == ")":
+            depth -= 1
+            if depth == 0:
+                args.append("".join(arg).strip())
+                return ([a for a in args if a or len(args) > 1], i + 1)
+        elif ch == "," and depth == 1:
+            args.append("".join(arg).strip())
+            arg = []
+            continue
+        arg.append(ch)
+    return None
+
+
+def _expand_func_macros(text: str, macros: dict[str, tuple[list[str], str]],
+                        depth: int = 8) -> str:
+    """Substitute function-like macro invocations until none are left."""
+    for _ in range(depth):
+        for name, (params, body) in macros.items():
+            m = re.search(rf"\b{re.escape(name)}\s*\(", text)
+            if not m:
+                continue
+            split = _split_macro_args(text, m.end() - 1)
+            if split is None or len(split[0]) != len(params):
+                continue
+            args, end = split
+            expansion = body
+            for param, arg in zip(params, args):
+                expansion = re.sub(rf"\b{re.escape(param)}\b", f"({arg})",
+                                   expansion)
+            text = f"{text[:m.start()]}({expansion}){text[end:]}"
+            break
+        else:
+            return text
+    return text
+
+
+def _eval_int_ast(node: ast.AST, text: str, define: str) -> int:
+    if isinstance(node, ast.Expression):
+        return _eval_int_ast(node.body, text, define)
+    if isinstance(node, ast.Constant) and isinstance(node.value, int) \
+            and not isinstance(node.value, bool):
+        return node.value
+    if isinstance(node, ast.BinOp) and type(node.op) in _AST_BINOPS:
+        return _AST_BINOPS[type(node.op)](_eval_int_ast(node.left, text, define),
+                                          _eval_int_ast(node.right, text, define))
+    if isinstance(node, ast.UnaryOp):
+        val = _eval_int_ast(node.operand, text, define)
+        if isinstance(node.op, ast.USub):
+            return -val
+        if isinstance(node.op, ast.UAdd):
+            return val
+        if isinstance(node.op, ast.Invert):
+            return ~val
+    if isinstance(node, ast.Name):
+        value = _CATEGORY_MACROS.get(node.id)
+        if value is not None:
+            return value
+        raise ValueError(f"{define}: unknown token '{node.id}' in '{text}' - "
+                         f"use an integer, an APP_CATEGORY_*/OCT_CAT_* macro, "
+                         f"or a macro defined in the same app.h")
+    raise ValueError(f"{define}: unsupported expression '{text}' - a pack "
+                     f"header define must be an integer expression")
+
+
+def _parse_int_expr(text: str, define: str,
+                    func_macros: dict[str, tuple[list[str], str]] | None = None
+                    ) -> int:
+    """Evaluate a `#define` value: integer literals, the APP_CATEGORY_*/OCT_CAT_*
+    macros, function-like macros defined in the same app.h (APP_VER(...)), and
+    the C integer operators | & ^ << >> + - *."""
+    expanded = _expand_func_macros(text, func_macros or {})
+    # single bare token fast path keeps the original error wording
+    value = _parse_c_int(expanded.strip())
+    if value is not None:
+        return value
+    # strip C integer suffixes so Python can parse the literals
+    pythonic = re.sub(r"\b(0[xX][0-9a-fA-F]+|\d+)[uUlL]+", r"\1", expanded)
+    try:
+        tree = ast.parse(pythonic, mode="eval")
+    except SyntaxError as exc:
+        raise ValueError(f"{define}: cannot parse '{text}' as an integer "
+                         f"expression ({exc.msg})") from None
+    return _eval_int_ast(tree, text, define)
 
 
 def read_app_defines(app_h: str | Path) -> dict:
@@ -1042,6 +1156,7 @@ def read_app_defines(app_h: str | Path) -> dict:
     """
     text = Path(app_h).read_text(encoding="utf-8-sig")
     out: dict = {}
+    func_macros = _collect_func_macros(text)
 
     def value_of(name: str) -> str | None:
         m = re.search(rf"^\s*#\s*define\s+{name}\s+(.+)$", text, re.M)
@@ -1060,7 +1175,7 @@ def read_app_defines(app_h: str | Path) -> dict:
                         ("APP_CATEGORIES", "categories"), ("APP_COLORS", "colors")):
         raw = value_of(define)
         if raw is not None:
-            out[key] = _parse_int_expr(raw, define)
+            out[key] = _parse_int_expr(raw, define, func_macros)
     return out
 
 

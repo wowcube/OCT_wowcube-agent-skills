@@ -52,6 +52,7 @@ from config import (
     PLACEHOLDER_SPRITE_NAME,
     PLACEHOLDER_SPRITE_PIVOT,
     PSL_TYPE_ASSET,
+    RESERVED_MAP_NAMES,
     SpriteFlag,
 )
 
@@ -167,11 +168,30 @@ def _resolve_asset_names(args: argparse.Namespace) -> set[str]:
 
 
 def _resolve_map_filter(args: argparse.Namespace) -> None:
+    """Decide which PSDs are placement maps rather than sprite sheets.
+
+    Two sources, both name-based because that is all the legacy toolchain
+    had: the ``map_`` filename prefix, and the launcher's two reserved map
+    names. ``ico`` is looked up by name by the engine itself
+    (``oct_shell.h``: ``OCT_external_map(..., "ico")``) and ``ahover`` is its
+    hover twin, so ``art/ico.psd``/``art/ahover.psd`` are maps by contract —
+    the reference corpus's ``!pack.bat`` indeed runs exactly those two (and
+    only those two) through ``psd.exe -map``.
+
+    Getting this wrong is not cosmetic: a map PSD exported in Assets mode
+    writes PNGs, and its layers are *named after sprites that already exist*
+    (``ahover.psd`` holds a 74x67 placement thumbnail called ``ahover_00``,
+    the real 144x145 sprite lives in ``ahover_src.psd``), so the map
+    silently overwrites the sprite it points at.
+    """
     if args.map_filter is not None:
         return
-    map_psds = sorted(Path(args.art_dir).glob(f'{MAP_FILENAME_PREFIX}*.psd'))
+    art = Path(args.art_dir)
+    map_psds = [p.stem for p in sorted(art.glob(f'{MAP_FILENAME_PREFIX}*.psd'))]
+    map_psds += [n for n in RESERVED_MAP_NAMES
+                 if (art / f'{n}.psd').is_file() and n not in map_psds]
     if map_psds:
-        args.map_filter = ','.join(p.stem for p in map_psds)
+        args.map_filter = ','.join(map_psds)
         print(f"  Auto-detected maps: {args.map_filter}")
 
 
@@ -193,7 +213,41 @@ def _phase_export(args: argparse.Namespace, asset_names_set: set[str]) -> None:
         map_filter=export_map_filter,
         asset_names=asset_names_set,
     )
+    _apply_export_overrides(args.art_dir, args.exported_dir)
     print()
+
+
+def _apply_export_overrides(art_dir: str, exported_dir: str) -> int:
+    """Copy ``<art-dir>/overrides/*.png`` over the freshly exported sprites.
+
+    An export run rebuilds ``art/exported/`` from the PSDs, which is exactly
+    what CI wants — except that some sprites are deliberately NOT what their
+    PSD layer holds. The reference corpus ships two variants of its QR code
+    and the one the app draws is a plain committed PNG, copied over the
+    exported layer as the last step of the artist's ``!pack.bat``. Without a
+    convention for that, a python-only build silently ships the wrong artwork
+    (measured on the corpus: mean abs error 146/255 against the shipped
+    sprite) — a wrong pack that still passes every structural check.
+
+    The rule is deliberately dumb and app-agnostic: a PNG in
+    ``<art-dir>/overrides/`` replaces the exported sprite of the same name,
+    and one that matches no exported sprite is simply added as a new sprite.
+    Nothing here knows about QR codes. Returns the number of files copied.
+    """
+    src_dir = Path(art_dir) / 'overrides'
+    if not src_dir.is_dir():
+        return 0
+    pngs = sorted(src_dir.glob('*.png'))
+    if not pngs:
+        return 0
+    os.makedirs(exported_dir, exist_ok=True)
+    for png in pngs:
+        dst = Path(exported_dir) / png.name
+        verb = 'overrides' if dst.exists() else 'adds'
+        shutil.copy2(png, dst)
+        print(f"  {src_dir.name}/{png.name} {verb} {dst}")
+    print(f"  {len(pngs)} committed override PNG(s) applied over the export")
+    return len(pngs)
 
 
 def _resolve_pack_config(args: argparse.Namespace):
