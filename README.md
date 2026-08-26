@@ -7,7 +7,8 @@ A knowledge base and skill set for LLM-powered coding agents (Kilo Code, Claude 
 ```
 ├── skills/
 │   ├── cube_orchestrator/        # Skill: MASTER controller + entry point (routes all stages)
-│   │   └── SKILL.md
+│   │   ├── SKILL.md
+│   │   └── YOLO.md               # Opt-in autonomous run mode (read only on the literal `YOLO` token)
 │   ├── cube_game-designer/       # Stage 1 component: game concept → GDD
 │   │   └── SKILL.md
 │   ├── technical_prompter/       # Stage 2 component: GDD → prompts + asset manifest
@@ -34,6 +35,7 @@ A knowledge base and skill set for LLM-powered coding agents (Kilo Code, Claude 
 | Path | Purpose |
 |------|---------|
 | `skills/cube_orchestrator/SKILL.md` | **Master controller and single entry point** — routes every stage and manages all sub-skills and subagents |
+| `skills/cube_orchestrator/YOLO.md` | Opt-in autonomous run mode for the orchestrator — read and followed only when the literal token `YOLO` is in the prompt; the default run mode is checkpointed |
 | `skills/cube_game-designer/SKILL.md` | Stage 1 component — transforms a user's game idea into a structured design document (GDD) |
 | `skills/technical_prompter/SKILL.md` | Stage 2 component — converts a GDD into step-by-step implementation prompts plus the asset manifest |
 | `skills/cube_asset-builder/SKILL.md` | Stage 3 component — turns the asset manifest into the packed beta container (`index.bin`, `art/packed/`, `sound/assets/`) and `_ids.h` |
