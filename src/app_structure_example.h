@@ -4,6 +4,9 @@
 
 #include "app_ai_template_ids.h" // renamed to app_<game>_ids.h by the scaffolder token pass
 
+//When defined, binds the per-pixel procedural callback (on_proc_draw) in both the simulator and the ARM module
+///#define APP_HAS_PROC_DRAW
+
 #define OCT_PLANES_MAX 6 // max planes on cube
 #define OCT_QUADS_AT_PLANE 4 // max quads at plane
 
@@ -53,9 +56,12 @@ OCT_CALLBACK void on_init() {
 }
 
 OCT_CALLBACK void on_pretwisted(int32_t twid) {
+    // twid is the PLANE (0..5) whose ring started turning, not a twist id - the direction is only known in on_twisted.
+    (void)twid;
 }
 
 OCT_CALLBACK void on_twisted(int32_t twid, uint32_t disconnected_ms) {
+    (void)twid; (void)disconnected_ms;
 }
 
 
@@ -70,17 +76,15 @@ OCT_CALLBACK void on_tick() {
 
 
 OCT_CALLBACK void on_shake(int32_t shakeid) {
-    // on_shake fires when the cube is shaken. NOTE: in the current beta the
-    // engine always runs the system default (animated go-home) and does NOT
-    // route shakes here — but the symbol MUST exist or the ARM module fails
-    // to link (octavios/apps/src/app_module.cpp references it).
+    // on_shake fires when the cube is shaken.
+    // NOTE: in the current beta the engine always runs the system default (animated go-home) and does NOT route shakes here - but the symbol MUST exist or the ARM module fails to link (octavios/apps/src/app_module.cpp references it).
     (void)shakeid;
 }
 
 
 //Enable the APP_HAS_PROC_DRAW define (top of this file) to use procedural sprites
 OCT_CALLBACK void on_proc_draw(uint16_t* back, int idx, float x, float y, int angle, int vid, int reserved) {
-    // Per-pixel procedural drawing callback. Only bound when APP_HAS_PROC_DRAW
-    // is defined; keep the stub otherwise.
+    // Per-pixel procedural drawing callback.
+    // Only bound when APP_HAS_PROC_DRAW is defined, keep the stub otherwise.
     (void)back; (void)idx; (void)x; (void)y; (void)angle; (void)vid; (void)reserved;
 }
