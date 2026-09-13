@@ -200,6 +200,13 @@ What it does, in order (this is the procedure distilled from real runs):
    the ARM build here.
 7. With `-Run` / `--run`: **launch** the simulator for a few seconds and confirm
    it stays alive (a crash here usually means assets weren't packed)
+8. **When the sim MCP is available** (see `cube_orchestrator/SIM_MCP.md`), spend
+   one more step and *look* at it: launch the sim on the orchestrator's
+   `playtest_port`, take a single `screenshot`, then kill it. "Stayed alive for
+   four seconds" and "renders the template's faces" are different claims, and
+   only the second one proves the assets actually reached the screen — which is
+   exactly what this gate exists to prove before any game code is written. Kill
+   the process afterwards; the gate must not leave a sim running.
 
 Exit code `0` means **infrastructure verified**. A non-zero exit names the failed
 step — fix it (or report it) before handing off to the orchestrator.
@@ -219,6 +226,8 @@ On success, report to the user what was verified and where:
   both `*.raw` AND `index.bin` must exist, not `*.raw` alone)
 - The built simulator that launches without crashing — `app_<game>/bin/app_<game>.exe`
   (Windows) or `app_<game>/build-sim/octavios_sim` (Linux)
+- When the sim MCP is available: the screenshot proving it renders (keep it with
+  `save_as` — it is the baseline every later playtest is compared against)
 
 Then **return control to `cube_orchestrator`**, which checkpoints with the user
 and runs its first Stage 4 prompt against the known-good project. The orchestrator
@@ -244,7 +253,10 @@ physical WowCube is **`app_<game>/app_<game>.oct`**. It is assembled by the
 > proof the cube build is done.
 
 The cube `.oct` therefore **must** be produced by the ARM build, and the device
-build **must be the last step** — after any simulator testing. Both steps are
+build **must be the last step** — after any simulator testing, and that includes
+**every MCP playtest**, which is a sim launch like any other and clobbers the
+`.oct` exactly the same way. If a sim is started for any reason after this step,
+re-run it before the package is handed over. Both steps are
 bundled in `build_device.ps1` (Windows) / `build_device.sh` (Linux):
 
 ```powershell
