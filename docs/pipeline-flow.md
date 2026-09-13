@@ -45,16 +45,21 @@ flowchart TD
     CP3 -->|approved| INFRA
 
     %% Infra gate (boilerplate #1)
-    INFRA["Infra gate — wowcube-boilerplate #1<br/>scaffold + verify simulator builds/launches"]
+    INFRA["Infra gate — wowcube-boilerplate #1<br/>scaffold + verify simulator builds/launches<br/>(+ MCP screenshot when available)"]
     INFRA --> S4
 
     %% Stage 4 loop
     S4["Stage 4 — Implementation loop"] --> CODER["Coder agent -> src/app_game.h"]
-    CODER --> VERIFY{"2 verifiers >= 90?"}
+    CODER --> VERIFY{"2 code verifiers >= 90?"}
     VERIFY -->|"no, < 5 tries"| FIX["Fixer agent"]
     FIX --> VERIFY
-    VERIFY -->|yes| SAVE["Save context"]
-    SAVE --> CP4{{"⏸ Per-prompt checkpoint<br/>test in simulator"}}
+    VERIFY -->|yes| MCPQ{"sim MCP<br/>available?"}
+    MCPQ -->|"no — gate skipped, recorded"| SAVE
+    MCPQ -->|yes| PLAY["Rebuild + launch sim on playtest_port<br/>Playtest agent: screenshots, taps, twists, tilts, unfold"]
+    PLAY --> PVER{"playtest >= 90?"}
+    PVER -->|"no, < 5 tries"| FIX
+    PVER -->|yes| SAVE["Save context + screenshots"]
+    SAVE --> CP4{{"⏸ Per-prompt checkpoint<br/>test in simulator<br/>(arrives with playtest evidence)"}}
     CP4 -->|"more prompts"| CODER
     CP4 -->|"all prompts done"| S5
 
@@ -79,7 +84,7 @@ flowchart TD
 | 2. Prompts | `technical_prompter` | `plans/<game>_prompts.md` + `plans/<game>_assets.json` (per-sprite `gen_prompt`) |
 | 3. Assets | `cube_asset-builder` (+ consistency reviewer) | `app_<game>/index.bin`, `art/packed/*.raw`+`*.pal`, `sound/assets/*.mp3`, `src/app_<game>_ids.h` |
 | Infra gate | `wowcube-boilerplate` (#1) | scaffolded `app_<game>/`, verified **simulator** build |
-| 4. Implement | coder / verifier / fixer subagents | `src/app_<game>.h` (per prompt, sim-tested) |
+| 4. Implement | coder / verifier / playtest / fixer subagents | `src/app_<game>.h` (per prompt, sim-tested) |
 | 5. Package | `wowcube-boilerplate` (#2) | `app_<game>/app_<game>.oct` (ARM embedded, verified) |
 
 ## Key points
@@ -87,4 +92,5 @@ flowchart TD
 - **Single entry point:** the user always talks to `cube_orchestrator`; it routes.
 - **Two asset sources (Stage 3.0):** AI generation via the configured OpenRouter image model (needs `OPENROUTER_API_KEY`), or self-supplied assets validated for completeness before packing. Both converge on `pack`.
 - **`wowcube-boilerplate` runs twice:** first to bring up the **simulator** before coding (so each prompt is testable), then at the end for the authoritative **device `.oct`** (built once because the simulator clobbers the `.oct` on every run).
+- **Self-playtest (Stage 4, conditional):** when the OctaviOS sim MCP is registered, the orchestrator rebuilds and launches the simulator after each prompt and drives the game itself — the Playtest Agent becomes a third gate at threshold 90 and feeds the same fixer loop. Probed once per session and recorded as `sim_mcp` in the context; when absent the gate is skipped and every summary says so. A playtest is a sim launch, so it always precedes Stage 5 — see `skills/cube_orchestrator/SIM_MCP.md`.
 - **Resume-safe:** on any re-entry, stage detection reads the filesystem/context and continues from the first incomplete stage.

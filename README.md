@@ -7,7 +7,8 @@ A knowledge base and skill set for LLM-powered coding agents (Kilo Code, Claude 
 ```
 ├── skills/
 │   ├── cube_orchestrator/        # Skill: MASTER controller + entry point (routes all stages)
-│   │   └── SKILL.md
+│   │   ├── SKILL.md
+│   │   └── SIM_MCP.md            # Reference: driving the simulator over MCP (agent self-playtest)
 │   ├── cube_game-designer/       # Stage 1 component: game concept → GDD
 │   │   └── SKILL.md
 │   ├── technical_prompter/       # Stage 2 component: GDD → prompts + asset manifest
@@ -16,7 +17,7 @@ A knowledge base and skill set for LLM-powered coding agents (Kilo Code, Claude 
 │   │   └── SKILL.md
 │   ├── wowcube-boilerplate/      # Infra gate + Stage 5: scaffold, sim build, device .oct
 │   │   └── SKILL.md
-│   └── cube_verifier/            # Stage 4 component: Requirements + Template verification agents
+│   └── cube_verifier/            # Stage 4 component: Requirements + Template + Playtest verification agents
 │       └── SKILL.md
 ├── templates/
 │   └── app_ai_template/          # Template app cloned into app_<game>/ for each project
@@ -34,11 +35,12 @@ A knowledge base and skill set for LLM-powered coding agents (Kilo Code, Claude 
 | Path | Purpose |
 |------|---------|
 | `skills/cube_orchestrator/SKILL.md` | **Master controller and single entry point** — routes every stage and manages all sub-skills and subagents |
+| `skills/cube_orchestrator/SIM_MCP.md` | How the agent drives the running simulator over MCP — availability probe, launch/teardown, observation script, and the `.oct` clobber rule |
 | `skills/cube_game-designer/SKILL.md` | Stage 1 component — transforms a user's game idea into a structured design document (GDD) |
 | `skills/technical_prompter/SKILL.md` | Stage 2 component — converts a GDD into step-by-step implementation prompts plus the asset manifest |
 | `skills/cube_asset-builder/SKILL.md` | Stage 3 component — turns the asset manifest into the packed beta container (`index.bin`, `art/packed/`, `sound/assets/`) and `_ids.h` |
 | `skills/wowcube-boilerplate/SKILL.md` | Infra gate + Stage 5 component — scaffolds `app_<game>/`, verifies the simulator build, and produces the device-loadable `.oct` |
-| `skills/cube_verifier/SKILL.md` | Stage 4 component — Requirements Agent + Template Agent that score a coder agent's implementation |
+| `skills/cube_verifier/SKILL.md` | Stage 4 component — Requirements Agent + Template Agent + Playtest Agent that score a coder agent's implementation |
 | `templates/app_ai_template/src/app_ai_template.h` | Annotated OctaviOS API reference — the authoritative guide for all WowCube C/C++ code |
 | `templates/app_ai_template/src/app_ai_template_ids.h` | Asset ID header (BMP enum pattern) |
 | `src/app_structure_example.h` | Clean project skeleton for new games |
@@ -55,7 +57,7 @@ The entry point and master controller of the entire pipeline. On every entry it 
 2. GDD but no prompts/manifest → drives **Stage 2** (`technical_prompter`)
 3. Prompts/manifest but no packed assets → drives **Stage 3** (`cube_asset-builder`)
 4. Assets packed but `app_<game>/` isn't scaffolded/building → runs the **infra gate** (`wowcube-boilerplate`)
-5. All inputs present, prompts unimplemented → runs **Stage 4**: deploys coder subagents plus `cube_verifier`'s Requirements/Template agents and a fixer subagent for each prompt
+5. All inputs present, prompts unimplemented → runs **Stage 4**: deploys coder subagents plus `cube_verifier`'s Requirements/Template agents (and the Playtest agent when the sim MCP is available) and a fixer subagent for each prompt
 6. All prompts implemented, no verified device `.oct` → drives **Stage 5** (`wowcube-boilerplate`): builds and verifies the cube-loadable package
 
 Stages 1–3 and Stage 5 run in the main context via the Skill tool; Stage 4 dispatches subagents via the Agent tool. All inter-agent communication uses JSON. Pipeline parallelism where safe (prepare next task while verifying current). Scores below 90 trigger automatic rework (up to 5 attempts). Context accumulates in `context/<game>_context.json`. The orchestrator checkpoints with the user at every stage boundary and after every prompt.
@@ -78,7 +80,15 @@ Component invoked by the orchestrator before Stage 4. Scaffolds `app_<game>/` fr
 
 ### Stage 4 — Implementation + Verifier (`cube_verifier`)
 
-The orchestrator deploys a coder subagent per prompt, then `cube_verifier`'s two agents: a Requirements Agent (completeness, GDD alignment, regressions) and a Template Agent (API correctness against `templates/app_ai_template/src/app_ai_template.h`), each scored out of 100. Both must score ≥ 90 or the orchestrator's fixer agent reworks the code (up to 5 attempts).
+The orchestrator deploys a coder subagent per prompt, then `cube_verifier`'s agents: a Requirements Agent (completeness, GDD alignment, regressions), a Template Agent (API correctness against `templates/app_ai_template/src/app_ai_template.h`), and — when the simulator MCP is available — a Playtest Agent that drives the running game and scores what it sees. Each is scored out of 100; every deployed agent must score ≥ 90 or the orchestrator's fixer agent reworks the code (up to 5 attempts).
+
+### Simulator self-playtest (optional, auto-detected)
+
+The OctaviOS simulator exposes a localhost control socket, and the SDK's `tools/mcp/octavios_mcp.py` bridges it to MCP. When those tools are registered with the agent host, the orchestrator stops delivering iterations it has never seen run: after each prompt it rebuilds the simulator, launches it on its own port, and drives the game the way a player would — screenshots, taps, twists, tilting the cube so gravity-driven gameplay actually gets exercised, unfolding it to read all six faces at once — then scores the result and kills the process.
+
+That matters most where there is no human in the loop. In a normal run it means the per-prompt checkpoint arrives with screenshots instead of a "should work"; in YOLO it is the only thing watching the game between the first prompt and the final `.oct`.
+
+The gate is skipped cleanly when the MCP server is not registered — the code verifiers still gate every prompt, and every summary says plainly that nobody watched the game run. See `skills/cube_orchestrator/SIM_MCP.md` for setup and the operating rules (notably: a playtest is a sim launch, so it always happens *before* the Stage 5 device build).
 
 ### Stage 5 — Device Package (`wowcube-boilerplate`)
 
@@ -90,7 +100,7 @@ Component invoked by the orchestrator. At completion it runs the mandatory devic
 
 > "I want to make a WowCube game where the player catches falling stars by twisting the cube. Stars appear on random faces and fall toward the bottom plane. The player twists to move a basket between faces to catch them."
 
-The **Cube Orchestrator** runs stage detection, sees there is no GDD yet, and drives **Stage 1** (Game Designer) to interview you and produce the GDD. After you approve it at the stage checkpoint, the orchestrator drives **Stage 2** (Technical Prompter) for prompts + asset manifest, then **Stage 3** (Asset Builder) for AI-generated art and sound, the **infra gate** (Boilerplate) to scaffold `app_<game>/` and verify the simulator, then **Stage 4** (coder/verifier/fixer subagents) to implement the prompts one at a time (tested in the simulator), and finally **Stage 5** (Device Package) to build and verify the cube-loadable `.oct`.
+The **Cube Orchestrator** runs stage detection, sees there is no GDD yet, and drives **Stage 1** (Game Designer) to interview you and produce the GDD. After you approve it at the stage checkpoint, the orchestrator drives **Stage 2** (Technical Prompter) for prompts + asset manifest, then **Stage 3** (Asset Builder) for AI-generated art and sound, the **infra gate** (Boilerplate) to scaffold `app_<game>/` and verify the simulator, then **Stage 4** (coder/verifier/fixer subagents) to implement the prompts one at a time (playtested in the simulator by the agent itself when the sim MCP is available, then by you at the checkpoint), and finally **Stage 5** (Device Package) to build and verify the cube-loadable `.oct`.
 
 ### Resuming
 
