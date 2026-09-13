@@ -247,7 +247,14 @@ and scores **what it sees**.
 
 Read `cube_orchestrator/SIM_MCP.md` before the first tool call: it holds the
 observation script, the tap/twist aiming rules (face centres are not tappable,
-coordinates are screenshot pixels), and the limits of what a playtest can judge.
+coordinates are screenshot pixels), the camera-vs-cube distinction, and the
+limits of what a playtest can judge.
+
+**Two rules from that file are worth repeating here, because getting either
+wrong invalidates the whole run:** turning the *cube* (`set_cube`/`turn_cube`)
+moves gravity and the game with it, while orbiting the *camera* changes nothing
+but the view — and a `shake` unloads the game to the launcher, so it is a final
+deliberate check, never a mid-script probe.
 
 ### How to Verify
 
@@ -263,15 +270,19 @@ coordinates are screenshot pixels), and the limits of what a playtest can judge.
    should respond, screenshot after each action.
 5. **Check motion.** Two screenshots a few seconds apart for anything animated or
    tick-driven — did what should move, move; did what should hold, hold?
-6. **Check survival.** Final screenshot; the sim must still be alive.
-7. **Score** only what the screenshots support.
+6. **Check orientation**, when the game reads gravity at all (the prompt or GDD
+   talks about tilting, falling, or the bottom face). `set_cube` a few poses,
+   screenshot each, then `set_cube(0, 0, 0)` to stand it upright again before
+   anything else is judged.
+7. **Check survival.** Final screenshot; the sim must still be alive.
+8. **Score** only what the screenshots support.
 
 ### Categories
 
 | Category | Max | What to check |
 |----------|-----|---------------|
 | **visual_correctness** | 40 | The game renders, and it renders what this prompt promised: right art on the right face and quad, nothing off-screen or clipped, nothing drawn at obviously wrong scale (half-size sprites are the classic upscale bug), no palette garbage, no faces unexpectedly blank |
-| **interaction** | 35 | Every input the prompt claims to handle produces a visible response: taps on the specified faces/quads, twists of the specified faces. No response where the prompt promised one is a critical |
+| **interaction** | 35 | Every input the prompt claims to handle produces a visible response: taps on the specified faces/quads, twists of the specified faces, and — for a game that reads gravity — tilting the cube with `set_cube`. No response where the prompt promised one is a critical |
 | **stability** | 25 | The simulator starts, renders, and survives the whole playtest. Startup crash, mid-playtest death, or a frozen picture that never updates are criticals; capture the log tail as evidence |
 
 ### Scoring discipline (read before deducting)
@@ -284,6 +295,11 @@ coordinates are screenshot pixels), and the limits of what a playtest can judge.
   shows.
 - **`no_screen` is an aiming error, not a game defect.** Re-aim at the middle of
   a quad and retry before recording anything.
+- **Judge layout only with the cube upright.** A tilted cube makes every face
+  look wrong; `set_cube(0, 0, 0)` first, then score.
+- **The launcher appearing after a `shake` is correct**, not a crash. Scoring it
+  as a stability failure would send the fixer chasing engine behaviour no app
+  controls.
 - **A flaw already present before this prompt is a regression finding only if the
   prompt was supposed to fix it** — otherwise note it in `summary` and move on.
 - When in doubt between a deduction and uncertainty, choose uncertainty. This
@@ -316,9 +332,15 @@ score what you actually see on the cube.
    to the other two verifiers
 7. no_screen means your tap missed the screen (face centres are bezel gaps).
    Re-aim at the middle of a quad and retry before recording a finding
-8. Score ONLY these categories: visual_correctness (max 40),
-   interaction (max 35), stability (max 25)
-9. Do not modify code, assets, or the simulator process
+8. set_cube/turn_cube rotate the CUBE (gravity follows, the game reacts);
+   orbit_camera/set_camera only move the viewer. Stand the cube back up with
+   set_cube(0,0,0) — reset_view does not do it — before judging any layout
+9. Do NOT call shake unless this prompt is about shake-to-exit, and then only
+   as your final action: the engine unloads the game and shows the launcher.
+   A launcher screenshot after a shake is correct behaviour, not a finding
+10. Score ONLY these categories: visual_correctness (max 40),
+    interaction (max 35), stability (max 25)
+11. Do not modify code, assets, or the simulator process
 
 ## Deduction Rules
 - critical (-10): does not render, crashes or freezes, a promised input does
