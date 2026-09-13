@@ -67,6 +67,34 @@ On entry — including resumption — determine the active `<game>` (ask the use
 
 After each stage completes, **re-run this detection** to find the next stage — do not assume the next stage; verify its inputs exist.
 
+## Simulator Self-Playtest (sim MCP)
+
+Every other gate in this pipeline reads *code*. The sim MCP lets the orchestrator
+watch the game **run** — screenshots, taps, twists, unfold — so an iteration is
+checked the way a player would check it, not only the way a reviewer would. Full
+operating reference: **`SIM_MCP.md`** next to this file.
+
+**Probe once per session, before Stage 4, and record the answer** in
+`context/<game>_context.json` as `"sim_mcp": "available" | "absent"`. It is
+available iff the tool list holds MCP tools ending in `__screenshot`,
+`__twist_face`, `__tap` under a server whose name contains `octavios` and `sim`
+(`mcp__wowcube-octavios-sim__screenshot`, `mcp__octavios-sim__screenshot`, …) —
+match the suffix, the prefix differs per setup.
+
+| `sim_mcp` | Effect on the pipeline |
+|---|---|
+| `available` | The **Playtest Agent** (`cube_verifier`) becomes a third verification gate at threshold 90, alongside Requirements and Template — in checkpointed mode *and* in YOLO. The infra gate proves the sim renders, not just that it stays alive. |
+| `absent` | The gate is skipped. Requirements + Template still gate every prompt. Every per-prompt summary and the final report state plainly that nobody watched the game run, and the enabling instructions are offered **once** per session. |
+
+Three rules that do not bend:
+
+1. **Never claim a playtest that did not happen.** No tools, no playtest — say so.
+2. **One sim per prompt cycle:** rebuild → launch on the recorded `playtest_port`
+   → playtest → kill. Never leave an instance running between prompts.
+3. **Every playtest happens before Stage 5.** The simulator rewrites
+   `app_<game>.oct` as an asset-only pack on *every* launch, so a sim started
+   after the device build invalidates the package and forces a rebuild.
+
 ## Stage-Boundary Checkpoint (MANDATORY between every stage)
 
 After a stage produces its artifact and BEFORE invoking the next stage, the orchestrator MUST:
@@ -86,7 +114,7 @@ After each prompt cycle (coder → verifier → context save), you MUST:
 3. Wait for the user's explicit approval ("ok", "continue", "next", etc.)
 4. Only after receiving approval, proceed to the next prompt
 
-This is NON-NEGOTIABLE. Never batch multiple prompts. Never skip the checkpoint. Never assume the user wants to continue. The user needs to test every build **in the simulator** before proceeding. (Per-prompt iteration uses the simulator; the authoritative physical-cube test happens once at **Stage 5**, when the device `.oct` is built and verified — see below for why it cannot be built per-prompt without being clobbered.)
+This is NON-NEGOTIABLE. Never batch multiple prompts. Never skip the checkpoint. Never assume the user wants to continue. The user needs to test every build **in the simulator** before proceeding. When the sim MCP is available the orchestrator has already playtested the build itself (see `## Simulator Self-Playtest`) — that does **not** replace the user's checkpoint, it equips it: the summary arrives with screenshots and the Playtest Agent's findings instead of a "should work" claim. (Per-prompt iteration uses the simulator; the authoritative physical-cube test happens once at **Stage 5**, when the device `.oct` is built and verified — see below for why it cannot be built per-prompt without being clobbered.)
 
 **Exception — YOLO Mode:** this per-prompt checkpoint, and every "wait for user approval" instruction in this skill, is SUSPENDED in YOLO (see `## YOLO Mode`). YOLO runs all prompts back-to-back and only reports once, at the final device build.
 
@@ -129,7 +157,9 @@ A truly autonomous run still needs the few inputs that cannot be invented. Colle
 1. **Game concept** (Build mode, if not already given) — ask for the brief now (genre, core mechanic, vibe, length). YOLO does not run the designer's interview turn-by-turn; it takes the brief once and lets `cube_game-designer` produce the GDD from it.
 2. **Asset source + key** (Stage 3) — default to **Path A (AI generation)**, the autonomous path, and obtain `OPENROUTER_API_KEY` now. Path B (self-supplied art) is inherently non-autonomous (it waits on human-made files); use it in YOLO only if complete assets are already on disk.
 
-Then announce YOLO once ("YOLO ON — running design → prompts → assets → implement → device build autonomously; next stop is the final .oct") and proceed without further prompts.
+Also **probe the sim MCP now** (see `## Simulator Self-Playtest`) and record the result. This is not an input to request — it is infrastructure that either exists or does not — but the user deserves to know before going silent whether anything will be watching the game run.
+
+Then announce YOLO once, including that answer: *"YOLO ON — running design → prompts → assets → implement → device build autonomously; next stop is the final .oct. Sim playtest: ON, every prompt is driven in the simulator and scored on what it shows"* — or *"Sim playtest: OFF (no sim MCP registered), so the game is verified by code review only until you see it yourself"*. Then proceed without further prompts.
 
 ### What YOLO suspends
 
@@ -140,15 +170,17 @@ Then announce YOLO once ("YOLO ON — running design → prompts → assets → 
 | Stage 3 user asset review (Step 3.4) | **Suspended** — auto-accept any set the consistency reviewer passes (the review→regen loop, max 3, still runs). |
 | Mod-mode mini-plan & per-change checkpoints (M3, M5) | **Suspended** — auto-advance through plan and per-change review. |
 | 5-attempt verification failure → ask user | **Auto-decide** per the Failure policy below. |
+| The user's own simulator test between prompts | **Replaced, not dropped** — when the sim MCP is available the Playtest Agent gate runs every prompt (threshold 90) and is the only thing watching the game run. When it is absent, nothing does, and the end-of-run report must say so. |
 
 ### What YOLO NEVER drops (hard invariants — these decide whether the .oct runs)
 
 Dropping any of these yields a package that won't load or won't run on the cube, defeating the whole point of an autonomous run.
 
-- **Both verifier agents** (Requirements + Template) run every prompt, threshold **90/90**, max **5** fix attempts.
+- **Both code verifier agents** (Requirements + Template) run every prompt, threshold **90** each, max **5** fix attempts — joined by the **Playtest Agent** whenever the sim MCP is available.
 - The orchestrator still **never writes code, design, prompts, or assets itself**.
 - **`_ids.h` is never hand-edited; assets stay valid; the asset-set completeness check still blocks a partial set** (a missing sprite/sound = uncompilable build).
 - **Stage 5 device build + ARM-embed verification still runs and must exit 0** — a sim-only `.oct` is never delivered.
+- **When the sim MCP is available, the Playtest Agent gate runs on every prompt at threshold 90.** With no human between prompts, it is the only check that the game visibly works; skipping it in YOLO would mean nobody sees the game until the cube does. Its findings feed the same fixer loop (max 5 attempts).
 - All mandatory platform reminders, explicit casts, fixed-width types, and all seven handlers (`on_init`, `on_tick`, `on_tap(tapid, count)`, `on_twisted`, `on_pretwisted`, `on_shake`, `on_proc_draw` stub) — still enforced.
 
 ### Safe parallelism (Stage 4)
@@ -156,23 +188,27 @@ Dropping any of these yields a package that won't load or won't run on the cube,
 All game code is one file (`app_<game>/src/app_<game>.h`), so **coding stays sequential** — only one coder writes the file at a time. YOLO extracts parallelism from everything else:
 
 1. Build a prompt dependency graph up front (foundational vs. cosmetic/isolated, per the Pipeline Model table).
-2. **Verifiers (Requirements + Template) and fixers fan out** in parallel; verification of prompt N overlaps task-JSON prep for N+1.
+2. **Code verifiers (Requirements + Template) and fixers fan out** in parallel; verification of prompt N overlaps task-JSON prep for N+1.
 3. **Independent cosmetic/isolated prompts** (audio, visual polish, UI text — touching disjoint code regions, no mutual dependency) batch their verify+fix in parallel.
 4. Coders for independent prompts are still serialized on the file but dispatched back-to-back with no waiting between them.
 5. **Foundational prompts** (scaffold, data structures, core init) stay strictly sequential and fully verified before anything downstream is dispatched.
 6. Never dispatch two coders that could both edit the file concurrently. When in doubt, serialize the coding and parallelize only the checking.
+7. **Playtests never fan out.** One simulator, one binary, one port — two playtests at once would score each other's pixels. Run the Playtest Agent serially at the end of each prompt's verification, after the code verifiers have returned, and kill the sim before the next prompt's build starts.
 
 ### Failure policy in YOLO (no user to ask)
 
 When a prompt fails verification after the 5-attempt limit:
 - **Foundational prompt** → **abort the run**, save context, surface immediately. This is the one time YOLO breaks silence before the `.oct` — downstream prompts can't be trusted.
 - **Non-foundational prompt** → keep the best-scoring version, record it as a known issue for the final report, and **continue**.
+- **Playtest-only failure** (both code agents pass, the Playtest Agent does not) → treat by severity, not by score: a `stability` critical (the sim crashes, freezes, or renders nothing) is a **foundational-class failure — abort**, because every later prompt would be playtested against a dead build. Visual or interaction findings on a non-foundational prompt follow the rule above: keep the best version, record it with its screenshots, continue.
 
 A **Stage 5 ARM build failure** (missing toolchain, asset-only pack) is always a hard stop — surface it; never ship a sim-only `.oct`.
 
 ### YOLO completion
 
 After the device build verifies, present a single end-of-run report: stages run, per-prompt verification scores, total fix cycles, any prompts that finished below threshold (with best scores), the consistency-review outcome, and the absolute path to the verified `app_<game>/app_<game>.oct`.
+
+When the playtest gate ran, add what was actually seen: per-prompt playtest scores, the kept screenshots, and — importantly — an honest list of what no playtest could judge (sound, timing, balance, feel, and anything about the physical cube). When it did not run, say so in one line rather than letting a wall of passing code scores imply the game was watched.
 
 ## When to Use
 
@@ -249,7 +285,7 @@ The orchestrator decides at each step whether to pipeline or wait:
 | Prompt N is a foundational prompt (scaffold, data structures, core init) | **Always wait**: later prompts depend heavily on getting this right |
 | Prompt N is cosmetic/isolated (audio, visual polish, UI text) | **Safe to pipeline**: failures here won't cascade |
 
-> **In YOLO mode** this same table drives parallelism: "Pipeline" / "Safe to pipeline" rows become parallel verifier+fixer batches, while "Wait" / "Always wait" rows stay strictly sequential. The decision criteria do not change — only the per-prompt user checkpoint between them is removed.
+> **In YOLO mode** this same table drives parallelism: "Pipeline" / "Safe to pipeline" rows become parallel verifier+fixer batches, while "Wait" / "Always wait" rows stay strictly sequential. The decision criteria do not change — only the per-prompt user checkpoint between them is removed. The **playtest gate is the exception to every batching row**: it owns a single simulator process, so it always runs serially, one prompt at a time.
 
 ## JSON Communication Protocol
 
@@ -608,20 +644,37 @@ Return ONLY the Coder Response JSON. No markdown, no explanation outside the JSO
 
 #### 3c. Dispatch Verifier Agents
 
-After coder completes, deploy two verifier agents **sequentially** using the `cube_verifier` skill. Pass the same Verification Task JSON to each.
+After coder completes, deploy the verifier agents **sequentially** using the `cube_verifier` skill. Pass the same Verification Task JSON to each.
 
 **Step 1 — Requirements Agent.** Deploy an agent with the Requirements Agent prompt template from the `cube_verifier` skill. Returns a JSON with scores for: completeness (45), gdd_alignment (25), no_regressions (20), verification_criteria (10). Max 100 points.
 
 **Step 2 — Template Agent.** Deploy an agent with the Template Agent prompt template from the `cube_verifier` skill. Returns a JSON with scores for: api_correctness (40), platform_constraints (30), code_quality (30). Max 100 points.
 
-**Evaluate:** Each agent scores out of 100 independently. Both must score >= 90 to pass. If either fails, pass its issues to the fix agent.
+**Step 3 — Playtest Agent** *(only when `sim_mcp` is `available`; skip this step entirely when it is `absent`)*. The code passed review — now watch it run. The orchestrator prepares the simulator itself, then dispatches the agent:
 
-**Pipeline rule:** If the orchestrator is confident that prompt N+1 does NOT depend on N's verification outcome (see Pipeline Model table), it MAY begin preparing N+1's task JSON while the verifiers run. But it MUST NOT dispatch N+1's coder until verification passes. **In YOLO**, this fan-out is the norm: verifiers and fixers for independent prompts run in parallel batches and the next coder is dispatched as soon as the file is free — coding still serialized, no user checkpoint between prompts.
+1. **Rebuild the simulator.** The sim runs the binary, not the source, so without this the playtest scores the *previous* prompt's game:
+   ```bash
+   cmake --build <workspace>/app_<game>/build-sim          # Linux
+   ```
+   Windows: `octavios/apps/build_sim.cmd`. A **build failure here is a critical finding on its own** — hand it straight to the fixer with the compiler output, do not dispatch the Playtest Agent against a stale binary.
+2. **Launch it in the background** on the session's `playtest_port` (a free port in 8078–8092, recorded in the context on first use — leave 8077 to the user's own instance):
+   ```bash
+   <workspace>/app_<game>/build-sim/octavios_sim --mcp-port <port> > /tmp/octsim_<game>.log 2>&1 &
+   ```
+   Wait for `[mcp] control socket listening on 127.0.0.1:<port>` in the log before dispatching. No line, or an early exit, means the game died at startup — that is a critical finding (assets are the usual cause); capture the log tail and send it to the fixer instead of the Playtest Agent.
+3. **Dispatch the Playtest Agent** with the Playtest Agent prompt template from `cube_verifier`, passing the Verification Task JSON **plus `"playtest_port": <n>`**. It returns scores for: visual_correctness (40), interaction (35), stability (25). Max 100 points. Dispatch it with a subagent type that actually inherits the MCP tools — an agent restricted to file tools cannot see the cube and will either guess or stall. If the subagent reports the tools are not there, treat the session as `sim_mcp: absent` from that point on rather than retrying, and say so in the summary.
+4. **Kill the simulator** as soon as the agent returns — always, including on failure. A dangling sim serves stale pixels to the next prompt and holds the port.
+
+See `SIM_MCP.md` for the observation script, the aiming rules, and the limits of what a playtest can judge.
+
+**Evaluate:** Each deployed agent scores out of 100 independently. **Every deployed agent must score >= 90 to pass** — two agents when `sim_mcp` is `absent`, three when it is `available`. Any agent that fails passes its issues to the fix agent; batch the issues from all failing agents into one fix task rather than running the loop once per agent.
+
+**Pipeline rule:** If the orchestrator is confident that prompt N+1 does NOT depend on N's verification outcome (see Pipeline Model table), it MAY begin preparing N+1's task JSON while the verifiers run. But it MUST NOT dispatch N+1's coder until verification passes. **In YOLO**, this fan-out is the norm: code verifiers and fixers for independent prompts run in parallel batches and the next coder is dispatched as soon as the file is free — coding still serialized, no user checkpoint between prompts. Playtests stay serial regardless (one sim, one port).
 
 #### 3d. Handle Verification Result
 
-- **Score >= 90:** Save context (Step 4), proceed to checkpoint (Step 5)
-- **Score < 90:** Deploy fix agent. Max **5 attempts** per prompt.
+- **Every deployed agent >= 90:** Save context (Step 4), proceed to checkpoint (Step 5)
+- **Any agent < 90:** Deploy fix agent with the union of the failing agents' issues. Max **5 attempts** per prompt. A re-verify after a fix re-runs **every** gate that was deployed, playtest included — a fix that satisfies the code reviewers can still break the picture.
 
 ##### Fix Agent Prompt Template
 
@@ -634,7 +687,8 @@ You are a WowCube code fixer. Fix the issues found by the verifier.
   "game": "<game_name>",
   "prompt_number": N,
   "original_instructions": "<original prompt instructions>",
-  "issues": <issues array from verifier>,
+  "issues": <issues array from verifier(s), merged>,
+  "playtest_screenshots": [<absolute paths from the Playtest Agent, when it ran>],
   "files_to_read": ["app_<game>/src/app_<game>.h", "OCT_wowcube-agent-skills/templates/app_ai_template/src/app_ai_template.h"],
   "files_to_write": ["app_<game>/src/app_<game>.h"]
 }
@@ -665,6 +719,8 @@ After verification passes (score >= 90), update `context/<game>_context.json`:
   "game": "<game_name>",
   "last_completed_prompt": N,
   "total_prompts": M,
+  "sim_mcp": "available",
+  "playtest_port": 8078,
   "prompts": [
     {
       "prompt": 1,
@@ -675,6 +731,8 @@ After verification passes (score >= 90), update `context/<game>_context.json`:
       "globals_changed": [],
       "sprites_used": 0,
       "verification_score": 97,
+      "playtest_score": 94,
+      "playtest_screenshots": ["/tmp/playtest_<game>_p1_unfolded.png"],
       "notes": "Black background on all faces, engine initialized"
     }
   ]
@@ -690,11 +748,12 @@ After verification passes (score >= 90), update `context/<game>_context.json`:
 Do NOT proceed to the next prompt. Do NOT dispatch any more agents. WAIT for the user.
 
 1. **Summarize:**
-   - Prompt number, title, verification score
+   - Prompt number, title, verification scores (Requirements / Template / Playtest)
    - Features added, files modified
    - Fix cycles needed (if any)
+   - **Playtest evidence** — when `sim_mcp` is `available`: what the orchestrator drove (taps, twists, unfold), what it saw, the saved screenshot paths, and anything the playtest explicitly could **not** judge (sound, timing, balance, feel). When it is `absent`: say plainly that nobody watched the game run and that the user's own test is the first time it is seen.
 
-2. **Test instructions** — what to look for in the simulator
+2. **Test instructions** — what to look for in the simulator. Lead with what the playtest could not cover: the user's time is best spent on feel, difficulty, sound and pacing, not on re-checking that sprites appear.
 
 3. **STOP and ask the user** (present these options):
    - "Everything works — continue"
@@ -732,7 +791,7 @@ If actual source diverges from context JSON:
 ### Step 7: Complete
 
 After all prompts executed and final checkpoint passes:
-1. Summary: total prompts, fix cycles, average verification score
+1. Summary: total prompts, fix cycles, average verification score — and, when the playtest gate ran, the average playtest score plus what it could not judge
 2. **Run Stage 5 — Package & Verify (mandatory, not optional).** A passing
    simulator build is **not** a shippable result. The simulator runs its own
    PC-compiled code, so a game can look perfect in the sim while the `.oct`
@@ -762,8 +821,11 @@ After all prompts executed and final checkpoint passes:
    delivered.)
 
    **Critical ordering:** the simulator rewrites `app_<game>.oct` as an
-   asset-only pack on *every* launch, so all per-prompt sim testing (Stage 4)
-   necessarily happens *before* Stage 5. This is exactly why the device `.oct` is
+   asset-only pack on *every* launch — **including every MCP playtest launch,
+   which is a sim launch like any other** — so all per-prompt sim testing and
+   every Playtest Agent run (Stage 4) necessarily happen *before* Stage 5. If a
+   sim is started for any reason after the device build, re-run the device build
+   before handing the `.oct` over. This is exactly why the device `.oct` is
    built once, here at the end, and never per-prompt — a per-prompt device build
    would just be clobbered by the next sim run. Never hand the user a `.oct` that
    was last touched by a plain sim run.
@@ -822,11 +884,13 @@ Run the chosen path through the existing components, scoped to the change:
 
 ### M5 — Verify, then sim checkpoint
 
-Run the same verifier (threshold 90/90), but frame the criteria for a mod: **(a)** the requested change is implemented, and **(b)** nothing else regressed versus the M1 baseline. `no_regressions` carries the most weight here; `gdd_alignment` is checked only if a GDD exists. On failure, deploy the fixer (max 5 attempts), exactly as in Stage 4.
+Run the same verifiers (threshold 90 per deployed agent), but frame the criteria for a mod: **(a)** the requested change is implemented, and **(b)** nothing else regressed versus the M1 baseline. `no_regressions` carries the most weight here; `gdd_alignment` is checked only if a GDD exists. On failure, deploy the fixer (max 5 attempts), exactly as in Stage 4.
+
+When `sim_mcp` is `available`, run the **Playtest Agent** too (rebuild → launch → playtest → kill, per Stage 4 step 3c). A mod is the case where a playtest pays off most: the baseline was known-good, so the agent is looking for one specific thing to have changed and nothing else to have moved. Say so in the checkpoint — "the swapped sprite shows on the front face, the rest of the cube is unchanged from the baseline shot" is worth more to the user than a score.
 
 Then run the per-change checkpoint just like the Stage 4 per-prompt checkpoint: summarize what changed, give sim test instructions, **STOP**, and wait for the user. Several independent mods are handled one at a time, each with its own checkpoint — never batch.
 
-> **YOLO mode:** the verifier (90/90) and fixer still run — that gate is never dropped. The per-change user checkpoint is skipped; independent mods are processed back-to-back and reported once at the end alongside the repackaged `.oct`.
+> **YOLO mode:** the verifiers (90 per deployed agent, playtest included when available) and the fixer still run — that gate is never dropped. The per-change user checkpoint is skipped; independent mods are processed back-to-back and reported once at the end alongside the repackaged `.oct`.
 
 ### M6 — Repackage for the device
 
@@ -836,7 +900,9 @@ A mod isn't done until the cube package is rebuilt. Run **Stage 5** (`wowcube-bo
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Verification threshold | 90 | Minimum score to pass (per agent, each scores out of 100) |
+| Verification threshold | 90 | Minimum score to pass (per deployed agent, each scores out of 100) |
+| Sim MCP playtest | auto | Third verification gate, on when the sim MCP tools are present (probed once per session, recorded as `sim_mcp` in the context). When absent, prompts are gated on Requirements + Template alone and every summary says so. |
+| Playtest port | 8078–8092 | Port the pipeline's own simulator is launched on, recorded as `playtest_port`. 8077 is left to the user's own instance. |
 | Max retry attempts | 5 | Max fix+re-verify cycles per prompt |
 | Start from | 1 | First prompt to execute (for resumption) |
 | Run mode | checkpointed | `checkpointed` (default — stop at every stage boundary and after every prompt) or `yolo` (autonomous — no checkpoints until the final device `.oct`). YOLO is opt-in only; see `## YOLO Mode`. |
