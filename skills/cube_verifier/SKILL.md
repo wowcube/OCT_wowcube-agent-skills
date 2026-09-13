@@ -2,37 +2,43 @@
 name: cube_verifier
 description: >-
     Use when verifying WowCube game code after a coder agent completes
-    implementation. Contains two agent roles: Requirements Agent (checks
-    completeness, GDD, regressions) and Template Agent (checks code against
-    app_ai_template.h). The orchestrator deploys each agent separately.
+    implementation. Contains three agent roles: Requirements Agent (checks
+    completeness, GDD, regressions), Template Agent (checks code against
+    app_ai_template.h), and Playtest Agent (drives the running game in the
+    simulator over the sim MCP and scores what it actually sees). The
+    orchestrator deploys each agent separately.
 ---
 
 # WowCube Code Verifier
 
-This skill defines two verification agents. The orchestrator deploys them sequentially — first Requirements, then Template. Each returns its own JSON response scored out of 100. Both must score >= 90 to pass.
+This skill defines three verification agents. The orchestrator deploys them sequentially — first Requirements, then Template, then Playtest. Each returns its own JSON response scored out of 100. Every deployed agent must score >= 90 to pass.
 
-**Core principle:** Verifier agents never modify code. They read, analyze, score, and report. Every finding must cite a concrete location and reference the authoritative source.
+The first two read the **code**. The third watches the game **run**: it drives the built simulator over the sim MCP and scores what it sees on the cube. It is deployed only when the sim MCP is available (see `cube_orchestrator/SIM_MCP.md` → Availability probe); when it is absent the prompt is gated on Requirements + Template alone and that fact is recorded, never glossed over.
+
+**Core principle:** Verifier agents never modify code. They read, analyze, score, and report. Every finding must cite a concrete location and reference the authoritative source — a file:line for the code agents, a screenshot and the action that produced it for the Playtest Agent.
 
 ## When to Use
 
 - Deployed by `cube_orchestrator` after a coder agent completes a prompt
 - User explicitly asks to verify or review WowCube game code
+- User asks to check that a built game actually works / looks right in the simulator (Playtest Agent alone)
 
 ## When NOT to Use
 
 - No implementation exists yet — use `cube_orchestrator` to generate code first
 - User wants to fix issues — the orchestrator's fixer agent handles that
 
-## Two Agents
+## Three Agents
 
-| Agent | Categories | Max |
-|-------|-----------|-----|
-| **Requirements Agent** | completeness (45), gdd_alignment (25), no_regressions (20), verification_criteria (10) | **100** |
-| **Template Agent** | api_correctness (40), platform_constraints (30), code_quality (30) | **100** |
+| Agent | Reads | Categories | Max | When |
+|-------|-------|-----------|-----|------|
+| **Requirements Agent** | code | completeness (45), gdd_alignment (25), no_regressions (20), verification_criteria (10) | **100** | always |
+| **Template Agent** | code | api_correctness (40), platform_constraints (30), code_quality (30) | **100** | always |
+| **Playtest Agent** | the running game | visual_correctness (40), interaction (35), stability (25) | **100** | sim MCP available |
 
-The orchestrator deploys Requirements Agent first, then Template Agent. Each scores out of 100. Pass threshold >= 90 for each.
+The orchestrator deploys Requirements Agent first, then Template Agent, then — if the sim MCP is available — Playtest Agent against the freshly built simulator. Each scores out of 100. Pass threshold >= 90 for each deployed agent.
 
-## Deduction Rules (shared by both agents)
+## Deduction Rules (shared by all agents)
 
 | Severity | Deduction | Definition |
 |----------|-----------|------------|
@@ -226,6 +232,125 @@ Return ONLY this JSON — no markdown, no explanation:
       "deduction": N
     }
   ],
+  "summary": "one sentence assessment"
+}
+```
+
+---
+
+## Playtest Agent
+
+Deployed **only when the sim MCP is available.** Launches nothing itself — the
+orchestrator rebuilds the simulator, starts it on the recorded `playtest_port`
+and hands the port over in the task JSON. This agent connects, drives the game,
+and scores **what it sees**.
+
+Read `cube_orchestrator/SIM_MCP.md` before the first tool call: it holds the
+observation script, the tap/twist aiming rules (face centres are not tappable,
+coordinates are screenshot pixels), and the limits of what a playtest can judge.
+
+### How to Verify
+
+1. **Connect.** `list_simulators` → `connect` to the port given in the task.
+   Confirm the reported app is `app_<game>` — scoring the wrong instance is
+   worse than not scoring at all.
+2. **Idle screenshot.** Does the game render at all? Right background, no
+   garbage, no unexpectedly blank faces.
+3. **Read every face.** `unfold(on=true)` → `screenshot` → `unfold(on=false)`.
+   Checks per-face layout and catches content drawn on the wrong plane.
+4. **Exercise this prompt's mechanic**, using the prompt's
+   `verification_criteria` as the script: tap what should respond, twist what
+   should respond, screenshot after each action.
+5. **Check motion.** Two screenshots a few seconds apart for anything animated or
+   tick-driven — did what should move, move; did what should hold, hold?
+6. **Check survival.** Final screenshot; the sim must still be alive.
+7. **Score** only what the screenshots support.
+
+### Categories
+
+| Category | Max | What to check |
+|----------|-----|---------------|
+| **visual_correctness** | 40 | The game renders, and it renders what this prompt promised: right art on the right face and quad, nothing off-screen or clipped, nothing drawn at obviously wrong scale (half-size sprites are the classic upscale bug), no palette garbage, no faces unexpectedly blank |
+| **interaction** | 35 | Every input the prompt claims to handle produces a visible response: taps on the specified faces/quads, twists of the specified faces. No response where the prompt promised one is a critical |
+| **stability** | 25 | The simulator starts, renders, and survives the whole playtest. Startup crash, mid-playtest death, or a frozen picture that never updates are criticals; capture the log tail as evidence |
+
+### Scoring discipline (read before deducting)
+
+- **If it cannot be observed, it is not a finding.** Sound, timing, balance,
+  RNG-dependent behaviour, memory, and anything about the physical cube are out
+  of scope — say so in `not_observed`, never deduct for them.
+- **Never deduct for what the code agents already own.** API misuse, casts, and
+  style belong to the Template Agent; this agent only reports what the screen
+  shows.
+- **`no_screen` is an aiming error, not a game defect.** Re-aim at the middle of
+  a quad and retry before recording anything.
+- **A flaw already present before this prompt is a regression finding only if the
+  prompt was supposed to fix it** — otherwise note it in `summary` and move on.
+- When in doubt between a deduction and uncertainty, choose uncertainty. This
+  gate exists to catch visibly broken games, not to relitigate the code.
+
+### Prompt Template
+
+```
+You are a WowCube playtester. A simulator is already running with the game
+built from the current source. Your job is to drive it over the sim MCP and
+score what you actually see on the cube.
+
+## Task
+<insert Verification Task JSON, including "playtest_port": <n>>
+
+## Rules
+1. Read OCT_wowcube-agent-skills/skills/cube_orchestrator/SIM_MCP.md FIRST —
+   it holds the observation script and the tap/twist aiming rules
+2. list_simulators, then connect to the playtest_port from the task, and
+   confirm the running app is app_<game> before scoring anything
+3. Follow the observation script: idle screenshot -> unfold and read all six
+   faces -> exercise this prompt's verification_criteria with taps/twists ->
+   two screenshots apart for motion -> final screenshot and survival check
+4. Every finding must name the action that produced it and the screenshot
+   that shows it. No screenshot, no finding
+5. Score ONLY what you observed. Anything you could not observe (sound,
+   timing, balance, RNG, the physical cube) goes in not_observed with NO
+   deduction
+6. Do NOT read or score the source code — API correctness and style belong
+   to the other two verifiers
+7. no_screen means your tap missed the screen (face centres are bezel gaps).
+   Re-aim at the middle of a quad and retry before recording a finding
+8. Score ONLY these categories: visual_correctness (max 40),
+   interaction (max 35), stability (max 25)
+9. Do not modify code, assets, or the simulator process
+
+## Deduction Rules
+- critical (-10): does not render, crashes or freezes, a promised input does
+  nothing at all
+- major (-5): renders but visibly wrong — wrong face/quad, wrong scale, cut
+  off, a response that happens but not as described
+- minor (-2): cosmetic offset, small misalignment, non-functional oddity
+
+## Response
+Return ONLY this JSON — no markdown, no explanation:
+{
+  "agent": "playtest",
+  "prompt": N,
+  "scores": {
+    "visual_correctness": <0-40>,
+    "interaction": <0-35>,
+    "stability": <0-25>
+  },
+  "total": <sum of above, 0-100>,
+  "status": "pass if total >= 90, else fail",
+  "issues": [
+    {
+      "severity": "critical|major|minor",
+      "category": "visual_correctness|interaction|stability",
+      "description": "...",
+      "observed_via": "the action taken, e.g. 'tap (180,300) on front face after unfold(off)'",
+      "screenshot": "absolute path saved with save_as, or 'inline shot 3'",
+      "deduction": N
+    }
+  ],
+  "not_observed": ["what could not be checked from screenshots and why"],
+  "screenshots": ["absolute paths of shots kept with save_as"],
   "summary": "one sentence assessment"
 }
 ```
