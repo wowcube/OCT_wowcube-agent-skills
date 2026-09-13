@@ -70,7 +70,7 @@ After each stage completes, **re-run this detection** to find the next stage —
 ## Simulator Self-Playtest (sim MCP)
 
 Every other gate in this pipeline reads *code*. The sim MCP lets the orchestrator
-watch the game **run** — screenshots, taps, twists, unfold — so an iteration is
+watch the game **run** — screenshots, taps, twists, tilting the cube, unfold — so an iteration is
 checked the way a player would check it, not only the way a reviewer would. Full
 operating reference: **`SIM_MCP.md`** next to this file.
 
@@ -751,7 +751,7 @@ Do NOT proceed to the next prompt. Do NOT dispatch any more agents. WAIT for the
    - Prompt number, title, verification scores (Requirements / Template / Playtest)
    - Features added, files modified
    - Fix cycles needed (if any)
-   - **Playtest evidence** — when `sim_mcp` is `available`: what the orchestrator drove (taps, twists, unfold), what it saw, the saved screenshot paths, and anything the playtest explicitly could **not** judge (sound, timing, balance, feel). When it is `absent`: say plainly that nobody watched the game run and that the user's own test is the first time it is seen.
+   - **Playtest evidence** — when `sim_mcp` is `available`: what the orchestrator drove (taps, twists, cube tilts, unfold), what it saw, the saved screenshot paths, and anything the playtest explicitly could **not** judge (sound, timing, balance, feel). When it is `absent`: say plainly that nobody watched the game run and that the user's own test is the first time it is seen.
 
 2. **Test instructions** — what to look for in the simulator. Lead with what the playtest could not cover: the user's time is best spent on feel, difficulty, sound and pacing, not on re-checking that sprites appear.
 

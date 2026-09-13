@@ -84,7 +84,7 @@ The orchestrator deploys a coder subagent per prompt, then `cube_verifier`'s age
 
 ### Simulator self-playtest (optional, auto-detected)
 
-The OctaviOS simulator exposes a localhost control socket, and the SDK's `tools/mcp/octavios_mcp.py` bridges it to MCP. When those tools are registered with the agent host, the orchestrator stops delivering iterations it has never seen run: after each prompt it rebuilds the simulator, launches it on its own port, and drives the game the way a player would — screenshots, taps, twists, unfolding the cube to read all six faces at once — then scores the result and kills the process.
+The OctaviOS simulator exposes a localhost control socket, and the SDK's `tools/mcp/octavios_mcp.py` bridges it to MCP. When those tools are registered with the agent host, the orchestrator stops delivering iterations it has never seen run: after each prompt it rebuilds the simulator, launches it on its own port, and drives the game the way a player would — screenshots, taps, twists, tilting the cube so gravity-driven gameplay actually gets exercised, unfolding it to read all six faces at once — then scores the result and kills the process.
 
 That matters most where there is no human in the loop. In a normal run it means the per-prompt checkpoint arrives with screenshots instead of a "should work"; in YOLO it is the only thing watching the game between the first prompt and the final `.oct`.
 

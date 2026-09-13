@@ -55,7 +55,7 @@ flowchart TD
     FIX --> VERIFY
     VERIFY -->|yes| MCPQ{"sim MCP<br/>available?"}
     MCPQ -->|"no — gate skipped, recorded"| SAVE
-    MCPQ -->|yes| PLAY["Rebuild + launch sim on playtest_port<br/>Playtest agent: screenshots, taps, twists, unfold"]
+    MCPQ -->|yes| PLAY["Rebuild + launch sim on playtest_port<br/>Playtest agent: screenshots, taps, twists, tilts, unfold"]
     PLAY --> PVER{"playtest >= 90?"}
     PVER -->|"no, < 5 tries"| FIX
     PVER -->|yes| SAVE["Save context + screenshots"]
