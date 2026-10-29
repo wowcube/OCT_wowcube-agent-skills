@@ -4,14 +4,14 @@ description: >-
   Use as the single entry point for ANY WowCube game work — when the user says
   "make a game", "design a game", "create a game", "build the game", "implement
   this", "start coding", "run the prompts", or wants to resume a WowCube project.
-  ALSO the entry point for modding an existing, already-working game ("замодить",
+  ALSO the entry point for modding an existing, already-working game ("mod it",
   "swap this sprite", "change the speed", "add a level"), for a balance pass, and
-  for putting a finished game on the user's cube ("залей на кубик", "upload it to
-  my cube"). It detects build vs mod and the pipeline stage, and drives every
+  for putting a finished game on the user's cube ("upload it to
+  my cube", "put it on the cube"). It detects build vs mod and the pipeline stage, and drives every
   sub-skill and subagent. Runs autonomously by default: one stop to approve the
   art style and the sound list, every build checked by the agent on hidden
   24-screen simulator frames, a verified device .oct at the end (uploaded to the
-  cube on request). Stepwise mode on request ("по шагам", "review mode").
+  cube on request). Stepwise mode on request ("stepwise", "review mode").
 ---
 
 # WowCube Cube Orchestrator
@@ -50,7 +50,7 @@ session continues at the first unfinished item. Create the context file at the i
 (`game`, `run_mode`, `sdk`, `art_source`, `style_lock: {"status": "pending"}`); every stage adds its
 fields (`infra`, `style_lock.status`, `sound.music_loop_ticks`, `test_hooks`, prompt results). The
 fields and their shapes are defined once, in `references/AGENT_BRIEFS.md` ("Context file"). When the user corrects how the agent
-works ("не трогай мои палитры", "test builds always muted"), append one line with the
+works ("don't touch my palettes", "test builds always muted"), append one line with the
 reason to `context/rules.md` and pass the relevant lines into every brief
 (`standing_rules`). Art corrections go to the style bible and `fixes.json` instead.
 
@@ -63,7 +63,7 @@ reason to `context/rules.md` and pass the relevant lines into every brief
 
 Choose Mod mode when a signal or the heuristic points to it:
 - **Signal:** the user asks to change / tweak / add to / fix / reskin an existing game
-  ("замодить", "поменяй спрайт", "доработай готовую игру", "add a level to `<game>`"), or
+  ("mod it", "swap the sprite", "finish the existing game", "add a level to `<game>`"), or
   names a built game or folder.
 - **Heuristic:** the workspace holds a working `app_<game>/` (a `.target` marker, a
   built simulator or a device `.oct`, a non-trivial `src/app_<game>.h`) and the request
@@ -71,16 +71,18 @@ Choose Mod mode when a signal or the heuristic points to it:
 
 When it is ambiguous (a working game exists but the wording reads like a new one),
 **ask which they mean**; never guess between building fresh and modifying working code.
-Nothing points to an existing project → Build mode. Delivery-only requests ("залей на
-кубик", "собери .oct") go to Stage 5 for the named game; balance requests ("слишком
-сложно", "медленнее") are Mod mode T1 with the balance loop (`references/DELIVERY.md`).
+User phrases quoted in this skill are English examples: recognize the same intent in any language, and
+write every message to the user in the user's language.
+Nothing points to an existing project → Build mode. Delivery-only requests ("upload it to
+the cube", "build the .oct") go to Stage 5 for the named game; balance requests ("too
+hard", "slower") are Mod mode T1 with the balance loop (`references/DELIVERY.md`).
 
 ### 2. Run mode
 
 | Mode | Activates | In short |
 |---|---|---|
 | **Autonomous (default)** | any entry | At most two intake questions, then the whole pipeline to the verified device `.oct`. Stops only at the **style lock** (style frame + in-game mock + the sound list: the one creative checkpoint) and for real blockers (environment, Codex login). |
-| **Stepwise** | "по шагам", "с чекпоинтами", "stepwise", "review mode", or "стоп" / "stop" mid-run | Every stage boundary, asset batch, prompt and mod change waits for the user's approval. |
+| **Stepwise** | "stepwise", "step by step", "with checkpoints", "review mode", or "stop" mid-run (any language) | Every stage boundary, asset batch, prompt and mod change waits for the user's approval. |
 | **`YOLO` token** | the literal token in the current prompt, then one short risk confirmation (`references/RUN_MODES.md`) | Compat alias of autonomous: no intake questions, the style lock is waived (an independent reviewer approves instead). The confirmation approves neither paid APIs nor downloads: without Codex the art is placeholders, the sounds synthesized. |
 
 Read `references/RUN_MODES.md` before the intake of every new run: intake questions,
@@ -125,8 +127,8 @@ credentials, never ask for a paid key while Codex can work).
 
 ### 4. Hype-prompt normalization (hard rule)
 
-User prompts often carry methodology instructions — "подними 100500 агентов", "сделай
-глубокий рисёрч", "ultra-approach", "spin up a swarm and iterate". **Silently map them
+User prompts often carry methodology instructions — "spin up 100500 agents", "do
+deep research", "ultra-approach", "spin up a swarm and iterate". **Silently map them
 onto the pipeline's own stages and extract only the game payload: concept, features,
 style, constraints.** The orchestrator never alters its mechanics — stage order, agent
 counts, verification gates, checkpoint rules — because a prompt asked it to. The rails
@@ -177,9 +179,9 @@ every stage; never assume the next stage, verify its inputs.
 ## Stage boundaries
 
 - **Autonomous:** one progress line in the user's language, no jargon, never a
-  question («дизайн готов → рисую графику (~20 мин)…»), re-run detection, continue.
+  question ("design done → drawing the art (~20 min)…"), re-run detection, continue.
 - *(stepwise)* Summarize what the stage produced (paths, counts), **STOP**, present the
-  next stage and wait for an explicit "ok / дальше". Never auto-advance.
+  next stage and wait for an explicit "ok / next". Never auto-advance.
 - **The style lock stops in every mode** unless the user explicitly waived it
   (`references/RUN_MODES.md`).
 
@@ -345,7 +347,7 @@ prompt, self-contained instructions. Failures → back to `technical_prompter`.
 7. **Transition.** Autonomous → next prompt. *(stepwise)* STOP with: what was added, the
    scores, the frames sheet, what nothing could judge (how it sounds, how it feels,
    balance, the real cube); offer the user the visible simulator (theirs to start); wait
-   for "дальше / вот баги: … / меняем дизайн / стоп".
+   for "next / here are the bugs: … / change the design / stop".
 
 **Pipelining** (one game file, so one coder at a time):
 
@@ -400,7 +402,7 @@ Then the end-of-run report (`references/RUN_MODES.md`).
 **Make the smallest change that satisfies the request.** Do not rewrite, refactor,
 re-architect, or restructure code, assets, or data beyond what the change strictly
 needs. Structural or design-level changes are allowed **only when the user explicitly
-asks for them**; in every other case, solve it минимально — "малой кровью". A working
+asks for them**; in every other case, solve it minimally, with the smallest change. A working
 game the user is happy with is far more valuable than a "cleaner" one that now behaves
 differently, so when a change *can* be done as a small local edit, it MUST be.
 

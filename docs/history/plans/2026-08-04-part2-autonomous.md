@@ -67,7 +67,7 @@
 
 - [ ] Replace the "Run mode" paragraph + `## YOLO Mode` section with `## Run Modes` implementing spec §2 exactly: autonomous DEFAULT (start line verbatim from the spec, in Russian, no waiting), stepwise opt-in (triggers list), `YOLO` token compat (skips the two questions; the old activation-hard-rule + risk-confirmation blocks are deleted).
 - [ ] Rewrite every checkpoint clause: stage-boundary checkpoint and per-prompt checkpoint texts get "stepwise mode only" framing; autonomous mode = re-run stage detection and continue + emit a one-way progress line (spec §7). Mod-mode mini-plan: auto-approved in autonomous.
-- [ ] Intake section (spec §3): the two allowed questions with exact behavior (concept question wording; key question → WAIT; "не знаю" → placeholder path + final-report line; pasted key → `save_provider`, validated, §4 flow). Reference `scripts/image_providers.py` resolution order.
+- [ ] Intake section (spec §3): the two allowed questions with exact behavior (concept question wording; key question → WAIT; "I don't know" → placeholder path + final-report line; pasted key → `save_provider`, validated, §4 flow). Reference `scripts/image_providers.py` resolution order.
 - [ ] Failure policy (spec §6): degrade-never-abort, foundational failure → one re-scope pass; floor = simplest playable loop; cuts listed in the final report.
 - [ ] Hype normalization (spec §8) as a short hard rule near Mode Detection.
 - [ ] Final report template (spec §7): .oct path, load instruction, cuts, placeholder note.

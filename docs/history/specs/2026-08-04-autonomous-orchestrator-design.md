@@ -5,14 +5,14 @@
 
 ## 1. Why
 
-The pipeline's primary audience is business users. Observed behavior: they bypass permissions, paste one huge prompt ("сделай игру про X, вот фичи, не задавай вопросов") and expect a cube-loadable game with zero interaction. Some paste internet-hype prompts ("spin up a hundred agents and do research"). The current opt-in YOLO (literal token + a confirmation stop) does not match how they actually work — they never opt in; they just fight the checkpoints. The redesign makes their natural behavior land on the rails instead of derailing from them: the rails become invisible, not interactive.
+The pipeline's primary audience is business users. Observed behavior: they bypass permissions, paste one huge prompt ("make a game about X, here are the features, no questions") and expect a cube-loadable game with zero interaction. Some paste internet-hype prompts ("spin up a hundred agents and do research"). The current opt-in YOLO (literal token + a confirmation stop) does not match how they actually work — they never opt in; they just fight the checkpoints. The redesign makes their natural behavior land on the rails instead of derailing from them: the rails become invisible, not interactive.
 
 ## 2. Run modes (the default flips)
 
 | Mode | How it activates | Behavior |
 |---|---|---|
-| **Autonomous (DEFAULT)** | Any orchestrator entry, no signal needed | Drives Build or Mod all the way to the verified device `.oct` with no approval stops. Prints ONE jargon-free start line and goes: "Делаю игру для кубика, вернусь с готовым файлом (~оценка). Хочешь контролировать шаги — напиши «по шагам»." It does NOT wait for a reply to that line. |
-| **Stepwise (opt-in)** | Phrase in the prompt ("по шагам", "с чекпоинтами", "review mode") or "стоп" at any time mid-run | The pre-part-2 checkpointed flow, unchanged: stage-boundary and per-prompt checkpoints, asset review, mod-mode mini-plan approval. |
+| **Autonomous (DEFAULT)** | Any orchestrator entry, no signal needed | Drives Build or Mod all the way to the verified device `.oct` with no approval stops. Prints ONE jargon-free start line and goes: "Making a game for the cube, back with the finished file (~estimate). Want to approve each step? Say 'stepwise'." It does NOT wait for a reply to that line. |
+| **Stepwise (opt-in)** | Phrase in the prompt ("stepwise", "with checkpoints", "review mode") or "stop" at any time mid-run | The pre-part-2 checkpointed flow, unchanged: stage-boundary and per-prompt checkpoints, asset review, mod-mode mini-plan approval. |
 | **`YOLO` token (compat)** | Literal token in the prompt | Autonomous + skip even the allowed questions (§3): missing concept → designer invents one; missing image key → placeholders without asking. The old double-gate (risk speech + confirmation) is REMOVED. |
 
 Mode is decided per entry from the current prompt; nothing carries across turns. The correctness invariants (verifier 90/90 + fixer per prompt, asset-set completeness before pack, device build with ARM-embed verification) hold in every mode and are never suspended.
@@ -21,10 +21,10 @@ Mode is decided per entry from the current prompt; nothing carries across turns.
 
 Both are asked once, at intake (before going silent), never mid-run:
 
-1. **Game concept — only if the prompt carries none at all.** "Про что игра? Одним предложением — или скажи «на твой вкус»." Any concept fragment in the prompt (genre, theme, mechanic) means no question.
+1. **Game concept — only if the prompt carries none at all.** "What is the game about? One sentence, or say 'your choice'." Any concept fragment in the prompt (genre, theme, mechanic) means no question.
 2. **Image API key — only if no key/endpoint is configured anywhere (§4).** The orchestrator asks for a key and **waits for the answer** (this is a real block, per the owner's decision). Two outcomes:
    - The user pastes something → provider adapter (§4) identifies and validates it, run proceeds with AI art.
-   - The user answers "не знаю"/"нет ключа"/anything conveying no-key → the run proceeds with **agent-drawn placeholder art** (§5) and the final report says exactly one line about it: "Графика временная — добавь ключ (файл `<path>`) и скажи «перегенери графику»."
+   - The user answers "I don't know"/"no key"/anything conveying no-key → the run proceeds with **agent-drawn placeholder art** (§5) and the final report says exactly one line about it: "The art is temporary: add a key (file `<path>`) and say 'regenerate the art'."
 
 Everything else — GDD content, prompts, asset review, per-prompt results — is decided autonomously and only reported at the end.
 
@@ -62,12 +62,12 @@ After 5 failed fixer attempts on a prompt, the feature is cut or simplified and 
 
 ## 7. Telemetry
 
-- One-way progress lines at stage transitions ("дизайн готов → генерю графику (~5 мин)…"), never questions.
+- One-way progress lines at stage transitions ("design done → generating the art (~5 min)…"), never questions.
 - Final report in plain user language: `.oct` path, how to load it, what was cut (§6), placeholder-art note if any (§3.2), playtime hints. No pipeline jargon.
 
 ## 8. Hype-prompt normalization
 
-Instructions about methodology inside user prompts ("подними 100500 агентов", "сделай глубокий рисёрч", "ultra-approach") are silently mapped onto the pipeline's own stages; the orchestrator never alters its mechanics because a prompt asked it to. From such prompts only the game payload is extracted: concept, features, style, constraints. The rails are non-negotiable — and never advertised.
+Instructions about methodology inside user prompts ("spin up 100500 agents", "do deep research", "ultra-approach") are silently mapped onto the pipeline's own stages; the orchestrator never alters its mechanics because a prompt asked it to. From such prompts only the game payload is extracted: concept, features, style, constraints. The rails are non-negotiable — and never advertised.
 
 ## 9. Versioning: automatic patch bump
 
@@ -75,7 +75,7 @@ Instructions about methodology inside user prompts ("подними 100500 аг�
 
 ## 10. `repack` command
 
-One command for the "я заменил ассеты — пересобери" cycle (today: four manual steps). Skill-level flow (orchestrator Mod mode T2/T3 uses it; also directly invokable):
+One command for the "I replaced the assets, rebuild" cycle (today: four manual steps). Skill-level flow (orchestrator Mod mode T2/T3 uses it; also directly invokable):
 1. refresh/replace source PNGs (whatever the user changed),
 2. repack the beta container (same canonical invocation the app was built with),
 3. auto patch-bump `APP_VERSION` (§9),

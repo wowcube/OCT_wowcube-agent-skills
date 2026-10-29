@@ -14,7 +14,7 @@ description: >-
 
 Create a non-technical Game Design Document (GDD) from a user's game idea, accounting for WowCube hardware and interaction specifics. The GDD is the Stage 1 artifact; `cube_orchestrator` hands it to Stage 2 (`technical_prompter`), after a checkpoint in stepwise mode.
 
-**Core principle:** in **stepwise mode** the agent MUST first ask as many clarifying questions as needed to understand the user's vision — never guess; the discovery conversation is the most important part of the process there. In **autonomous mode** (the default; see `cube_orchestrator/references/RUN_MODES.md`) the interview does not run: the orchestrator's intake already supplied a concept fragment (or "на твой вкус" / the `YOLO` token), and this skill expands it with its own design judgment, listing every decision under Design Assumptions.
+**Core principle:** in **stepwise mode** the agent MUST first ask as many clarifying questions as needed to understand the user's vision — never guess; the discovery conversation is the most important part of the process there. In **autonomous mode** (the default; see `cube_orchestrator/references/RUN_MODES.md`) the interview does not run: the orchestrator's intake already supplied a concept fragment (or "your choice" / the `YOLO` token), and this skill expands it with its own design judgment, listing every decision under Design Assumptions.
 
 ## When to Use
 

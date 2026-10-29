@@ -1,24 +1,24 @@
 # Run modes (cube_orchestrator reference)
 
 Read this before the intake of every new run. The run mode is decided per entry
-from the current prompt; nothing carries across turns, except a mid-run "стоп"
-that switches the rest of that run to stepwise.
+from the current prompt; nothing carries across turns, except a mid-run "stop"
+that switches the rest of that run to stepwise. User phrases quoted in this file are English examples: recognize the same intent in any language, and write every message to the user in the user's language.
 
 | Mode | How it activates | Behaviour |
 |---|---|---|
 | **Autonomous (default)** | Any entry; no signal needed, never asked to confirm, no risk speech | Intake (at most two questions), one start line, then the whole pipeline to the verified device `.oct`. Stops only at the **style lock** (the one creative checkpoint) and for real blockers (below). |
-| **Stepwise (opt-in)** | "по шагам", "с чекпоинтами", "stepwise", "review mode" in the prompt, or "стоп" / "stop" at any time mid-run | Every checkpoint in the skill is in force: stage boundaries, the designer interview, the asset batch review, each prompt, each mod change. Nothing advances without an explicit "ok / дальше". |
+| **Stepwise (opt-in)** | "stepwise", "step by step", "with checkpoints", "review mode" in the prompt, or "stop" at any time mid-run | Every checkpoint in the skill is in force: stage boundaries, the designer interview, the asset batch review, each prompt, each mod change. Nothing advances without an explicit "ok / next". |
 | **`YOLO` token (compat alias)** | The literal token `YOLO` (case-insensitive) in the body of the current prompt, then one short risk confirmation (below) | Autonomous, plus: no intake questions (no concept → the designer invents one; no Codex → temporary placeholder art) and the style lock is waived (an independent reviewer approves the style frame instead of the user). |
 
-`YOLO` activation is literal: no paraphrase or translation counts ("автономный
-режим", "go autonomous", "фигачь до конца" do not), it is never inferred from tone,
+`YOLO` activation is literal: no paraphrase or translation counts ("autonomous
+mode", "go autonomous", "just run it to the end", in any language, do not), it is never inferred from tone,
 and a previous prompt's token does not carry over. It removes stops, never checks.
 
 **YOLO risk confirmation** (the one message before a `YOLO` run; in the user's
-language; wait for an explicit "да / yes", anything else → the default autonomous
+language; wait for an explicit "yes", anything else → the default autonomous
 mode):
 
-> YOLO: иду до готового файла без остановок — сам придумаю игру, если её нет в запросе, и не покажу стиль графики на утверждение (его проверит независимый ревьюер). Риск: результат может оказаться не тем, что ты хотел, и потребует переделки. YOLO НЕ разрешает платные API и скачивания: без Codex графика будет временной, звуки — синтезированными. Начинаю? (да / нет)
+> YOLO: I'll run to the finished file without stopping. I'll invent the game if the request has none, and I won't show you the art style for approval (an independent reviewer checks it instead). Risk: the result may not be what you wanted and may need rework. YOLO does NOT approve paid APIs or downloads: without Codex the art is temporary and the sounds are synthesized. Start? (yes / no)
 
 **Paid image APIs need the user's own explicit opt-in, in every mode.** Neither the
 default autonomous mode nor `YOLO` (nor its confirmation) implies consent to pay: a
@@ -28,7 +28,7 @@ image; only then set `WOWCUBE_ALLOW_PAID_IMAGES=1` / `--allow-paid`. A key that 
 merely configured is not consent. A local Stable Diffusion server on this machine
 (`http://localhost` / `127.0.0.1`) costs nothing and needs no opt-in.
 
-On "стоп" mid-run: finish the atomic step in flight (a coder run, a generation
+On "stop" mid-run: finish the atomic step in flight (a coder run, a generation
 batch), save context, then continue in stepwise mode.
 
 ## Hard invariants (every mode)
@@ -62,13 +62,13 @@ These decide whether the result runs on the cube; no mode suspends them.
 Ask only what cannot be decided; ask nothing mid-run. Questions are short, with
 options (AskUserQuestion), never a wall of text.
 
-1. **Game concept** — only if the prompt has none at all: «Про что игра? Одним
-   предложением — или скажи „на твой вкус“.» Any genre, theme or mechanic in the prompt
+1. **Game concept** — only if the prompt has none at all: "What is the game about? One
+   sentence, or say 'your choice'." Any genre, theme or mechanic in the prompt
    means no question.
 2. **Art access** — only if Codex cannot draw: `python <skills>/skills/cube_art-director/scripts/art.py doctor`
    fails on the Codex CLI or the ChatGPT login. Ask the user to install Codex or run
    `codex login` themselves (never type credentials, never ask for a paid key while the
-   subscription path can work). Answers: logged in → Codex; "не могу" / "нет" →
+   subscription path can work). Answers: logged in → Codex; "can't" / "no" →
    temporary placeholder art, one line about it in the final report. A paid image
    provider only when the user says explicitly that they want one and agree to pay per
    image (then `--allow-paid`; `scripts/image_providers.py`, driven by
@@ -89,9 +89,9 @@ for one and agrees to pay). The environment blocker still applies.
 **Start line** (autonomous; in the user's language), printed once, then continue
 without waiting for a reply:
 
-> Делаю игру для кубика. Один раз остановлюсь — покажу стиль графики и список звуков на утверждение, дальше сам до готового файла (~оценка). Хочешь контролировать шаги — напиши «по шагам».
+> Making a game for the cube. I'll stop once to show you the art style and the list of sounds for approval, then go on my own to the finished file (~estimate). Want to approve each step? Say "stepwise".
 
-Fill `~оценка` with an honest rough estimate (Codex art takes minutes per picture).
+Fill `~estimate` with an honest rough estimate (Codex art takes minutes per picture).
 
 ## What each mode does at each checkpoint
 
@@ -161,29 +161,29 @@ still fails:
   final report. Nothing is dropped silently. If even the floor cannot pass, that is a
   real blocker: report it with the evidence; never deliver a build whose gates fail.
 
-Stepwise mode asks instead: "Проверка не прошла после 5 попыток (лучший результат:
-X). Упростить фичу / ещё попытка / стоп?" (rescope / retry / stop; a rescoped prompt
+Stepwise mode asks instead: "The check still fails after 5 attempts (best score:
+X). Simplify the feature / try again / stop?" (rescope / retry / stop; a rescoped prompt
 goes through every gate again).
 
 ## Progress lines and the final report
 
 During an autonomous run: one-way progress lines at stage transitions, in the user's
 language, no pipeline jargon (no "verifier", "manifest", "Stage 4"):
-«дизайн готов → рисую графику (~20 мин)…», «графика готова → пишу код…».
+"design done → drawing the art (~20 min)…", "art done → writing the code…".
 
 The final report (autonomous; also the end of a stepwise run), plain language:
 
 1. **The game file**: absolute path to `dist/app_<game>.oct` and its version; uploaded
-   or not; how to put it on the cube (say «залей на кубик», or the manual way in
+   or not; how to put it on the cube (say "upload it to the cube", or the manual way in
    `references/DELIVERY.md`), and that the cube needs a restart after an upload.
 2. **What the agent saw**: the path of the last frames sheet, the gameplay video if
    made, the art review page (`assets_<game>/review.html`), and what no check could
    judge (how it sounds, how it feels, balance, the real cube).
 3. **What was cut or simplified** — every item, one line each; prompts nobody could
    check visually.
-4. **Temporary parts**, one line each when they apply: «Графика временная — войди в
-   Codex (`codex login`) и скажи «перерисуй графику».»; «Звуки синтезированные — скажи
-   «найди настоящие звуки».»; «Стиль не утверждён тобой — скажи, если хочешь другой.»
+4. **Temporary parts**, one line each when they apply: "The art is temporary: log in to
+   Codex (`codex login`) and say 'redraw the art'."; "The sounds are synthesized: say
+   'find real sounds'."; "You did not approve the style: say so if you want another one."
 5. **Sound credits**: `app_<game>/sound/CREDITS.md`.
 6. **How to play**: the controls (taps, twists, tilt), what to try first.
 7. **Next**: the on-device checklist (short) and an offer of a balance pass.

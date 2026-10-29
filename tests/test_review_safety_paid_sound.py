@@ -361,7 +361,7 @@ def test_run_modes_never_falls_back_to_a_paid_provider_without_opt_in():
     text = (DOCS / "cube_orchestrator" / "references" / "RUN_MODES.md").read_text(encoding="utf-8")
     assert "a configured paid provider" not in text
     assert "a paid\n   image provider if one is already configured" not in text
-    assert "YOLO risk confirmation" in text and "НЕ разрешает платные API и скачивания" in text
+    assert "YOLO risk confirmation" in text and "does NOT approve paid APIs or downloads" in text
     assert "--allow-paid" in text
 
 

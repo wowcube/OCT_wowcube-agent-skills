@@ -14,7 +14,7 @@ a verified `.oct`, uploaded to your cube over Bluetooth when you ask.
 - **Autonomous by default.** At most two intake questions (the concept if you gave
   none; a Codex login if it is missing), one stop to approve the art style (a style
   frame plus an in-game mock) and the list of sounds to download, progress lines, a
-  final report. Say «по шагам» / "stepwise" to approve every stage, batch and prompt.
+  final report. Say "stepwise" (in any language) to approve every stage, batch and prompt.
 - **Art**: `cube_art-director` drives the Codex CLI (ChatGPT subscription, no API key)
   with a style lock and a strict QA loop: every rule must pass, every fix is recorded,
   a fresh agent reviews consistency before you see a batch. Codex must be logged in
@@ -80,7 +80,6 @@ SDK itself.
 
 ```
 .claude-plugin/plugin.json      plugin manifest
-CHANGELOG.md                    what changed per version
 skills/
 ├── cube_orchestrator/          the entry point
 │   ├── SKILL.md                modes, stage routing, the five stages, Mod mode
@@ -140,25 +139,25 @@ Details: `docs/pipeline-flow.md` and `skills/cube_orchestrator/SKILL.md`.
 
 ## How to use
 
-> "Сделай игру для кубика: ловить падающие звёзды, поворачивая грани."
+> "Make a cube game: catch falling stars by twisting the faces."
 
 The orchestrator asks at most what it cannot decide, shows you the style frame, the
 in-game mock and the sound list once, then works until the `.oct` is ready.
 
-> "Продолжи игру star catcher." — resumes at the first unfinished step (stage detection
+> "Continue the star catcher game." — resumes at the first unfinished step (stage detection
 > reads `plans/`, `assets_<game>/`, `app_<game>/` and `context/`).
 >
-> "По шагам: сделай игру про ..." — stepwise mode.
+> "Stepwise: make a game about ..." — stepwise mode.
 >
-> "Поменяй героя на кота" / "сделай врагов медленнее" — Mod mode, smallest change.
+> "Make the hero a cat" / "make the enemies slower" — Mod mode, smallest change.
 >
-> "Залей на кубик" — builds if needed and uploads `dist/app_<game>.oct` to your cube.
+> "Upload it to the cube" — builds if needed and uploads `dist/app_<game>.oct` to your cube.
 >
-> "Сделай html-прототип механики" / "Запиши видео игры" — the browser prototype and the
+> "Make an HTML prototype of the mechanic" / "Record a video of the game" — the browser prototype and the
 > demo video in the team's format.
 >
-> Artists can use `cube_art-director` on its own: "Вот мой референс, нарисуй набор
-> спрайтов в этом стиле" — style lock from the reference, Codex drawing, QA and a review page.
+> Artists can use `cube_art-director` on its own: "Here is my reference, draw a sprite set
+> in this style" — style lock from the reference, Codex drawing, QA and a review page.
 
 ## Platform in one paragraph
 
@@ -178,5 +177,4 @@ pip install -r scripts/requirements.txt
 python -m pytest -q -m "not slow"          # pytest.ini sets tests/ and scripts/ on the path
 ```
 
-Tests never reach a network or a paid API and never open a window. Changes per version:
-`CHANGELOG.md`.
+Tests never reach a network or a paid API and never open a window.
