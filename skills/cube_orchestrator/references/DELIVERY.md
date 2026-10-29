@@ -175,8 +175,9 @@ ffmpeg -v error -f concat -safe 0 -i "$d\video.txt" -vf "fps=20,pad=ceil(iw/2)*2
 
 Linux `record` frames: `ffmpeg -framerate 20 -i <prefix>%03d.png -vf "pad=ceil(iw/2)*2:ceil(ih/2)*2" -c:v libx264 -pix_fmt yuv420p out.mp4`.
 The video is silent (no audio is ever captured). Give the user the path; do not open
-it. A presentation video (3D cube, unfolded net, controls legend) is the team's
-`wowcube-demo-video` workflow.
+it. A presentation video in the team's standard format (1920x1080: 3D cube, unfolded net, controls legend,
+captions) comes from the `wowcube-demo-video` skill: method A records the HTML prototype, methods B/C
+capture the real game with a bot (Node + Playwright or a host g++ build: a one-time install the user approves).
 
 ## 6. Balance loop (after the first playable build)
 

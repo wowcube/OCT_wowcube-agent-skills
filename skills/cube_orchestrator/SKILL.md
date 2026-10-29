@@ -184,7 +184,9 @@ every stage; never assume the next stage, verify its inputs.
 
 ## Stage 1 — Design
 
-Invoke `cube_game-designer`. Autonomous: no interview, the GDD grows from the concept;
+Invoke `cube_game-designer`. Optional after the GDD: a playable HTML prototype of the mechanic
+(`wowcube-html-prototype`, designer Step 5) when the mechanic is uncertain or the user asks.
+Autonomous: no interview, the GDD grows from the concept;
 *(stepwise)* its discovery interview runs as a short questionnaire. The GDD passes only
 when it answers `cube_game-designer/references/GAME_FEEL.md`: one tunables table,
 telegraphed threats, what lives on which face and screen (panoramas continuous around

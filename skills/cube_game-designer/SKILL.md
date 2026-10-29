@@ -367,6 +367,26 @@ Before finalizing, verify:
 20. **Saves** — §9 exists; anything the player expects to keep (best score, progress) is listed there
 21. **Testing & delivery** — §10 describes the autoplay bot, the mute and playfield-pin switches (when relevant) and the launcher icon; the gameplay video line is optional
 
+### Step 5 (optional): HTML prototype of the mechanic
+
+A playable browser page that tests the core mechanic on a model of the cube (3D cube + net of 24 screens,
+twists, pats, tilt, an autopilot) before any cube code exists. A design mistake found here costs minutes; found
+in Stage 4 it costs a prompt cycle (on a real run 1-2M tokens per prompt with its checks).
+
+- **When**: offer it when the core mechanic is new or uncertain (how twists, tilt and taps combine, puzzle
+  rules, pacing), or when the user asks for a prototype or a concept video. Skip it for a known mechanic.
+  *(stepwise)* ask once after the GDD is approved; autonomous: only when the brief asks for it.
+- **How**: invoke the `wowcube-html-prototype` skill with the GDD. Put the page at
+  `plans/<game>_prototype.html` with its engine copy in `plans/common/`. The page's logic block follows the GDD's
+  rules and the Tunables table; art is placeholders drawn in code (no Codex images at this stage).
+- **What comes back**: what the playtest of the page showed (a rule that does not work, a number that feels
+  wrong) goes into the GDD (§2 rules, Tunables, Design Assumptions), then Step 4 runs again. §10 links the page.
+  The coder never ports the page's JavaScript: Stage 2 prompts still follow the GDD.
+- **Video (optional)**: a concept video in the team's standard format comes from the page with
+  `wowcube-demo-video` (method A); stills from it can illustrate the GDD. Recording needs Node, Playwright
+  (Chromium) and ffmpeg: a one-time install the user approves (`cube_orchestrator/references/AGENT_SAFETY.md`).
+- It never replaces the Stage 4 visual gate: the page models the cube, the gate checks the real engine.
+
 ## Important: Assets Are Created Downstream (Not by This Skill)
 
 The GDD lists all required assets (sprites, sounds, fonts); this skill only specifies them:

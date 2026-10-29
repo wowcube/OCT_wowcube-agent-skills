@@ -81,7 +81,9 @@ skills/
 ├── cube_art-director/          style-locked Codex art with strict QA (also standalone, for artists)
 ├── cube_asset-builder/         Stage 3: art, sound, icon, fonts -> packed app assets
 ├── wowcube-boilerplate/        infra gate (scaffold, simulator builds) and Stage 5 (device .oct)
-└── cube_verifier/              Requirements, Template and Playtest agents
+├── cube_verifier/              Requirements, Template and Playtest agents
+├── wowcube-html-prototype/     optional browser prototype of the mechanic (Alex Poshivalov)
+└── wowcube-demo-video/         standard-format demo videos (Alex Poshivalov)
 scripts/                        packer (build_pipeline, pack, pack_beta), manifest validator, sound_kit,
                                 device build, repack_app, new_app, check_env
 tools/
@@ -108,6 +110,8 @@ You only talk to `cube_orchestrator`; it drives the others.
 | `cube_asset-builder` | Stage 3: drives the art director, builds sounds, the launcher icon and fonts, packs the app |
 | `wowcube-boilerplate` | Scaffolds the app in the octavios dev layout, builds the simulators, builds the device `.oct` |
 | `cube_verifier` | Requirements and Template agents (code) and the Playtest Agent (the running game) |
+| `wowcube-html-prototype` | Optional, after the GDD: a playable browser prototype of the mechanic on a cube model (author: Alex Poshivalov) |
+| `wowcube-demo-video` | Demo videos in the team's standard format from the prototype or the real game (author: Alex Poshivalov) |
 
 ## Pipeline
 
