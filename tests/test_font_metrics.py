@@ -149,8 +149,9 @@ def test_metrics_reach_the_octbmp_header():
 
 def test_patch_font_metrics_overwrites_a_stale_reused_header():
     """A packed/ header from before this fix must not survive a repack."""
-    stale = build_header(8, 21, 8, 8, pidx=1, flags=3)          # (7.5, 20.5), Bw 0
-    assert struct.unpack_from('<ff', stale, HDR_OFF_PIVOT_X) == (7.5, 20.5)
+    # flags 3 = ALPHA|FULLSIZE: the sprite default pivot at zoom 1 is (w-1)/2, (h-1)/2; Bw 0
+    stale = build_header(8, 21, 8, 8, pidx=1, flags=3)
+    assert struct.unpack_from('<ff', stale, HDR_OFF_PIVOT_X) == (3.5, 10.0)
     fixed = patch_font_metrics(stale, -1.0, 21.0, 9.0, 45.0)
     assert struct.unpack_from('<ff', fixed, HDR_OFF_PIVOT_X) == (-1.0, 21.0)
     assert struct.unpack_from('<4f', fixed, HDR_OFF_BBOX) == (0.0, 0.0, 9.0, 45.0)

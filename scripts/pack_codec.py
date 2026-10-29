@@ -1038,14 +1038,22 @@ def compute_psd_marker_pivot(layer_x: int, layer_y: int,
 
 def compute_default_pivot(w: int, h: int,
                           atlas_x: int | None,
-                          atlas_y: int | None) -> tuple[float, float]:
+                          atlas_y: int | None,
+                          fullsize: bool = False) -> tuple[float, float]:
     """Dispatch to the active pivot encoding selected by PIVOT_MODE.
 
     PSD mode reaches here only when the sprite carries no marker data (no PSD
     source, or a PSL without a pivot block); it then behaves exactly like
     LEGACY, which is what keeps manifest-driven packs byte-identical.
+
+    A ``<FULLSIZE>`` sprite is drawn 1:1, so its own-rect pivot is taken at
+    zoom 1: ``(w - 1) / 2`` — octpack's ``compute_pivot_bound`` with the
+    sprite's own rect as the marker, ``(zoom * W - 1) / 2``. The x2 formula
+    (``w - 0.5``) would anchor a 240 FULLSIZE sprite at 239.5.
     """
     if PIVOT_MODE in (PivotMode.LEGACY, PivotMode.PSD):
+        if fullsize:
+            return compute_psd_marker_pivot(0, 0, (0, 0, w, h), fullsize=True)
         return compute_legacy_local_pivot(w, h)
     if atlas_x is None or atlas_y is None:
         raise ValueError(
@@ -1110,7 +1118,8 @@ def build_header(w: int, h: int, symbol_bitness: int, offset_bitness: int,
                 layer_x, layer_y, pivot_rect,
                 fullsize=bool(flags & SpriteFlag.FULLSIZE))
         else:
-            cpx, cpy = compute_default_pivot(w, h, atlas_x, atlas_y)
+            cpx, cpy = compute_default_pivot(w, h, atlas_x, atlas_y,
+                                             fullsize=bool(flags & SpriteFlag.FULLSIZE))
         if pivot_x is None: pivot_x = cpx
         if pivot_y is None: pivot_y = cpy
 
@@ -1234,7 +1243,9 @@ def pack_sprite(
                 or (atlas_x is not None and atlas_y is not None)):
             # the old pivot belongs to the old size: a resized sprite with no
             # explicit pivot gets the same default a fresh header would
-            dpx, dpy = compute_default_pivot(w, h, atlas_x, atlas_y)
+            dpx, dpy = compute_default_pivot(
+                w, h, atlas_x, atlas_y,
+                fullsize=bool(header[HDR_OFF_FLAGS] & SpriteFlag.FULLSIZE))
             pivot_x = dpx if pivot_x is None else pivot_x
             pivot_y = dpy if pivot_y is None else pivot_y
         if pivot_x is not None and pivot_y is not None:

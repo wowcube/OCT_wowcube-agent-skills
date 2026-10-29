@@ -201,6 +201,18 @@ def test_reuse_recomputes_the_default_pivot_when_the_sprite_was_resized(tmp_path
     assert struct.unpack_from("<b", blob, HDR_OFF_RATE)[0] == 5   # the rate still survives
 
 
+def test_fullsize_default_pivot_matches_octpack_own_rect():
+    """A <FULLSIZE> sprite with no ~pivot marker (a !pack.txt group exported from a plain PNG): octpack's
+    compute_pivot_bound uses the sprite's own rect at zoom 1, (zoom*W - 1) / 2, not the x2 W - 0.5."""
+    def octpack(w, zoom):                      # linker.py _marker_cx(own rect) - zoom * X
+        return (zoom * w - 1) * 0.5
+    for w, h in ((240, 240), (8, 21), (160, 120)):
+        full = build_header(w, h, 8, 7, pidx=0, flags=int(SpriteFlag.ALPHA | SpriteFlag.FULLSIZE))
+        x2 = build_header(w, h, 8, 7, pidx=0, flags=int(SpriteFlag.ALPHA))
+        assert _pivot(full) == (octpack(w, 1), octpack(h, 1))
+        assert _pivot(x2) == (octpack(w, 2), octpack(h, 2))
+
+
 # ── 4. BOM manifest ─────────────────────────────────────────────────────────
 
 def test_load_manifest_accepts_utf8_bom(tmp_path, minimal_manifest):
