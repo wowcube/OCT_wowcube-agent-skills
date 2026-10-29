@@ -625,12 +625,26 @@ def patch_palette_sprite(blob: bytes, *, pal_id: int, seq_id: int = 0,
     the seam that lets manifest flags (fullsize/additive/bg) reach a palette
     sprite's beta header. The legacy bits already present (ALPHA) are kept;
     the default of 0 leaves the byte exactly as the legacy packer wrote it.
+
+    When `extra_flags` turns FULLSIZE on for a blob packed WITHOUT it (a
+    manifest ``flags.fullsize`` palette sprite, the 240 palette icon), the
+    legacy header's pivot and bounds are still in x2-zoom units: utils.exe's
+    ``compute_pivot_bound`` gives ``p = zoom * D - 0.5`` (pivot) and
+    ``b = (zoom * W - 1) / 2`` (Bw/Bh), so they are rescaled to zoom 1 here —
+    otherwise a 240 sprite anchors at 239.5 instead of 119.5. Bx/By are plain
+    zoom multiples and are halved.
     """
     if len(blob) < BMP_SIZE:
         raise ValueError(f"sprite blob is {len(blob)} bytes, needs at least {BMP_SIZE}")
     hdr = bytearray(blob[:BMP_SIZE])
     rate, = struct.unpack_from("<b", hdr, 47)
     struct.pack_into("<HH", hdr, 0, pal_id, seq_id)
+    if (extra_flags & OCT_FLAG_FULLSIZE) and not (hdr[44] & OCT_FLAG_FULLSIZE):
+        pvx, pvy, bx, by, bw, bh = struct.unpack_from("<6f", hdr, 4)
+        half = lambda v: (v + 0.5) / 2.0 - 0.5          # noqa: E731
+        bw, bh = ((half(bw), half(bh)) if (bw or bh) else (bw, bh))
+        struct.pack_into("<6f", hdr, 4, half(pvx), half(pvy),
+                         bx / 2.0, by / 2.0, bw, bh)
     hdr[44] |= extra_flags & 0xFF
     struct.pack_into("<bBB", hdr, 45, rate, 0, 0)
     return bytes(hdr) + blob[BMP_SIZE:]
@@ -1026,6 +1040,17 @@ def emit_beta_layout(
 
     seq = _seq_chain(sprite_ids)
 
+    # The ids header is rendered BEFORE anything is written (a name that is
+    # not a C identifier fails here, not after index.bin moved on), and the
+    # previous header is removed for the duration of the write: if any payload
+    # below fails, the app must fail to compile rather than build stale ids
+    # against a half-rewritten container.
+    ids_file = Path(ids_path) if ids_path else app_dir / "src" / f"{app_name}_ids.h"
+    ids_text = generate_beta_ids_h(records, metadata_blocks)
+    ids_text.encode("ascii")
+    if ids_file.is_file():
+        ids_file.unlink()
+
     # ── write payloads ──────────────────────────────────────────────────────
     packed_dir = app_dir / "art" / "packed"
     packed_dir.mkdir(parents=True, exist_ok=True)
@@ -1132,10 +1157,8 @@ def emit_beta_layout(
     # ── index.bin + ids header ──────────────────────────────────────────────
     (app_dir / "index.bin").write_bytes(build_index_bin(records))
 
-    ids_file = Path(ids_path) if ids_path else app_dir / "src" / f"{app_name}_ids.h"
     ids_file.parent.mkdir(parents=True, exist_ok=True)
-    ids_file.write_text(generate_beta_ids_h(records, metadata_blocks),
-                        encoding="ascii")
+    ids_file.write_text(ids_text, encoding="ascii")
 
     return records
 
@@ -1322,6 +1345,38 @@ def _app_header_text(app_h: Path, _depth: int = 3) -> str:
     return "\n".join(chunks)
 
 
+_C_SIMPLE_ESCAPES = {"n": 0x0A, "t": 0x09, "r": 0x0D, "a": 0x07, "b": 0x08,
+                     "f": 0x0C, "v": 0x0B, "\\": 0x5C, "'": 0x27, '"': 0x22,
+                     "?": 0x3F}
+_RE_C_ESCAPE = re.compile(r'\\(x[0-9A-Fa-f]+|[0-7]{1,3}|.)', re.S)
+
+
+def c_unescape(body: str) -> str:
+    """The text a C string literal's body (between the quotes) denotes.
+
+    Simple escapes, octal ``\\ooo`` and hex ``\\xHH`` are resolved to BYTES
+    and the result is decoded as UTF-8 (a title written as ``\\xC3\\xA9`` is
+    the same ``é`` the compiler embeds). An unknown escape keeps its
+    character, as GCC does (with a warning).
+    """
+    out = bytearray()
+    pos = 0
+    for m in _RE_C_ESCAPE.finditer(body):
+        out += body[pos:m.start()].encode("utf-8")
+        esc = m.group(1)
+        if esc[0] == "x":
+            out.append(int(esc[1:], 16) & 0xFF)
+        elif esc[0] in "01234567":
+            out.append(int(esc, 8) & 0xFF)
+        elif esc in _C_SIMPLE_ESCAPES:
+            out.append(_C_SIMPLE_ESCAPES[esc])
+        else:
+            out += esc.encode("utf-8")
+        pos = m.end()
+    out += body[pos:].encode("utf-8")
+    return out.decode("utf-8", "replace")
+
+
 def read_app_defines(app_h: str | Path) -> dict:
     """Extract the pack-header defines from an app's src/app.h.
 
@@ -1367,7 +1422,9 @@ def read_app_defines(app_h: str | Path) -> dict:
         m = re.fullmatch(r'"((?:[^"\\]|\\.)*)"', title)
         if not m:
             raise ValueError(f"APP_TITLE is not a plain string literal: {title}")
-        out["title"] = m.group(1)
+        # the compiler (and octpack-build) sees the UNESCAPED string, so
+        # `"Say \"hi\""` must reach the pack header as `Say "hi"`
+        out["title"] = c_unescape(m.group(1))
 
     for define, key in (("APP_GUID1", "guid1"), ("APP_VERSION", "app_version"),
                         ("APP_CATEGORIES", "categories"), ("APP_COLORS", "colors")):

@@ -66,7 +66,8 @@ from config import (
     layer_mark_of, rate_from_layer_mark,
 )
 
-from pack_codec import blob_to_packed_png
+from pack_codec import blob_to_packed_png, clamp_rate
+from packtxt import glob_ci
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -345,6 +346,10 @@ def find_pivot_markers(psd) -> list[tuple[int, int, int, int]]:
     blobs: list[tuple[int, int, int, int]] = []
     for layer in psd:
         if not layer.name.startswith('~pivot'):
+            continue
+        if not getattr(layer, 'visible', True):
+            # psd.exe (octpack list_marker_layers) only reads VISIBLE marker
+            # layers; a hidden ~pivot layer is an artist's parked copy.
             continue
         try:
             img = layer.composite()
@@ -856,7 +861,7 @@ def export_all_python(art_dir: str, exported_dir: str,
     # certainly pre-placed plain-PNG sprites there and did NOT want --export
     # to destroy them - say so loudly (the pack phase will then fail on the
     # empty palette).
-    if removed_pngs and not sorted(Path(art_dir).glob('*.psd')):
+    if removed_pngs and not glob_ci(art_dir, '*.psd'):
         print(f"  WARNING: --export cleaned {removed_pngs} PNG(s) out of "
               f"{exported_dir}/ but {art_dir}/ has no .psd to re-export. "
               f"If those PNGs were your sprites, restore them and re-run "
@@ -883,23 +888,26 @@ def export_all_python(art_dir: str, exported_dir: str,
     else:
         fonts_dir = os.path.join(art_dir, 'fonts')
         if os.path.isdir(fonts_dir):
-            for fnt in sorted(Path(fonts_dir).glob('*.fnt')):
+            for fnt in glob_ci(fonts_dir, '*.fnt'):
                 print(f"  Export font: {fnt.name}")
                 export_font_python(str(fnt), exported_dir)
 
     # PSDs
-    psds = sorted(Path(art_dir).glob('*.psd'))
+    psds = glob_ci(art_dir, '*.psd')
     if psd_names is not None:
+        # !pack.bat is a Windows batch file: its PSD names match the files
+        # case-insensitively, exactly like cmd.exe resolved them.
         declared = list(psd_names)
-        by_stem = {p.stem: p for p in psds}
-        missing = [n for n in declared if n not in by_stem]
+        by_stem = {p.stem.lower(): p for p in psds}
+        missing = [n for n in declared if n.lower() not in by_stem]
         for n in missing:
             print(f"  WARNING: !pack.bat declares {n}.psd - not found in {art_dir}")
-        skipped = [p.stem for p in psds if p.stem not in set(declared)]
+        declared_lower = {n.lower() for n in declared}
+        skipped = [p.stem for p in psds if p.stem.lower() not in declared_lower]
         if skipped:
             print(f"  Not exported (not declared in !pack.bat): "
                   f"{', '.join(skipped)}")
-        psds = [by_stem[n] for n in declared if n in by_stem]
+        psds = [by_stem[n.lower()] for n in declared if n.lower() in by_stem]
 
     for psd in psds:
         name = psd.stem
@@ -908,7 +916,7 @@ def export_all_python(art_dir: str, exported_dir: str,
         elif map_filter == 'all':
             is_map = name not in asset_names
         elif isinstance(map_filter, list):
-            is_map = name in map_filter
+            is_map = name.lower() in {m.lower() for m in map_filter}
         else:
             is_map = name not in asset_names
 
@@ -1219,7 +1227,7 @@ def _pack_octplace(x: float, y: float, w: int, h: int, bmp_idx: int,
         struct.pack('<h',  number & NUMBER_FIELD_MASK),
         struct.pack('<H',  flags),
         struct.pack('<b',  side if side < 128 else -1),
-        struct.pack('<b',  rate & 0xFF),
+        struct.pack('<b',  clamp_rate(rate, f'place {bmp_idx}')),
         struct.pack('<B',  name_byte),
         struct.pack('<B',  group_idx),
         struct.pack('<B',  parent),

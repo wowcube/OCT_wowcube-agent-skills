@@ -296,10 +296,33 @@ def parse_pack_txt_text(text: str, path: Path | None = None) -> PackConfig:
                       path=path)
 
 
+def glob_ci(directory: str | Path, pattern: str) -> list[Path]:
+    """``Path.glob`` for one directory level, but case-insensitive everywhere.
+
+    The legacy toolchain is Windows-only, so app repos freely mix ``.PSD`` /
+    ``.psd`` and ``!Pack.txt`` / ``!pack.txt``; on Linux a plain glob drops
+    those files without a word. Sorted like ``sorted(Path.glob(...))``.
+    """
+    d = Path(directory)
+    if not d.is_dir():
+        return []
+    pat = pattern.lower()
+    return sorted(p for p in d.iterdir()
+                  if p.is_file() and fnmatch.fnmatchcase(p.name.lower(), pat))
+
+
+def find_file_ci(directory: str | Path, name: str) -> Path | None:
+    """``<directory>/<name>``, matching the name case-insensitively."""
+    direct = Path(directory) / name
+    if direct.is_file():
+        return direct
+    found = glob_ci(directory, name.replace('[', '[[]'))
+    return found[0] if found else None
+
+
 def find_pack_txt(art_dir: str | Path) -> Path | None:
-    """``<art_dir>/!pack.txt`` if it exists, else None."""
-    candidate = Path(art_dir) / PACK_TXT_FILENAME
-    return candidate if candidate.is_file() else None
+    """``<art_dir>/!pack.txt`` if it exists (any case), else None."""
+    return find_file_ci(art_dir, PACK_TXT_FILENAME)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

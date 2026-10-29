@@ -47,6 +47,12 @@ from pathlib import Path
 PACK_BAT_FILENAME = '!pack.bat'
 
 _RE_SET = re.compile(r'^\s*set\s+(?:/a\s+)?([^=\s]+)\s*=(.*)$', re.I)
+# `set "NAME=VALUE"`: the quotes wrap the whole assignment, not the value
+# (cmd.exe drops everything after the closing quote).
+_RE_SET_QUOTED = re.compile(r'^\s*set\s+(?:/a\s+)?"([^="]+?)\s*=([^"]*)"', re.I)
+# `%~dp0` (and the `%~dp0\` spelling) is the batch file's own directory, i.e.
+# the art dir every declared path is already relative to.
+_RE_BATCH_DIR = re.compile(r'%~dp0[\\/]?', re.I)
 _RE_VAR = re.compile(r'%([^%\s]+)%')
 # A batch line may be prefixed with "@" (echo off) or a label; both are dropped
 # before tokenizing.
@@ -166,7 +172,8 @@ def parse_pack_bat(path: str | Path) -> PackBat:
         if line.startswith('@'):
             line = line[1:].lstrip()
 
-        m = _RE_SET.match(line)
+        line = _RE_BATCH_DIR.sub('', line)
+        m = _RE_SET_QUOTED.match(line) or _RE_SET.match(line)
         if m:
             result.variables[m.group(1).strip()] = \
                 _expand(m.group(2).strip().strip('"'), result.variables)

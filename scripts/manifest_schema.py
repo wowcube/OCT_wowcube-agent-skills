@@ -222,7 +222,7 @@ def load_manifest(path: str | Path, strict: bool = False) -> Manifest:
 
     If `strict` is True, call validate() and raise on any error.
     """
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     m = parse_manifest(data)
     if strict:
         errors = validate(m)

@@ -20,6 +20,7 @@ Contains no PSD/FNT I/O — see pack_psd.py for those.
 from __future__ import annotations
 
 import heapq
+import os
 import math
 import struct
 import sys
@@ -39,7 +40,8 @@ from config import (
     B_MAX, BYTES_PER_RGBA,
     DEFAULT_OFFSET_BITNESS, DEFAULT_QUALITY_THRESHOLD, G_MAX,
     HDR_OFF_BBOX, HDR_OFF_PIVOT_X,
-    HDR_OFF_COMPRESSION, HDR_OFF_NUM_PIXELS, HDR_OFF_PIDX, HDR_OFF_RATE,
+    HDR_OFF_COMPRESSION, HDR_OFF_FLAGS, HDR_OFF_NUM_PIXELS, HDR_OFF_PIDX,
+    HDR_OFF_RATE, BMP_RATE_DEFAULT,
     HDR_OFF_WIDTH,
     HEADER_SIZE, MEDIAN_CUT_CHANNEL_WEIGHTS,
     PACKED_COLOR_MASK, PAL_DESCRIPTOR_SIZE, PAL_MAX_PALETTES,
@@ -1051,6 +1053,33 @@ def compute_default_pivot(w: int, h: int,
     return compute_atlas_pivot(atlas_x, atlas_y)
 
 
+# octBmp_t per-row length table entries are u8.
+ROW_LENGTH_MAX = 0xFF
+
+
+class RowTooLongError(ValueError):
+    """An encoded scanline does not fit the u8 row-length table."""
+
+# octBmp_t.Rate / octPlace_t.Rate are int8.
+RATE_MAX = 127
+RATE_MIN = -128
+
+
+def clamp_rate(rate: int, what: str = '') -> int:
+    """Clamp a frame-rate multiplier into the int8 Rate field.
+
+    ``!rate128`` (or more) used to crash ``struct.pack('<b')`` deep inside the
+    pack; a multiplier that large cannot be stored, so it is capped with a
+    warning instead.
+    """
+    if RATE_MIN <= rate <= RATE_MAX:
+        return rate
+    clamped = RATE_MAX if rate > RATE_MAX else RATE_MIN
+    print(f"  WARNING: {what or 'sprite'}: rate {rate} does not fit the int8 "
+          f"Rate field - clamped to {clamped}")
+    return clamped
+
+
 def build_header(w: int, h: int, symbol_bitness: int, offset_bitness: int,
                  pidx: int, flags: int,
                  atlas_x: int | None = None, atlas_y: int | None = None,
@@ -1073,6 +1102,7 @@ def build_header(w: int, h: int, symbol_bitness: int, offset_bitness: int,
          - PivotMode.LEGACY / PSD -> (w - PIVOT_LOCAL_OFFSET, h - PIVOT_LOCAL_OFFSET)
          - PivotMode.ATLAS        -> -(atlas_xy * PIVOT_SCALE + PIVOT_HALFPIX)
     """
+    rate = clamp_rate(rate)
     if pivot_x is None or pivot_y is None:
         if (PIVOT_MODE == PivotMode.PSD and pivot_rect is not None
                 and layer_x is not None and layer_y is not None):
@@ -1143,7 +1173,7 @@ def pack_sprite(
     palette: EncoderPalette,
     header_bytes: bytes | None = None,
     pidx: int = 0,
-    flags: int = int(SpriteFlag.ALPHA),
+    flags: int | None = None,
     symbol_bitness: int = 8,
     offset_bitness: int = DEFAULT_OFFSET_BITNESS,
     symbol_bitness_override: int | None = None,
@@ -1156,23 +1186,51 @@ def pack_sprite(
     pivot_rect: tuple[int, int, int, int] | None = None,
     bw: float = 0.0,
     bh: float = 0.0,
-    rate: int = 1,
+    rate: int | None = None,
 ) -> bytes | None:
     """Pack an exported RGBA PNG into the WowCube packed format.
 
     Pixel quantisation is fully vectorised via ``EncoderPalette.quantize_image``
     — the previous per-pixel Python loop was the dominant bottleneck on
     full-sheet packs.
+
+    ``flags`` / ``rate`` default to None = "not known by the caller": a fresh
+    header then gets ``SpriteFlag.ALPHA`` / ``BMP_RATE_DEFAULT``, while a
+    reused ``header_bytes`` keeps its own byte. Anything the caller DOES know
+    (flags from ``!pack.txt``, a PSL rate, an explicit pivot or a ``~pivot``
+    marker rect) is patched into a reused header, because those sources are
+    authoritative and the previous pack may be stale.
+
+    Raises ValueError when an encoded row exceeds 255 bytes: the per-row
+    length table holds one byte per row (octpack's ``bytes(row_lengths)``
+    fails the same way), so a longer row cannot be represented at all.
     """
     img = Image.open(exported_png_path).convert('RGBA')
     pixels = np.asarray(img)
     h, w = pixels.shape[:2]
+    if rate is not None:
+        rate = clamp_rate(rate, os.path.basename(exported_png_path))
 
     if header_bytes:
         header = bytearray(header_bytes)
         old_w, old_h = struct.unpack_from('<hh', header, HDR_OFF_WIDTH)
         if old_w != w or old_h != h:
             struct.pack_into('<hh', header, HDR_OFF_WIDTH, w, h)
+        # Flags and pivot are re-derived from the current sources whenever
+        # the caller knows them; a header frozen at the previous pack would
+        # otherwise ignore a new <FULLSIZE> tag or a moved ~pivot marker.
+        if flags is not None:
+            header[HDR_OFF_FLAGS] = flags & 0xFF
+        if (pivot_x is None or pivot_y is None) and (
+                PIVOT_MODE == PivotMode.PSD and pivot_rect is not None
+                and layer_x is not None and layer_y is not None):
+            cpx, cpy = compute_psd_marker_pivot(
+                layer_x, layer_y, pivot_rect,
+                fullsize=bool(header[HDR_OFF_FLAGS] & SpriteFlag.FULLSIZE))
+            pivot_x = cpx if pivot_x is None else pivot_x
+            pivot_y = cpy if pivot_y is None else pivot_y
+        if pivot_x is not None and pivot_y is not None:
+            struct.pack_into('<ff', header, HDR_OFF_PIVOT_X, pivot_x, pivot_y)
 
         compression = struct.unpack_from('<I', header, HDR_OFF_COMPRESSION)[0]
         symbol_bitness = compression & 0xFF
@@ -1185,8 +1243,11 @@ def pack_sprite(
             header[HDR_OFF_PIDX] = pidx
         # A header reused from a previous pack may predate the layer-mark rate
         # rule (or the artist may have recoloured the layer since), and the PSL
-        # is authoritative — patch it in rather than shipping a stale multiplier.
-        struct.pack_into('<b', header, HDR_OFF_RATE, rate)
+        # is authoritative — patch it in rather than shipping a stale
+        # multiplier. With no PSL rate known keep the header's own: a repack
+        # from plain exported PNGs must not reset a 5 back to 1.
+        if rate is not None:
+            struct.pack_into('<b', header, HDR_OFF_RATE, rate)
         header = bytes(header)
     else:
         # The palette group's own bitness also governs a freshly built header —
@@ -1195,6 +1256,10 @@ def pack_sprite(
         # than utils.exe's.
         if symbol_bitness_override is not None:
             symbol_bitness = symbol_bitness_override
+        if flags is None:
+            flags = int(SpriteFlag.ALPHA)
+        if rate is None:
+            rate = BMP_RATE_DEFAULT
         header = build_header(
             w, h, symbol_bitness, offset_bitness, pidx, flags,
             atlas_x=atlas_x, atlas_y=atlas_y,
@@ -1210,7 +1275,17 @@ def pack_sprite(
                      for y in range(h)]
 
     # ── Scanline trim array (byte length of each encoded line) ─────────
-    trims = bytearray(len(lb) & 0xFF for lb in encoded_lines)
+    # One byte per row: a longer row used to wrap mod 256, and the decoder
+    # then started every following row at the wrong offset.
+    longest = max((len(lb) for lb in encoded_lines), default=0)
+    if longest > ROW_LENGTH_MAX:
+        raise RowTooLongError(
+            f"{os.path.basename(exported_png_path)}: a {w}-px row encodes to "
+            f"{longest} bytes at {symbol_bitness}-bit symbols, over the "
+            f"{ROW_LENGTH_MAX}-byte row-length limit of the sprite format - "
+            f"use a smaller palette (fewer symbol bits), a narrower sprite, "
+            f"or full color")
+    trims = bytearray(len(lb) for lb in encoded_lines)
     trims_padded_size = ((h + 3) // 4) * 4
     if len(trims) < trims_padded_size:
         trims.extend(b'\x00' * (trims_padded_size - len(trims)))
