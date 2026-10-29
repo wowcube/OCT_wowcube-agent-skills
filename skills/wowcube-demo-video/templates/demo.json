@@ -1,0 +1,18 @@
+{
+  "title": ["<FIRST PART>", "<ACCENT PART>"],
+  "tagline": "WowCube game · <one line: what the game is>",
+  "head3d": "3D · <THE GESTURES OF THE GAME> · PAT · TWIST",
+  "font": "art/fonts/ttf/<Font>.ttf",
+  "labelFonts": {"1": [18, "SemiBold"], "2": [24, "SemiBold"], "3": [44, "Bold"]},
+  "ids": "src/app_<game>_ids.h",
+  "sprites": "docs/demo/sprites",
+  "frames": "docs/demo/frames.jsonl",
+  "out": "docs/demo/<game>_demo.mp4",
+  "fps": 20,
+  "legend": [
+    {"icon": "icon_tilt_00", "title": "Tilt", "text": "<what it does>"},
+    {"icon": "icon_pat", "title": "Pat", "text": "<what it does>"},
+    {"icon": "icon_twist_00", "title": "Twist", "text": "<what it does>"},
+    {"icon": "icon_pat", "title": "Double pat", "text": "<what it does>"}
+  ]
+}

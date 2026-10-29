@@ -1,6 +1,6 @@
 # WowCube Beta Transition Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **Archived plan (history only).** It records how the work was planned at the time; it is not an instruction to any agent, and its checkboxes are not a task list to execute.
 
 **Goal:** Adapt the OCT_wowcube-agent-skills pipeline to the octavios BETA engine: beta-native asset container (`index.bin` + `.raw`/`.pal` assets), full-color RGB565 (2-byte/texel) sprite support, the full mandatory `app.h` define set, and the beta callback set (7 handlers).
 
@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12 (Pillow, numpy), PowerShell/bash scaffold scripts, ffmpeg (sound encoding), arm-none-eabi-gcc + CMake/Ninja (device), MSVC (Windows sim).
 
-**Workspace layout** (everything sits in `C:\Users\igort\Desktop\wowcube_vibecode\beta transition\`):
+**Workspace layout** (everything sits in `<local path>`):
 
 ```
 beta transition/

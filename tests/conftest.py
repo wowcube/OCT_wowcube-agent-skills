@@ -7,6 +7,11 @@ from pathlib import Path
 import pytest
 
 
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers", "slow: long-running test (real packing/build work)")
+
+
 @pytest.fixture
 def tmp_manifest(tmp_path: Path):
     """Factory: write a manifest dict to a JSON file in tmp_path and return the path."""
@@ -66,6 +71,10 @@ def stub_ai(monkeypatch):
     from PIL import Image
 
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    # never reach the real Codex CLI from tests: force the key chain (patched above)
+    monkeypatch.setenv("WOWCUBE_NO_CODEX", "1")
+    # the key chain is opt-in (image_providers.ALLOW_PAID_ENV); these stubbed runs opt in
+    monkeypatch.setenv("WOWCUBE_ALLOW_PAID_IMAGES", "1")
 
     def _fake(prompt, out_path, *, size=None, reference=None, cutout=False):
         w, h = size if size else (64, 64)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import struct
 import subprocess
@@ -12,7 +13,99 @@ import pytest
 
 from manifest_schema import load_manifest
 import gen_sounds
-from gen_sounds import FFMPEG_MISSING_MSG, encode_beta_mp3, generate, render_wav_bytes
+from gen_sounds import (
+    FFMPEG_MISSING_MSG, encode_beta_mp3, generate, render_wav_bytes,
+    resolve_sound_asset_names, sound_asset_name, sound_asset_name_problem,
+)
+
+
+# ── Sound asset names: SND_<name> must be a legal C identifier ────────
+#
+# The 11 WAV sources of the reference corpus (OCT_get_started) and the asset
+# names the legacy toolchain shipped for them in sound/assets/*.mp3. This is
+# the ground truth the rule has to reproduce.
+CORPUS_SOUND_NAMES = {
+    "Congratulations-007":   "congratulations_007",
+    "Pat_double1_500ms":     "pat_double1_500ms",
+    "StageCongratulations":  "stagecongratulations",
+    "StageGreetings":        "stagegreetings",
+    "StagePairing":          "stagepairing",
+    "SuccessHalfTwist":      "successhalftwist",
+    "SuccessSelector":       "successselector",
+    "WrongAction":           "wrongaction",
+    "eyes_appear":           "eyes_appear",
+    "eyes_blink":            "eyes_blink",
+    "selector":              "selector",
+}
+
+
+@pytest.mark.parametrize("stem,expected", sorted(CORPUS_SOUND_NAMES.items()))
+def test_sound_asset_name_reproduces_corpus_names(stem, expected):
+    assert sound_asset_name(stem) == expected
+
+
+def test_corpus_names_are_all_legal_identifiers():
+    for asset in CORPUS_SOUND_NAMES.values():
+        assert sound_asset_name_problem(asset) is None
+
+
+def test_sound_asset_name_prefixes_leading_digit():
+    assert sound_asset_name("007intro") == "s_007intro"
+    assert sound_asset_name("3-2-1 go") == "s_3_2_1_go"
+
+
+def test_sound_asset_name_is_idempotent():
+    for stem in CORPUS_SOUND_NAMES:
+        once = sound_asset_name(stem)
+        assert sound_asset_name(once) == once
+    assert sound_asset_name(sound_asset_name("007intro")) == "s_007intro"
+
+
+def test_sound_asset_name_empty_falls_back():
+    assert sound_asset_name("") == "sound"
+    assert sound_asset_name("!!!") == "___"
+
+
+def test_sound_asset_name_strips_non_ascii():
+    # isalnum() is Unicode-aware ("é".isalnum() is True), so the normaliser
+    # must also require isascii() or non-ASCII letters leak straight through
+    # into a SND_<name> enum member the C compiler can't tokenise.
+    result = gen_sounds.sound_asset_name("café")
+    assert re.match(r"^[a-z_][a-z0-9_]*$", result)
+    assert result == "caf_"
+
+
+@pytest.mark.parametrize("stem,fragment", [
+    ("", "empty name"),
+    ("Congratulations-007", "illegal character"),
+    ("007intro", "starts with a digit"),
+    ("café", "illegal character"),
+])
+def test_sound_asset_name_problem_explains(stem, fragment):
+    why = sound_asset_name_problem(stem)
+    assert why is not None and fragment in why
+
+
+def test_sound_asset_name_problem_accepts_legal_name():
+    assert sound_asset_name_problem("eyes_blink") is None
+
+
+def test_resolve_sound_asset_names_maps_the_corpus():
+    assert resolve_sound_asset_names(CORPUS_SOUND_NAMES) == CORPUS_SOUND_NAMES
+
+
+def test_resolve_sound_asset_names_rejects_collisions():
+    with pytest.raises(ValueError, match=r"collide after name normalisation"):
+        resolve_sound_asset_names(["Win-Fanfare", "win fanfare"])
+
+
+def test_resolve_sound_asset_names_collision_message_names_the_sources():
+    with pytest.raises(ValueError) as exc:
+        resolve_sound_asset_names(["Win-Fanfare", "win fanfare", "other"])
+    msg = str(exc.value)
+    assert "Win-Fanfare" in msg and "win fanfare" in msg
+    assert "win_fanfare" in msg
+    assert "other" not in msg
 
 
 # ── Pure-Python WAV synthesis (no ffmpeg) ─────────────────────────────
@@ -98,6 +191,29 @@ def test_encode_beta_mp3_writes_playable_mp3(tmp_path):
     assert int(stream["channels"]) == 1
 
 
+def test_encode_beta_mp3_normalises_the_output_name(tmp_path, monkeypatch):
+    """An artist's WAV name becomes a legal SND_ id at encode time."""
+    wav = _write_test_wav(tmp_path / "Congratulations-007.wav")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(gen_sounds.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(gen_sounds.subprocess, "run",
+                        lambda cmd, **kw: calls.append(cmd))
+
+    out = encode_beta_mp3(wav, tmp_path / "assets")
+
+    assert out == tmp_path / "assets" / "congratulations_007.mp3"
+    assert calls and calls[0][-1] == str(out)
+
+
+def test_encode_beta_mp3_leaves_a_legal_name_alone(tmp_path, monkeypatch):
+    wav = _write_test_wav(tmp_path / "eyes_blink.wav")
+    monkeypatch.setattr(gen_sounds.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    monkeypatch.setattr(gen_sounds.subprocess, "run", lambda cmd, **kw: None)
+
+    assert encode_beta_mp3(wav, tmp_path / "assets") == \
+        tmp_path / "assets" / "eyes_blink.mp3"
+
+
 def test_encode_beta_mp3_missing_ffmpeg_raises(tmp_path, monkeypatch):
     wav = tmp_path / "blip.wav"
     _write_test_wav(wav)
@@ -124,6 +240,45 @@ def test_generate_wav_only_does_not_require_ffmpeg(tmp_manifest, minimal_manifes
     assert not (out / "assets").exists()
 
 
+def test_generate_rejects_a_leading_digit_name_instead_of_renaming(tmp_manifest, tmp_path):
+    """A manifest sound is looked up by its exact name (SND_getAssetId("1up")):
+    renaming it to s_1up silently broke that, so an illegal name is refused
+    and nothing is written."""
+    data = {
+        "game": "demo", "schema_version": 1, "sprites": [],
+        "sounds": [{"name": "007intro", "description": "b", "duration_ms": 150}],
+    }
+    m = load_manifest(tmp_manifest(data))
+    out = tmp_path / "wav"
+    with pytest.raises(ValueError, match=r"starts with a digit"):
+        generate(m, out)
+    assert not out.exists()
+
+
+def test_generate_keeps_every_valid_manifest_name_verbatim(tmp_manifest, tmp_path):
+    data = {
+        "game": "demo", "schema_version": 1, "sprites": [],
+        "sounds": [{"name": "s1_up", "description": "b", "duration_ms": 150},
+                   {"name": "catch_2", "description": "b", "duration_ms": 150}],
+    }
+    out = tmp_path / "wav"
+    written = generate(load_manifest(tmp_manifest(data)), out)
+    assert sorted(p.name for p in written) == ["catch_2.wav", "s1_up.wav"]
+
+
+def test_generate_rejects_colliding_sound_names(tmp_manifest, tmp_path):
+    data = {
+        "game": "demo", "schema_version": 1, "sprites": [],
+        "sounds": [
+            {"name": "go", "description": "b", "duration_ms": 150},
+            {"name": "go", "description": "b", "duration_ms": 150},
+        ],
+    }
+    m = load_manifest(tmp_manifest(data))
+    with pytest.raises(ValueError, match=r"duplicate manifest sound name"):
+        generate(m, tmp_path / "wav")
+
+
 def test_generate_group_filter(tmp_manifest, tmp_path):
     data = {
         "game": "demo", "schema_version": 1, "sprites": [],
@@ -140,3 +295,146 @@ def test_generate_group_filter(tmp_manifest, tmp_path):
     generate(m, out, group="ui")
     assert (out / "sfx_coin.wav").exists()
     assert (out / "sfx_hit.wav").read_bytes() == before
+
+
+# ── pre-encoded mp3s committed in sound/ (not sound/assets/) ─────────────────
+#
+# OCT_ladybug's shape: twelve ready mp3s in sound/ itself, no WAV sources, no
+# sound/assets/ at all - and twelve KIND_SOUND records in its legacy
+# container. A build that only scans sound/assets/ ships a silent app whose
+# every SND_getAssetId() returns -1.
+
+LADYBUG_MP3S = ["berry_eaten", "berry_eaten2", "countdown", "game_over",
+                "idle_001", "idle_002", "idle_003", "idle_004", "idle_005",
+                "intro", "poison", "starting"]
+
+
+def test_plan_mp3_adoption_covers_the_ladybug_set():
+    from gen_sounds import plan_mp3_adoption
+    plan = plan_mp3_adoption([Path(f"sound/{n}.mp3") for n in LADYBUG_MP3S])
+    assert [asset for _src, asset in plan] == sorted(LADYBUG_MP3S)
+
+
+def test_plan_mp3_adoption_normalises_the_asset_name():
+    from gen_sounds import plan_mp3_adoption
+    plan = plan_mp3_adoption([Path("sound/Win-Fanfare.mp3")])
+    assert plan == [(Path("sound/Win-Fanfare.mp3"), "win_fanfare")]
+
+
+def test_plan_mp3_adoption_rejects_colliding_sources():
+    from gen_sounds import plan_mp3_adoption
+    with pytest.raises(ValueError, match=r"collide after name normalisation"):
+        plan_mp3_adoption([Path("a/Win-Fanfare.mp3"), Path("a/win fanfare.mp3")])
+
+
+def test_plan_mp3_adoption_leaves_committed_assets_alone():
+    from gen_sounds import plan_mp3_adoption
+    plan = plan_mp3_adoption([Path("sound/intro.mp3"), Path("sound/poison.mp3")],
+                             committed={"intro"})
+    assert [asset for _src, asset in plan] == ["poison"]
+
+
+def test_plan_mp3_adoption_of_nothing_is_empty():
+    from gen_sounds import plan_mp3_adoption
+    assert plan_mp3_adoption([]) == []
+
+
+# ── sourced sounds are never replaced by placeholders ─────────────────────────
+#
+# Real games ship CC0 recordings built by sound_kit.py into <ws>/wav/assets.
+# gen_sounds only fills gaps; every mp3 it writes is recorded (md5) in
+# <out>/placeholders.json, anything else in assets/ is a sourced sound.
+
+@pytest.fixture
+def fake_encode(monkeypatch):
+    """encode_beta_mp3 without ffmpeg: a deterministic fake mp3 per WAV."""
+    calls: list[str] = []
+
+    def _fake(wav_path, assets_dir):
+        wav_path, assets_dir = Path(wav_path), Path(assets_dir)
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        out = assets_dir / (wav_path.stem + ".mp3")
+        out.write_bytes(b"placeholder-mp3:" + wav_path.stem.encode())
+        calls.append(wav_path.stem)
+        return out
+
+    monkeypatch.setattr(gen_sounds, "encode_beta_mp3", _fake)
+    return calls
+
+
+def _two_sounds(tmp_manifest):
+    return load_manifest(tmp_manifest({
+        "game": "demo", "schema_version": 1, "sprites": [],
+        "sounds": [
+            {"name": "shot", "description": "s", "duration_ms": 150, "event_type": "shoot"},
+            {"name": "music_loop", "description": "m", "duration_ms": 900, "event_type": "music"},
+        ],
+    }))
+
+
+def test_generate_records_its_placeholders(tmp_manifest, tmp_path, fake_encode):
+    out = tmp_path / "wav"
+    generate(_two_sounds(tmp_manifest), out, encode_mp3=True)
+    rec = json.loads((out / gen_sounds.PLACEHOLDERS_FILE).read_text(encoding="utf-8"))
+    assert set(rec) == {"shot", "music_loop"}
+    assert rec["shot"] == hashlib.md5(b"placeholder-mp3:shot").hexdigest()
+
+
+def test_generate_keeps_a_sourced_mp3(tmp_manifest, tmp_path, fake_encode):
+    out = tmp_path / "wav"
+    real = out / "assets" / "music_loop.mp3"
+    real.parent.mkdir(parents=True)
+    real.write_bytes(b"CC0 march loop")
+    kept: list[str] = []
+    written = generate(_two_sounds(tmp_manifest), out, encode_mp3=True, kept=kept)
+    assert kept == ["music_loop"]
+    assert written == [out / "shot.wav"]
+    assert fake_encode == ["shot"]
+    assert real.read_bytes() == b"CC0 march loop"
+    assert not (out / "music_loop.wav").exists()
+
+
+def test_generate_refreshes_its_own_placeholder(tmp_manifest, tmp_path, fake_encode):
+    out = tmp_path / "wav"
+    m = _two_sounds(tmp_manifest)
+    generate(m, out, encode_mp3=True)
+    kept: list[str] = []
+    generate(m, out, encode_mp3=True, kept=kept)
+    assert kept == []
+    assert fake_encode == ["shot", "music_loop", "shot", "music_loop"]
+
+
+def test_generate_keeps_a_placeholder_replaced_by_a_recording(tmp_manifest, tmp_path, fake_encode):
+    """placeholder first, then sound_kit writes the real mp3 over it: the next
+    generate run (e.g. after an art fix) must keep the recording."""
+    out = tmp_path / "wav"
+    m = _two_sounds(tmp_manifest)
+    generate(m, out, encode_mp3=True)
+    (out / "assets" / "shot.mp3").write_bytes(b"layered shotgun blast")
+    kept: list[str] = []
+    generate(m, out, encode_mp3=True, kept=kept)
+    assert kept == ["shot"]
+    assert (out / "assets" / "shot.mp3").read_bytes() == b"layered shotgun blast"
+    rec = json.loads((out / gen_sounds.PLACEHOLDERS_FILE).read_text(encoding="utf-8"))
+    assert set(rec) == {"music_loop"}
+
+
+def test_generate_wav_only_skips_sourced_sounds(tmp_manifest, tmp_path, monkeypatch):
+    monkeypatch.setattr(gen_sounds.shutil, "which", lambda name: None)
+    out = tmp_path / "wav"
+    (out / "assets").mkdir(parents=True)
+    (out / "assets" / "shot.mp3").write_bytes(b"real")
+    written = generate(_two_sounds(tmp_manifest), out)
+    assert written == [out / "music_loop.wav"]
+    assert not (out / gen_sounds.PLACEHOLDERS_FILE).exists()
+
+
+def test_cli_default_out_is_the_game_workspace(tmp_path, capsys):
+    plans = tmp_path / "plans"
+    plans.mkdir()
+    mp = plans / "demo_assets.json"
+    mp.write_text(json.dumps({"game": "demo", "schema_version": 1, "sprites": [],
+                              "sounds": [{"name": "blip", "description": "b", "duration_ms": 100}]}),
+                  encoding="utf-8")
+    assert gen_sounds.main([str(mp), "--no-mp3"]) == 0
+    assert (tmp_path / "assets_demo" / "wav" / "blip.wav").exists()

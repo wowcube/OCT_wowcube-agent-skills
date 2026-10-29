@@ -8,6 +8,7 @@ the 48-byte header.
 """
 from __future__ import annotations
 
+import json
 import struct
 import sys
 from pathlib import Path
@@ -196,6 +197,114 @@ def test_icon_assets(emitted):
     assert struct.unpack_from("<H", ico, 28)[0] == 0
     assert struct.unpack_from("<H", ahover, 28)[0] == (1 << 1)
     assert ahover[:28] == ico[:28] and ahover[30:] == ico[30:]
+
+
+def test_palette_icon_120(tmp_path):
+    """Palette-120 icon tier: the icon arrives as a pre-encoded legacy blob
+    plus its OWN palette. It must get a dedicated KIND_PAL record (next
+    numeric name after the sprite pal groups), ico_idle's Pidx must point at
+    it, and — being the cheap x2-upscale tier — no FULLSIZE and no RAW565."""
+    app = tmp_path / "app_pi"
+    icon_pal = [0x0000, 0xF800, 0xFFE0, 0x001F]
+    icon_blob = legacy_sprite_blob(120, 120, 0)
+    records = pack_beta.emit_beta_layout(
+        app, "app_pi",
+        palettes={0: PAL_A},
+        palette_sprites=[("coin", legacy_sprite_blob(6, 6, 0))],
+        icon=icon_blob,
+        icon_palette=icon_pal,
+        icon_side=120,
+    )
+    # sprite pal keeps its name, icon pal is the NEXT numeric pal record
+    assert records[1] == (KIND_PAL, "1")
+    assert records[2] == (KIND_PAL, "2")
+    assert read_pal(_packed(app) / "1.pal") == PAL_A
+    assert read_pal(_packed(app) / "2.pal") == icon_pal
+
+    ico_idle_id = records.index((KIND_SPRITE, "ico_idle"))
+    assert ico_idle_id == 3
+    hdr = parse_bmp_header((_packed(app) / "ico_idle.raw").read_bytes())
+    assert (hdr.w, hdr.h) == (120, 120)
+    assert hdr.pidx == 2                       # the icon's own pal asset id
+    assert records[hdr.pidx] == (KIND_PAL, "2")
+    assert not hdr.flags & OCT_FLAG_RAW565     # palette-encoded, not RAW565
+    assert not hdr.flags & OCT_FLAG_FULLSIZE   # 120 tier draws at x2
+    assert hdr.flags & OCT_FLAG_ALPHA          # index-0 transparency kept
+    # payload after the header passes through opaque
+    raw = (_packed(app) / "ico_idle.raw").read_bytes()
+    assert raw[48:len(icon_blob)] == icon_blob[48:]
+
+    # the sprite's own palette wiring is untouched by the icon pal
+    coin = parse_bmp_header((_packed(app) / "coin.raw").read_bytes())
+    assert coin.pidx == 1
+
+    # ico/ahover still point at ico_idle, within the launcher window
+    for map_name in ("ico", "ahover"):
+        blob = (_packed(app) / f"{map_name}.raw").read_bytes()
+        assert struct.unpack_from("<hh", blob, 20) == (120, 120)
+        assert struct.unpack_from("<h", blob, 24)[0] == ico_idle_id
+    assert records.index((KIND_MAP, "ahover")) < pack_beta.EXT_MAX_DESCS
+
+
+def test_palette_icon_240_fullsize(tmp_path):
+    """Palette-240 icon tier: same dedicated pal, but FULLSIZE (draws 1:1).
+    With no sprite palette groups the icon pal is simply '1'."""
+    app = tmp_path / "app_pi240"
+    icon_pal = [0x0000, 0x07E0]
+    records = pack_beta.emit_beta_layout(
+        app, "app_pi240",
+        icon=legacy_sprite_blob(240, 240, 0),
+        icon_palette=icon_pal,
+        icon_side=240,
+    )
+    assert records[1] == (KIND_PAL, "1")
+    assert read_pal(_packed(app) / "1.pal") == icon_pal
+    hdr = parse_bmp_header((_packed(app) / "ico_idle.raw").read_bytes())
+    assert (hdr.w, hdr.h) == (240, 240)
+    assert hdr.pidx == 1
+    assert hdr.flags & OCT_FLAG_FULLSIZE
+    assert not hdr.flags & OCT_FLAG_RAW565
+
+
+def test_palette_icon_requires_blob(tmp_path):
+    """icon_palette says 'icon is a pre-encoded legacy blob'; handing a PNG
+    path with it is a caller bug and must fail loudly."""
+    icon = tmp_path / "icon.png"
+    Image.new("RGB", (16, 16), (1, 2, 3)).save(icon)
+    with pytest.raises(TypeError):
+        pack_beta.emit_beta_layout(
+            tmp_path / "app_bad", "app_bad",
+            icon=icon, icon_palette=[0x0000, 0xF800])
+
+
+def test_full_icon_side_and_dither(tmp_path):
+    """Full-color icon tier keeps today's encoding (RAW565 + FULLSIZE) at a
+    configurable side, and icon_dither wires Floyd-Steinberg through exactly
+    like sprite dither: the dithered payload differs from the plain one."""
+    icon = tmp_path / "icon.png"
+    grad = Image.new("RGB", (240, 240))
+    grad.putdata([((x + 3) % 256, (y + 3) % 256, 128)
+                  for y in range(240) for x in range(240)])
+    grad.save(icon)
+
+    app_a = tmp_path / "app_plain"
+    pack_beta.emit_beta_layout(app_a, "app_plain", icon=icon, icon_side=240)
+    app_b = tmp_path / "app_dith"
+    pack_beta.emit_beta_layout(app_b, "app_dith", icon=icon, icon_side=240,
+                               icon_dither=True)
+
+    plain_raw = (_packed(app_a) / "ico_idle.raw").read_bytes()
+    dith_raw = (_packed(app_b) / "ico_idle.raw").read_bytes()
+    for raw in (plain_raw, dith_raw):
+        hdr = parse_bmp_header(raw)
+        assert (hdr.w, hdr.h) == (240, 240)
+        assert hdr.flags & OCT_FLAG_RAW565
+        assert hdr.flags & OCT_FLAG_FULLSIZE
+    with Image.open(icon) as img:
+        assert _decoded_texels(plain_raw) == pack_beta.to_rgb565(img, 240)
+        assert _decoded_texels(dith_raw) == pack_beta.to_rgb565(
+            img, 240, dither=True)
+    assert _decoded_texels(plain_raw) != _decoded_texels(dith_raw)
 
 
 def test_no_icon_no_launcher_records(tmp_path):
@@ -528,6 +637,140 @@ def test_pack_py_emits_beta_container(tmp_path, monkeypatch):
     assert (packed / "coin.png").is_file()
 
 
+def _icon_pack_argv(tmp_path, *, manifest_icon=None, extra_args=()):
+    """Build a minimal pack.py argv: one palette sprite, a launcher icon with
+    transparent corners, and an optional manifest `icon` object."""
+    import json
+
+    exported = tmp_path / "exported"
+    exported.mkdir(exist_ok=True)
+    coin = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
+    for y in range(2, 6):
+        for x in range(2, 6):
+            coin.putpixel((x, y), (250, 200, 20, 255))
+    coin.save(exported / "coin.png")
+
+    art = tmp_path / "art"
+    art.mkdir(exist_ok=True)
+    icon = Image.new("RGBA", (64, 64), (0, 0, 0, 0))     # transparent bg
+    for y in range(8, 56):
+        for x in range(8, 56):
+            icon.putpixel((x, y), (10, 200, 30, 255))    # hex-ish opaque core
+    icon.save(art / "icon.png")
+
+    data = {"game": "tiny", "schema_version": 1,
+            "sprites": [{"name": "coin", "size": [8, 8], "description": "c"}],
+            "sounds": []}
+    if manifest_icon is not None:
+        data["icon"] = manifest_icon
+    manifest = tmp_path / "tiny_assets.json"
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+
+    app = tmp_path / "app_tiny"
+    packed = tmp_path / "packed"
+    return app, [
+        "pack.py", "--build-palette",
+        "--exported-dir", str(exported),
+        "--packed-dir", str(packed),
+        "--output-dir", str(packed),
+        "--art-dir", str(art),
+        "--assets", "assets",
+        "--beta-app-dir", str(app),
+        "--app-name", "app_tiny",
+        "--manifest", str(manifest),
+        *extra_args,
+    ]
+
+
+def test_pack_py_manifest_palette_icon(tmp_path, monkeypatch):
+    """A manifest {"icon": {"color": "palette", "side": 120}} produces a
+    palette-encoded ico_idle with its own dedicated pal record: transparent
+    index 0, no RAW565, no FULLSIZE, 120x120."""
+    import pack
+
+    app, argv = _icon_pack_argv(
+        tmp_path, manifest_icon={"color": "palette", "side": 120})
+    monkeypatch.setattr(sys, "argv", argv)
+    pack.main()
+
+    records = read_index_bin(app / "index.bin")
+    packed_dir = app / "art" / "packed"
+    hdr = parse_bmp_header((packed_dir / "ico_idle.raw").read_bytes())
+    assert (hdr.w, hdr.h) == (120, 120)
+    assert not hdr.flags & OCT_FLAG_RAW565
+    assert not hdr.flags & OCT_FLAG_FULLSIZE
+    assert hdr.flags & OCT_FLAG_ALPHA
+
+    # ico_idle's Pidx points at the icon's OWN pal record, distinct from the
+    # sprite palette group's
+    assert records[hdr.pidx][0] == KIND_PAL
+    coin_hdr = parse_bmp_header((packed_dir / "coin.raw").read_bytes())
+    assert records[coin_hdr.pidx][0] == KIND_PAL
+    assert hdr.pidx != coin_hdr.pidx
+    icon_pal = read_pal(packed_dir / f"{records[hdr.pidx][1]}.pal")
+    assert icon_pal[0] == 0x0000            # index 0 = transparent slot
+
+    # launcher contract intact: ico/ahover maps point at ico_idle, in window
+    ids = {name: i for i, (_k, name) in enumerate(records)}
+    for map_name in ("ico", "ahover"):
+        blob = (packed_dir / f"{map_name}.raw").read_bytes()
+        assert struct.unpack_from("<h", blob, 24)[0] == ids["ico_idle"]
+    assert ids["ahover"] < pack_beta.EXT_MAX_DESCS
+
+
+def test_pack_py_cli_overrides_manifest_icon(tmp_path, monkeypatch):
+    """--icon-color/--icon-side override the manifest icon object: manifest
+    says full/160, CLI forces palette/240 -> FULLSIZE palette icon."""
+    import pack
+
+    app, argv = _icon_pack_argv(
+        tmp_path, manifest_icon={"color": "full", "side": 160},
+        extra_args=["--icon-color", "palette", "--icon-side", "240"])
+    monkeypatch.setattr(sys, "argv", argv)
+    pack.main()
+
+    hdr = parse_bmp_header(
+        (app / "art" / "packed" / "ico_idle.raw").read_bytes())
+    assert (hdr.w, hdr.h) == (240, 240)
+    assert not hdr.flags & OCT_FLAG_RAW565
+    assert hdr.flags & OCT_FLAG_FULLSIZE
+    records = read_index_bin(app / "index.bin")
+    assert records[hdr.pidx][0] == KIND_PAL
+
+
+def test_pack_py_icon_dither_flag(tmp_path, monkeypatch):
+    """--icon-dither reaches to_rgb565 on the full-color icon path."""
+    import pack
+
+    app, argv = _icon_pack_argv(
+        tmp_path, extra_args=["--icon-side", "64", "--icon-dither"])
+    monkeypatch.setattr(sys, "argv", argv)
+    pack.main()
+
+    raw = (app / "art" / "packed" / "ico_idle.raw").read_bytes()
+    hdr = parse_bmp_header(raw)
+    assert (hdr.w, hdr.h) == (64, 64)
+    assert hdr.flags & OCT_FLAG_RAW565
+    assert hdr.flags & OCT_FLAG_FULLSIZE
+    with Image.open(tmp_path / "art" / "icon.png") as img:
+        assert _decoded_texels(raw) == pack_beta.to_rgb565(img, 64, dither=True)
+
+
+def test_pack_py_invalid_icon_combo_exits(tmp_path, monkeypatch, capsys):
+    """An invalid resolved icon config (palette side 100) must exit 1 with
+    the actionable validator message, not pack a broken icon."""
+    import pack
+
+    _app, argv = _icon_pack_argv(
+        tmp_path, extra_args=["--icon-color", "palette", "--icon-side", "100"])
+    monkeypatch.setattr(sys, "argv", argv)
+    with pytest.raises(SystemExit) as exc:
+        pack.main()
+    assert exc.value.code == 1
+    out = capsys.readouterr().out
+    assert "120" in out and "240" in out
+
+
 def test_pack_py_beta_overwrites_legacy_emit_raw(tmp_path, monkeypatch):
     """--emit-raw AND --beta-app-dir into the same art/packed dir: the beta
     emit phase must run AFTER the legacy raw phase, so the .raw that survives
@@ -637,24 +880,34 @@ def test_pack_py_sprite_error_exits_nonzero(tmp_path, monkeypatch):
 
 # ── build_pipeline wiring ────────────────────────────────────────────────────
 
+def _fake_pack_run(workspace, calls):
+    """Fake `_run`: records the command; the pack.py call writes the
+    <ws>/packed/pal.png the real one writes (the stage clears <ws>/packed
+    before running it, so a pre-seeded file would not survive)."""
+    def fake_run(cmd, cwd=None):
+        cmd = [str(c) for c in cmd]
+        calls.append(cmd)
+        if any(c.endswith("pack.py") for c in cmd):
+            (workspace / "packed").mkdir(parents=True, exist_ok=True)
+            (workspace / "packed" / "pal.png").write_bytes(b"x")
+        return 0
+    return fake_run
+
+
 def test_build_pipeline_passes_beta_args(tmp_path, monkeypatch):
     import build_pipeline
 
     calls: list[list[str]] = []
-
-    def fake_run(cmd, cwd=None):
-        calls.append([str(c) for c in cmd])
-        return 0
-
-    monkeypatch.setattr(build_pipeline, "_run", fake_run)
-
     workspace = tmp_path / "assets"
+    monkeypatch.setattr(build_pipeline, "_run", _fake_pack_run(workspace, calls))
+
     (workspace / "art").mkdir(parents=True)
     Image.new("RGB", (4, 4), (1, 2, 3)).save(workspace / "art" / "x.png")
-    packed = workspace / "packed"
-    packed.mkdir()
-    (packed / "pal.png").write_bytes(b"x")
     (workspace / "app_tiny_ids.h").write_text("enum BMP { BMP_none = 0, BMP_last};")
+    # the pack refuses a manifest path that does not exist (pack.py would crash on it), so write one
+    (tmp_path / "tiny_assets.json").write_text(json.dumps({
+        "game": "tiny", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [4, 4], "description": "d"}], "sounds": []}), encoding="utf-8")
     # _run is faked, so pre-create the kind-aware header pack.py would emit
     (tmp_path / "app_tiny" / "src").mkdir(parents=True)
     (tmp_path / "app_tiny" / "src" / "app_tiny_ids.h").write_text(
@@ -679,19 +932,11 @@ def test_build_pipeline_omits_beta_args_without_app_dir(tmp_path, monkeypatch):
     import build_pipeline
 
     calls: list[list[str]] = []
-
-    def fake_run(cmd, cwd=None):
-        calls.append([str(c) for c in cmd])
-        return 0
-
-    monkeypatch.setattr(build_pipeline, "_run", fake_run)
-
     workspace = tmp_path / "assets"
+    monkeypatch.setattr(build_pipeline, "_run", _fake_pack_run(workspace, calls))
+
     (workspace / "art").mkdir(parents=True)
     Image.new("RGB", (4, 4), (1, 2, 3)).save(workspace / "art" / "x.png")
-    packed = workspace / "packed"
-    packed.mkdir()
-    (packed / "pal.png").write_bytes(b"x")
     (workspace / "app_tiny_ids.h").write_text("enum BMP { BMP_none = 0, BMP_last};")
 
     rc = build_pipeline._cli([

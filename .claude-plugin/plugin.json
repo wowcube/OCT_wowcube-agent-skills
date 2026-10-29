@@ -1,7 +1,7 @@
 {
   "name": "wowcube",
-  "version": "2.0.0",
-  "description": "WowCube game development skills for the beta (octavios) container: cube_orchestrator (master controller/entry point), cube_game-designer (GDD), technical_prompter (prompts + asset manifest), cube_asset-builder (AI art/sound -> index.bin beta container), wowcube-boilerplate (scaffold, simulator build, device .oct), and cube_verifier (requirements/template verification agents).",
+  "version": "2.2.0",
+  "description": "WowCube game development skills for OctaviOS (octavios dev 2026-10-21 or later): cube_orchestrator (single entry point; autonomous runs with one style-approval stop, a mandatory check of every build on hidden 24-screen simulator frames, a verified device .oct and upload to the cube on request), cube_game-designer (GDD with game-feel checks), technical_prompter (implementation prompts with test hooks + the asset manifest), cube_art-director (style-locked Codex art on the ChatGPT subscription with strict QA; also standalone for artists), cube_asset-builder (art, CC0 sound via sound_kit, launcher icon and fonts -> packed app assets), wowcube-boilerplate (scaffold in the dev layout, simulator builds, device .oct via octpack-build), cube_verifier (Requirements, Template and Playtest agents), wowcube-html-prototype (optional browser prototype of the mechanic) and wowcube-demo-video (standard-format demo videos), the last two by Alex Poshivalov.",
   "author": {
     "name": "WowCube"
   },

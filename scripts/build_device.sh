@@ -1,117 +1,134 @@
 #!/usr/bin/env bash
-# Linux mirror of build_device.ps1.
+# Linux mirror of build_device.ps1: build the cube-loadable .oct of an app_<game> folder into
+# <workspace>/dist/, verified. Never starts a simulator.
 #
-# Produce the cube-loadable .oct for an existing app_<game> folder. The .oct is
-# assembled by the SIMULATOR at launch, which packs: art .raw assets + sounds +
-# (if present) the ARM device code from out/<app>.bin. So a *loadable* .oct is:
+#   octpack (default when available; octavios dev 609d5ae+):
+#     uv run --frozen --project <octavios>/octpacker octpack-build <app> --out <out> --engine <octavios>
+#     (metadata from src/app_metadata.h, art/octpack.json packed if present - AI-art apps have none and keep
+#      the python packer's art/packed + index.bin -, ARM build with cmake + Ninja into out/, the .oct)
+#   python (fallback): cmake + Ninja ARM build, then scripts/pack_beta.py --build-oct (stamps SaveSize from
+#     APP_SAVE_SIZE reached through src/app_metadata.h, read from app_save.h's static_assert)
+#   verify (mandatory): the .oct ends with out/<app>.bin, then scripts/pack_beta.py --verify-oct: magic, size, CRC,
+#     code_size/offset, non-zero build id, title/version/GUID/categories/save size == the app's defines, MAP "ico",
+#     assets == index.bin (header from octpack-info when it runs, else read locally); failure to verify = exit 1
 #
-#   1. ARM device build  -> app_<game>/out/app_<game>.bin
-#      (cmake -G Ninja -S <octavios>/apps -B out ; cmake --build out)
-#   2. Launch the sim once -> it writes app_<game>/app_<game>.oct
-#      (assets + sounds + ARM code)
-#   3. Verify the ARM code is actually embedded (asset-only packs are DEAD on cube)
-#
-# Requires the device toolchain (arm-none-eabi-gcc, cmake, ninja) -- run
-# check_env.sh first. Without the ARM .bin the sim still writes a .oct, but it
-# contains assets only and will NOT run on the cube; this script treats a
-# missing .bin as a failure.
-#
-# Usage: build_device.sh --app-dir <workspace>/app_<game> [--octavios <path>]
+# Usage: build_device.sh --app-dir <workspace>/app_<game> [--octavios <dir>] [--out <path.oct>]
+#                        [--builder auto|octpack|python] [--no-uv]   (--no-uv / WOWCUBE_NO_UV=1: never start uv)
+#                        [--uv-env <dir>]   octpacker's environment: default UV_PROJECT_ENVIRONMENT, else
+#                        <workspace>/.uv_octpack_venv - never inside octavios (first use downloads the pinned packages)
 set -uo pipefail
 
-APP_DIR=''; OCTAVIOS=''
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PACK_PY="$SCRIPT_DIR/pack_beta.py"
+APP_DIR=''; OCTAVIOS=''; OUT=''; BUILDER='auto'; NO_UV=0; UV_ENV=''
+case "${WOWCUBE_NO_UV:-}" in 1|true|yes) NO_UV=1;; esac
 fail() { printf 'ERROR: %s\n' "$1" >&2; exit 1; }
 step() { printf '==> %s\n' "$1"; }
+have() { command -v "$1" >/dev/null 2>&1; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --app-dir)  APP_DIR="$2"; shift 2;;
         --octavios) OCTAVIOS="$2"; shift 2;;
+        --out)      OUT="$2"; shift 2;;
+        --builder)  BUILDER="$2"; shift 2;;
+        --no-uv)    NO_UV=1; shift;;
+        --uv-env)   UV_ENV="$2"; shift 2;;
         *) fail "unknown argument: $1";;
     esac
 done
 [ -n "$APP_DIR" ] || fail "--app-dir <path> is required"
 [ -d "$APP_DIR" ] || fail "app folder not found: $APP_DIR"
 APP_DIR="$(cd "$APP_DIR" && pwd)"
-
-target=$(find "$APP_DIR" -maxdepth 1 -name '*.target' -type f | head -n1)
-[ -n "$target" ] || fail "no *.target marker in $APP_DIR"
-app=$(basename "$target" .target)
+n_targets=$(find "$APP_DIR" -maxdepth 1 -name '*.target' -type f | wc -l)
+[ "$n_targets" -eq 1 ] || fail "$APP_DIR must hold exactly one *.target marker (found $n_targets)"
+app=$(basename "$(find "$APP_DIR" -maxdepth 1 -name '*.target' -type f)" .target)
+[ -f "$APP_DIR/index.bin" ] || fail "$APP_DIR/index.bin missing - pack the assets first (Stage 3)"
 
 [ -n "$OCTAVIOS" ] || OCTAVIOS="$APP_DIR/../octavios"
-[ -d "$OCTAVIOS" ] || fail "octavios SDK not found (pass --octavios)"
+[ -f "$OCTAVIOS/apps/CMakeLists.txt" ] || fail "octavios SDK not found (pass --octavios)"
 OCTAVIOS="$(cd "$OCTAVIOS" && pwd)"
-APPS_DIR="$OCTAVIOS/apps"
+[ -n "$OUT" ] || OUT="$(dirname "$APP_DIR")/dist/$app.oct"
+mkdir -p "$(dirname "$OUT")"
+OUT="$(cd "$(dirname "$OUT")" && pwd)/$(basename "$OUT")"
 
-for t in arm-none-eabi-gcc cmake ninja; do
-    command -v "$t" >/dev/null 2>&1 || fail "$t not on PATH -- run check_env.sh to install the device toolchain"
-done
+OCTPACK="$OCTAVIOS/octpacker"
+# octpacker's environment lives in the workspace, never in the SDK tree (uv would otherwise create octpacker/.venv)
+UV_ENV="${UV_ENV:-${UV_PROJECT_ENVIRONMENT:-$(dirname "$APP_DIR")/.uv_octpack_venv}}"
+# uv resolves a RELATIVE UV_PROJECT_ENVIRONMENT against --project (octpacker/), which would put the venv inside the
+# SDK: make it absolute from the caller's working directory first
+case "$UV_ENV" in /*|[A-Za-z]:[/\\]*) ;; *) UV_ENV="$PWD/$UV_ENV";; esac
+export UV_PROJECT_ENVIRONMENT="$UV_ENV"
+use_uv=0
+have uv && [ "$NO_UV" -eq 0 ] && use_uv=1
+[ "$NO_UV" -eq 1 ] && echo "    NOTE: --no-uv / WOWCUBE_NO_UV: uv is not started (python builder, local header check)" >&2
+octpack_ready=0
+[ -f "$OCTPACK/pyproject.toml" ] && [ "$use_uv" -eq 1 ] && [ -f "$APP_DIR/src/app_metadata.h" ] && octpack_ready=1
+case "$BUILDER" in
+    auto)    [ "$octpack_ready" -eq 1 ] && BUILDER=octpack || BUILDER=python;;
+    octpack) [ "$octpack_ready" -eq 1 ] || fail "octpack-build needs octavios dev (octpacker/), uv and src/app_metadata.h (check_env.sh); or --builder python";;
+    python)  ;;
+    *) fail "--builder must be auto, octpack or python";;
+esac
+BIN="$APP_DIR/out/$app.bin"
+info_file=''
+stamp=$(mktemp); trap 'rm -f "$stamp" ${info_file:+"$info_file"}' EXIT
 
-# --- 1. ARM device build --------------------------------------------------
-step "ARM device build (cmake + ninja) for $app"
-out="$APP_DIR/out"
-( cd "$APP_DIR" && cmake -G Ninja -S "$APPS_DIR" -B "$out" && cmake --build "$out" ) \
-    || fail "ARM device build failed"
-bin="$out/$app.bin"
-[ -f "$bin" ] || fail "device build produced no $bin"
-bin_len=$(stat -c %s "$bin")
-[ "$bin_len" -gt 0 ] || fail "$bin is empty -- ARM build produced no code"
-echo "    built $bin ($bin_len bytes ARM code)"
-
-# --- 2. Pack the .oct by launching the sim once ---------------------------
-# The sim embeds out/<app>.bin ONLY if it exists (sim.h treats ARM code as
-# optional -- a sim-only launch writes an asset-only .oct, dead on the cube).
-# We just built the .bin, so this launch must embed it -- and we verify it.
-sim="$APP_DIR/build-sim/octavios_sim"
-[ -x "$sim" ] || fail "simulator missing ($sim) -- run new_app.sh first"
-oct="$APP_DIR/$app.oct"
-rm -f "$oct"
-
-step "Packing .oct (launching simulator to assemble the package)"
-"$sim" &
-sim_pid=$!
-sleep 5
-kill "$sim_pid" 2>/dev/null || true
-wait "$sim_pid" 2>/dev/null || true
-[ -f "$oct" ] || fail "simulator did not produce $oct"
-
-# --- 3. Verify the ARM code is actually embedded --------------------------
-# The sim appends the ARM code as the LAST chunk (sim.h: assets -> sounds ->
-# code), so the final <bin_len> bytes of the .oct must equal the .bin
-# byte-for-byte. If not, the sim packed an asset-only .oct and it would silently
-# fail on the cube -- so we refuse to ship it.
-oct_len=$(stat -c %s "$oct")
-embedded=0
-if [ "$oct_len" -ge "$bin_len" ]; then
-    if cmp -s <(tail -c "$bin_len" "$oct") "$bin"; then embedded=1; fi
+# --- 1. build ----------------------------------------------------------------
+if [ "$BUILDER" = octpack ]; then
+    [ -f "$APP_DIR/art/octpack.json" ] && \
+        echo "    NOTE: art/octpack.json present: octpack-build re-packs art from its sources (wipes art/packed and index.bin)." >&2
+    step "octpack-build $app -> $OUT"
+    uv run --frozen --project "$OCTPACK" octpack-build "$APP_DIR" --out "$OUT" --engine "$OCTAVIOS" \
+        || fail "octpack-build failed. Stale out/ from another SDK checkout? rm -rf $APP_DIR/out and retry."
+else
+    for t in arm-none-eabi-g++ cmake ninja python3; do have "$t" || fail "$t not on PATH - run check_env.sh"; done
+    step "ARM device build (cmake + Ninja) for $app"
+    cmake -G Ninja -S "$OCTAVIOS/apps" -B "$APP_DIR/out" -DAPP_TELEMETRY=OFF \
+        || fail "cmake configure failed. Stale out/ from another SDK checkout? rm -rf $APP_DIR/out and retry."
+    cmake --build "$APP_DIR/out" --parallel 4 || fail "ARM build failed"
+    step "Packing .oct (python scripts/pack_beta.py --build-oct)"
+    rm -f "$OUT"
+    python3 "$PACK_PY" --build-oct --app-dir "$APP_DIR" --code "$BIN" --out "$OUT" || fail "python .oct builder failed"
 fi
-if [ "$embedded" -ne 1 ]; then
-    fail "the .oct does NOT contain the ARM code (asset-only pack). It would run
-  in the simulator but is dead on the cube. Check that out/$app.bin exists and
-  that APP_DIR in src/app.h points back at this app folder."
-fi
-echo "    verified ARM code embedded ($bin_len bytes) in the .oct"
 
-# --- 4. Warn about stray timestamped .oct files in the app root ------------
-# The Linux simulator deletes root .oct files at startup, so anything like
-# <app>_20250101.oct left in the app root can silently vanish. Warning only.
-stray_oct=$(find "$APP_DIR" -maxdepth 1 -name "${app}_*.oct" -type f 2>/dev/null)
-if [ -n "$stray_oct" ]; then
-    {
-        echo "WARNING: stray timestamped .oct file(s) in the app root:"
-        printf '%s\n' "$stray_oct" | while IFS= read -r s; do echo "    $(basename "$s")"; done
-        echo "The Linux simulator deletes root .oct files at startup. Keep deliverables"
-        echo "in a pack/ subfolder (or copy them out of the app root) so they survive."
-    } >&2
+# --- 2. verify -----------------------------------------------------------------
+[ -f "$OUT" ] || fail "no .oct at $OUT"
+[ "$OUT" -nt "$stamp" ] || fail "$OUT was not rewritten by this build"
+[ -f "$BIN" ] || fail "no ARM module at $BIN"
+bin_len=$(wc -c < "$BIN"); oct_len=$(wc -c < "$OUT")
+[ "$bin_len" -gt 0 ] || fail "$BIN is empty - the ARM build produced no code"
+{ [ "$oct_len" -ge "$bin_len" ] && cmp -s <(tail -c "$bin_len" "$OUT") "$BIN"; } \
+    || fail "the .oct does NOT end with out/$app.bin: no ARM code, dead on the cube"
+echo "    ARM code embedded ($bin_len bytes)"
+
+# Header verification is MANDATORY (scripts/pack_beta.py --verify-oct): magic, size, CRC, the ARM tail, a non-zero
+# build id, title/version/GUID/categories/save size == the app's defines, MAP "ico", assets == index.bin. The header
+# comes from octpack-info when it runs, otherwise from a local read; what cannot be verified fails the build.
+version=''
+have python3 || fail "cannot verify $OUT: python3 is not on PATH (scripts/pack_beta.py --verify-oct reads the header)"
+if [ -f "$OCTPACK/pyproject.toml" ] && [ "$use_uv" -eq 1 ]; then
+    info_file=$(mktemp)
+    if ! uv run --frozen --project "$OCTPACK" octpack-info "$OUT" --engine "$OCTAVIOS" > "$info_file" \
+            || [ ! -s "$info_file" ]; then
+        echo "    octpack-info failed: verifying with the local header check instead" >&2
+        rm -f "$info_file"; info_file=''
+    fi
+else
+    echo "    uv/octpacker not available: verifying with the local header check (scripts/pack_beta.py)" >&2
 fi
+verify_args=(--verify-oct "$OUT" --app-dir "$APP_DIR" --code "$BIN")
+[ -n "$info_file" ] && verify_args+=(--info-json "$info_file")
+verify_out=$(python3 "$PACK_PY" "${verify_args[@]}"); verify_rc=$?
+[ -n "$info_file" ] && rm -f "$info_file"
+printf '%s\n' "$verify_out"
+[ "$verify_rc" -eq 0 ] || fail ".oct verification failed (exit $verify_rc): see the ERROR lines above - nothing to deliver"
+version=$(printf '%s\n' "$verify_out" | sed -n 's/^VERSION=//p' | head -n 1)
 
 echo ''
-echo "CUBE PACKAGE READY:"
-echo "  $oct"
-echo "  ($oct_len bytes -- assets + sounds + $bin_len bytes ARM code)"
-echo "Load this .oct onto the WowCube."
-echo ''
-echo "NOTE: launching the simulator again will OVERWRITE this .oct with an"
-echo "asset-only pack (no ARM code). Re-run this script after any sim testing"
-echo "to regenerate the cube-loadable .oct as the LAST step before shipping."
+echo "CUBE PACKAGE READY ($BUILDER): $OUT"
+echo "  $oct_len bytes = assets + sounds + $bin_len bytes ARM code${version:+; version $version}"
+echo "  Upload when the user asks: $OCTAVIOS/build/spptest --mac <AA:BB:CC:DD:EE:FF> --software $OUT --long-timeout"
+echo "  (spptest: cmake -S $OCTAVIOS -B $OCTAVIOS/build && cmake --build $OCTAVIOS/build --target spptest)"
+echo "  Deliver this file, never one a simulator wrote into the app folder."
 exit 0

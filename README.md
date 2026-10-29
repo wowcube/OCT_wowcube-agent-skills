@@ -1,121 +1,152 @@
-# 🧊 WowCube AI Agent Skills Repository
+# WowCube AI agent skills
 
-A knowledge base and skill set for LLM-powered coding agents (Kilo Code, Claude Code, Cursor, GitHub Copilot, etc.) that enables them to design and implement games for the WowCube platform — a 2×2×2 puzzle cube with 24 physical screens.
+Skills for coding agents (built for Claude Code; the markdown reads fine in other agents)
+that design, draw, build and ship games for WowCube, a 2×2×2 cube with 24 screens, on
+the current OctaviOS SDK.
 
-## 📂 Repository Structure
+Ask for a game. `cube_orchestrator` writes the design, draws the art with Codex on your
+ChatGPT subscription, sources real CC0 sounds, implements and verifies the code prompt by
+prompt while looking at every build on hidden 24-screen simulator frames, and hands you
+a verified `.oct`, uploaded to your cube over Bluetooth when you ask.
+
+## What a run looks like
+
+- **Autonomous by default.** At most two intake questions (the concept if you gave
+  none; a Codex login if it is missing), one stop to approve the art style (a style
+  frame plus an in-game mock) and the list of sounds to download, progress lines, a
+  final report. Say «по шагам» / "stepwise" to approve every stage, batch and prompt.
+- **Art**: `cube_art-director` drives the Codex CLI (ChatGPT subscription, no API key)
+  with a style lock and a strict QA loop: every rule must pass, every fix is recorded,
+  a fresh agent reviews consistency before you see a batch. Paid image APIs and
+  agent-drawn placeholders are fallbacks only.
+- **Sound**: CC0 recordings (downloaded only after you approve the list), layered and
+  mastered by `scripts/sound_kit.py` into the engine's mp3 format, a looping music bed,
+  licences in `sound/CREDITS.md`. Synthesis is the fallback. Nothing is ever played on
+  your machine; sounds are judged by numbers.
+- **Code**: one coder per prompt; two code reviewers (≥ 90 each, and any critical issue
+  fails); a mandatory visual gate (the agent builds a hidden, muted simulator, dumps all
+  24 screens and looks at them); a playtest over the simulator's control socket; a fixer
+  (up to 5 rounds). A prompt that still fails is rescoped and must then pass every gate:
+  nothing is marked done with a failing check.
+- **Delivery**: the official `octpack-build` writes `dist/app_<game>.oct` (header and ARM
+  code verified, an unverifiable build fails; no simulator involved); upload to your cube
+  on request; an on-device checklist; an optional gameplay video; balance passes.
+- **Safety**: no windows over your screen, no audio from test runs, no global keyboard
+  or mouse input, processes stopped only by PID, no commits, pushes or messages unless
+  you ask, no credentials, downloads only after you approve them
+  (`skills/cube_orchestrator/references/AGENT_SAFETY.md`).
+
+## Requirements
+
+| What | Needed |
+|---|---|
+| SDK | `octavios` dev from 2026-10-21 (commit `609d5ae`) or later, with `wowcube/telemetry` checked out next to it |
+| Simulator | Windows: Visual Studio 2022 C++ build tools. Linux: SDL3 (+ BlueZ and libsystemd), Xvfb for hidden runs |
+| Device build | ARM GNU toolchain, CMake, Ninja; `uv` and clang++ (or g++) for `octpack-build` |
+| Art | Codex CLI, logged in with ChatGPT (`codex login`) |
+| Sound, video | ffmpeg |
+| Python | 3.11+ (the pinned NumPy 2.4 needs it) with `scripts/requirements.txt`; Pillow and NumPy for the art director |
+
+`scripts/check_env.ps1` / `check_env.sh` check the toolchain; on Windows
+`check_env.ps1 -Install` adds what is missing with quiet winget installs, only after you
+agree (together with the SDK packer's one-time package download). The orchestrator
+checks the SDK on entry and tells you the exact update commands; it never updates your
+SDK itself.
+
+## Workspace layout
 
 ```
-├── skills/
-│   ├── cube_orchestrator/        # Skill: MASTER controller + entry point (routes all stages)
-│   │   └── SKILL.md
-│   ├── cube_game-designer/       # Stage 1 component: game concept → GDD
-│   │   └── SKILL.md
-│   ├── technical_prompter/       # Stage 2 component: GDD → prompts + asset manifest
-│   │   └── SKILL.md
-│   ├── cube_asset-builder/       # Stage 3 component: manifest → beta container + _ids.h
-│   │   └── SKILL.md
-│   ├── wowcube-boilerplate/      # Infra gate + Stage 5: scaffold, sim build, device .oct
-│   │   └── SKILL.md
-│   └── cube_verifier/            # Stage 4 component: Requirements + Template verification agents
-│       └── SKILL.md
-├── templates/
-│   └── app_ai_template/          # Template app cloned into app_<game>/ for each project
-│       ├── src/app_ai_template.h        # OctaviOS API reference template
-│       ├── src/app_ai_template_ids.h    # Asset ID header (BMP enum pattern)
-│       ├── art/                         # Template PSD/fonts/icon
-│       └── sound/                       # Template placeholder sounds
-├── src/                          # Example source files
-├── context/                      # Created at runtime: JSON context files for the orchestrator (per-game state)
-└── plans/                        # Output directory for generated game plans
+<workspace>/
+├── octavios/          the SDK (dev, 609d5ae or later)
+├── telemetry/         wowcube/telemetry (every simulator build needs it next to octavios)
+├── app_<game>/        the game: <app>.target, src/ (app.h, app_metadata.h, app_<game>.h, _ids.h), art/, sound/, index.bin
+├── assets_<game>/     art workspace: style/ (style bible, anchors), raw/, art/, qa/, review.html, fixes.json, sound_src/, wav/
+├── plans/             <game>_gdd.md, <game>_prompts.md, <game>_assets.json
+├── context/           <game>_context.json (run state), rules.md (your standing rules)
+├── dist/              app_<game>.oct (the deliverable), app_<game>_gameplay.mp4
+└── .sim_headless/     hidden-simulator builds and frames (tools/sim_headless)
 ```
 
-### Key Files
+## Repository layout
 
-| Path | Purpose |
-|------|---------|
-| `skills/cube_orchestrator/SKILL.md` | **Master controller and single entry point** — routes every stage and manages all sub-skills and subagents |
-| `skills/cube_game-designer/SKILL.md` | Stage 1 component — transforms a user's game idea into a structured design document (GDD) |
-| `skills/technical_prompter/SKILL.md` | Stage 2 component — converts a GDD into step-by-step implementation prompts plus the asset manifest |
-| `skills/cube_asset-builder/SKILL.md` | Stage 3 component — turns the asset manifest into the packed beta container (`index.bin`, `art/packed/`, `sound/assets/`) and `_ids.h` |
-| `skills/wowcube-boilerplate/SKILL.md` | Infra gate + Stage 5 component — scaffolds `app_<game>/`, verifies the simulator build, and produces the device-loadable `.oct` |
-| `skills/cube_verifier/SKILL.md` | Stage 4 component — Requirements Agent + Template Agent that score a coder agent's implementation |
-| `templates/app_ai_template/src/app_ai_template.h` | Annotated OctaviOS API reference — the authoritative guide for all WowCube C/C++ code |
-| `templates/app_ai_template/src/app_ai_template_ids.h` | Asset ID header (BMP enum pattern) |
-| `src/app_structure_example.h` | Clean project skeleton for new games |
+```
+.claude-plugin/plugin.json      plugin manifest
+skills/
+├── cube_orchestrator/          the entry point
+│   ├── SKILL.md                modes, stage routing, the five stages, Mod mode
+│   ├── SIM_MCP.md              the simulator's control socket: probe, commands, playtest script
+│   └── references/             RUN_MODES, STAGE3_ASSETS, AGENT_BRIEFS, VISUAL_GATE, DELIVERY, AGENT_SAFETY
+├── cube_game-designer/         Stage 1: concept -> GDD (references/GAME_FEEL.md)
+├── technical_prompter/         Stage 2: GDD -> implementation prompts + asset manifest
+├── cube_art-director/          style-locked Codex art with strict QA (also standalone, for artists)
+├── cube_asset-builder/         Stage 3: art, sound, icon, fonts -> packed app assets
+├── wowcube-boilerplate/        infra gate (scaffold, simulator builds) and Stage 5 (device .oct)
+├── cube_verifier/              Requirements, Template and Playtest agents
+├── wowcube-html-prototype/     optional browser prototype of the mechanic (Alex Poshivalov)
+└── wowcube-demo-video/         standard-format demo videos (Alex Poshivalov)
+scripts/                        packer (build_pipeline, pack, pack_beta), manifest validator, sound_kit,
+                                device build, repack_app, new_app, check_env
+tools/
+├── sim_headless/               hidden, muted Windows simulator: build.ps1, run.ps1 (24-screen PNGs), mcp.ps1
+└── cube_upload/                Bluetooth upload of an .oct to a cube from Windows
+templates/app_ai_template/      the app template; src/app_ai_template.h (annotated API), API.md (engine facts,
+                                limits, art tiers)
+src/app_structure_example.h     the clean skeleton a new game header starts from
+tests/                          pytest suite for the scripts
+docs/pipeline-flow.md           the pipeline as a diagram
+docs/history/                   past plans, specs and the packer parity report
+```
 
-## 🎮 Available Skills
+## Skills
 
-**`cube_orchestrator` is the single entry point.** For any WowCube game request — at any stage — the user invokes the orchestrator. It detects which pipeline stage the project is in and drives the right component skill or subagents itself, pausing for user approval at every stage boundary. The other five skills are components the orchestrator manages, not user-facing entry points.
+You only talk to `cube_orchestrator`; it drives the others.
 
-### Cube Orchestrator (`cube_orchestrator`) — master controller
+| Skill | Role |
+|---|---|
+| `cube_orchestrator` | Single entry point: build vs mod, run modes, stage routing, subagent dispatch, visual gate, delivery |
+| `cube_game-designer` | Stage 1: a GDD from the concept, checked against the game-feel lessons |
+| `technical_prompter` | Stage 2: small testable implementation prompts (with test hooks) and the asset manifest with Codex-ready prompts |
+| `cube_art-director` | Style bible, anchors, Codex generation, strict QA, review page; usable on its own by artists |
+| `cube_asset-builder` | Stage 3: drives the art director, builds sounds, the launcher icon and fonts, packs the app |
+| `wowcube-boilerplate` | Scaffolds the app in the octavios dev layout, builds the simulators, builds the device `.oct` |
+| `cube_verifier` | Requirements and Template agents (code) and the Playtest Agent (the running game) |
+| `wowcube-html-prototype` | Optional, after the GDD: a playable browser prototype of the mechanic on a cube model (author: Alex Poshivalov) |
+| `wowcube-demo-video` | Demo videos in the team's standard format from the prototype or the real game (author: Alex Poshivalov) |
 
-The entry point and master controller of the entire pipeline. On every entry it runs **stage detection** and routes:
+## Pipeline
 
-1. No GDD → drives **Stage 1** (`cube_game-designer`)
-2. GDD but no prompts/manifest → drives **Stage 2** (`technical_prompter`)
-3. Prompts/manifest but no packed assets → drives **Stage 3** (`cube_asset-builder`)
-4. Assets packed but `app_<game>/` isn't scaffolded/building → runs the **infra gate** (`wowcube-boilerplate`)
-5. All inputs present, prompts unimplemented → runs **Stage 4**: deploys coder subagents plus `cube_verifier`'s Requirements/Template agents and a fixer subagent for each prompt
-6. All prompts implemented, no verified device `.oct` → drives **Stage 5** (`wowcube-boilerplate`): builds and verifies the cube-loadable package
+| Stage | What happens | Output |
+|---|---|---|
+| Entry | build or mod, run mode, SDK and Codex checks | `context/<game>_context.json` |
+| 1. Design | GDD from the concept (stepwise: a short interview) | `plans/<game>_gdd.md` |
+| 2. Prompts | prompts + asset manifest | `plans/<game>_prompts.md`, `plans/<game>_assets.json` |
+| Infra gate | scaffold, simulators build, hidden smoke run | `app_<game>/` |
+| 3. Assets | **style lock (your approval)**, Codex art with the QA loop, sounds, icon, fonts, pack | `assets_<game>/`, `app_<game>/index.bin`, `art/packed/`, `sound/assets/`, `_ids.h` |
+| 4. Implement | per prompt: coder → code reviewers + visual gate → playtest → fixer | `app_<game>/src/app_<game>.h` |
+| 5. Deliver | hooks off, version bump, `octpack-build`, verification; upload, video, balance on request | `dist/app_<game>.oct` |
 
-Stages 1–3 and Stage 5 run in the main context via the Skill tool; Stage 4 dispatches subagents via the Agent tool. All inter-agent communication uses JSON. Pipeline parallelism where safe (prepare next task while verifying current). Scores below 90 trigger automatic rework (up to 5 attempts). Context accumulates in `context/<game>_context.json`. The orchestrator checkpoints with the user at every stage boundary and after every prompt.
+Details: `docs/pipeline-flow.md` and `skills/cube_orchestrator/SKILL.md`.
 
-### Stage 1 — Game Designer (`cube_game-designer`)
+## How to use
 
-Component invoked by the orchestrator. Takes a game concept and produces a non-technical Game Design Document at `plans/<game_name>_gdd.md` through a discovery interview with the user.
+> "Сделай игру для кубика: ловить падающие звёзды, поворачивая грани."
 
-### Stage 2 — Technical Prompter (`technical_prompter`)
+The orchestrator asks at most what it cannot decide, shows you the style frame, the
+in-game mock and the sound list once, then works until the `.oct` is ready.
 
-Component invoked by the orchestrator. Reads the GDD and decomposes it into the smallest possible vertical-slice implementation prompts at `plans/<game_name>_prompts.md`, plus the asset manifest `plans/<game_name>_assets.json`. Each prompt produces a testable increment.
+> "Продолжи игру star catcher." — resumes at the first unfinished step (stage detection
+> reads `plans/`, `assets_<game>/`, `app_<game>/` and `context/`).
+>
+> "По шагам: сделай игру про ..." — stepwise mode.
+>
+> "Поменяй героя на кота" / "сделай врагов медленнее" — Mod mode, smallest change.
+>
+> "Залей на кубик" — builds if needed and uploads `dist/app_<game>.oct` to your cube.
 
-### Stage 3 — Asset Builder (`cube_asset-builder`)
+## Platform in one paragraph
 
-Component invoked by the orchestrator. Turns the validated asset manifest into AI-generated PNGs plus synthesized WAVs encoded to beta mp3, pauses for user review, then packs them into the beta container — `app_<game>/index.bin`, `art/packed/*.raw`+`*.pal`, `sound/assets/*.mp3` — and `src/app_<game>_ids.h`.
-
-### Infra Gate — Boilerplate (`wowcube-boilerplate`)
-
-Component invoked by the orchestrator before Stage 4. Scaffolds `app_<game>/` from `templates/app_ai_template/`, packs the assets, and verifies the simulator builds and launches — before any game code exists.
-
-### Stage 4 — Implementation + Verifier (`cube_verifier`)
-
-The orchestrator deploys a coder subagent per prompt, then `cube_verifier`'s two agents: a Requirements Agent (completeness, GDD alignment, regressions) and a Template Agent (API correctness against `templates/app_ai_template/src/app_ai_template.h`), each scored out of 100. Both must score ≥ 90 or the orchestrator's fixer agent reworks the code (up to 5 attempts).
-
-### Stage 5 — Device Package (`wowcube-boilerplate`)
-
-Component invoked by the orchestrator. At completion it runs the mandatory device build (`build_device.ps1`): compiles the ARM target and verifies the cube-loadable `app_<game>/app_<game>.oct` actually embeds the ARM code — a passing simulator build alone is **not** shippable.
-
-## 🤖 How to Use
-
-**You only ever talk to the orchestrator.** Describe your game idea (or ask to continue an existing one) and the orchestrator figures out where you are in the pipeline and drives the right stage:
-
-> "I want to make a WowCube game where the player catches falling stars by twisting the cube. Stars appear on random faces and fall toward the bottom plane. The player twists to move a basket between faces to catch them."
-
-The **Cube Orchestrator** runs stage detection, sees there is no GDD yet, and drives **Stage 1** (Game Designer) to interview you and produce the GDD. After you approve it at the stage checkpoint, the orchestrator drives **Stage 2** (Technical Prompter) for prompts + asset manifest, then **Stage 3** (Asset Builder) for AI-generated art and sound, the **infra gate** (Boilerplate) to scaffold `app_<game>/` and verify the simulator, then **Stage 4** (coder/verifier/fixer subagents) to implement the prompts one at a time (tested in the simulator), and finally **Stage 5** (Device Package) to build and verify the cube-loadable `.oct`.
-
-### Resuming
-
-Just ask the orchestrator to continue:
-
-> "Continue building the star catcher game."
-
-The orchestrator re-runs stage detection against `plans/`, `assets/`, and `context/<game>_context.json` and resumes from the first incomplete stage. You never invoke the component skills directly — the orchestrator routes into them and checkpoints with you at every stage boundary and after every implemented prompt.
-
-## 🧊 WowCube Platform Summary
-
-| Property | Value |
-|----------|-------|
-| Faces (planes) | 6 — TOP, FRONT, RIGHT, BACK, LEFT, BOTTOM |
-| Screens per face | 4 quads (240×240 px each), 24 total |
-| Display gap | 18 px physical border between screens |
-| Input | Twists (full/half, CW/CCW per face) and taps (per face) |
-| Sensors | Accelerometer (gravity, orientation) |
-| Max sprites | 400 (SPRITES_CAP) |
-| Tick rate | 20 ticks/sec (50 ms per tick) |
-| Architecture | Single `.h` file, header-only, globals via `TL` macro |
-| Object model | `appObject_t` extends `octSprite_t`; pool in `gObjects[]` |
-
-For the full API reference, see `templates/app_ai_template/src/app_ai_template.h`.
-
----
-
-*Built to help AI agents write correct, hardware-aware WowCube games — no zero-index loops, no memory leaks, and proper twist synchronization.*
+Eight modules with three 240×240 RGB565 screens each (24 screens, six faces), twists
+and taps as input plus an IMU, 20 ticks per second, an app written as one C++ header and
+run as eight lockstep copies. Engine facts, limits and art tiers live in one place:
+`templates/app_ai_template/API.md`; API usage is annotated in
+`templates/app_ai_template/src/app_ai_template.h`.
