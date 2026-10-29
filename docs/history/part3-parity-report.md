@@ -1,6 +1,6 @@
 # Legacy corpus parity report — full-python build vs `psd.exe` + `utils.exe`
 
-**Task 4 of** `docs/superpowers/plans/2026-08-05-part3-python-parity.md`.
+**Task 4 of** `docs/history/plans/2026-08-05-part3-python-parity.md`.
 **Reference corpus:** `OCT_get_started` (read-only; all work on a scratch copy).
 **Date of measurement:** 2026-08-07, branch `part3-python-parity`.
 

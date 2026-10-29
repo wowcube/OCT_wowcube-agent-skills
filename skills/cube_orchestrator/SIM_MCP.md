@@ -1,253 +1,190 @@
-# Simulator MCP — agent self-playtest
+# Simulator control socket (MCP): agent self-check and playtest
 
-Reference for `cube_orchestrator` (launches and stops the simulator) and for the
-Playtest Agent defined in `cube_verifier` (drives it). Read this before the first
-playtest of a session; the authoritative protocol docs live in the SDK at
-`<octavios>/tools/mcp/README.md`.
+Reference for `cube_orchestrator` (starts and stops the hidden simulator) and for the
+Playtest Agent in `cube_verifier` (drives it). The protocol's own documentation lives
+in the SDK: `<octavios>/tools/mcp/README.md`. Safety rules: `references/AGENT_SAFETY.md`.
 
-The simulator opens a localhost-only TCP control socket on startup, and
-`<octavios>/tools/mcp/octavios_mcp.py` bridges that socket to MCP. Through it an
-agent can **see and drive the running game**: take screenshots, tap screens,
-twist faces, move the camera, unfold the cube. This closes the one gap the rest
-of the pipeline cannot: every other gate reads *code*, this one watches the game
-actually run.
+Every other gate reads code. Through this socket the agent sees and drives the running
+game (24-screen dumps, frame recordings with sound starts, twists, taps, cube tilt), so
+an iteration is checked the way a player would check it.
 
-| Tool | Args | Effect |
-|---|---|---|
-| `screenshot` | `max_side`, `save_as` (optional) | PNG of the sim window; the only way to see the cube |
-| `tap` | `x`, `y` | Tap a screen, in pixels of the **last screenshot** |
-| `twist_face` | `face`, `direction` | 90° twist, blocks until the snap settles |
-| `set_cube` / `turn_cube` | `yaw`, `pitch`, `roll` | Absolute / relative pose of **the cube itself** — gravity turns with it |
-| `shake` | — | The shake gesture. **Read the warning below before using it** |
-| `orbit_camera` / `set_camera` | `yaw`, `pitch` | Relative / absolute **camera** angles in degrees |
-| `look_at_face` | `face` | Fill the view with one face |
-| `unfold` | `on` | Flat 6-face cross ↔ cube |
-| `reset_view` | — | Camera back to the launch pose |
-| `wait_idle` | — | Block until no twist or drag is in flight |
-| `list_simulators` / `connect` | —, `port` | Find running sims; point the tools at one |
+## What it is
 
-Faces are `top / front / right / back / left / bottom`; CW and CCW are seen
-looking at the named face **from outside** the cube.
+Every octavios dev simulator, Windows and Linux, opens a control socket at start-up:
 
-### Moving the camera vs. moving the cube
+- bound to `127.0.0.1` only; port 8077 by default, or the next free port up to +15;
+  `--mcp-port N` sets the first port tried;
+- log line `[mcp] control socket listening on 127.0.0.1:<port> (<app>)` (Windows:
+  `log_1.txt` in the simulator's working folder, appended across runs; Linux:
+  `log_linux.txt`);
+- a text protocol: one request per line, one reply per line; commands run on the
+  simulator's main thread once per frame; no reply within 15 s → `err timeout`
+  (recordings get a longer budget);
+- the bridge `<octavios>/tools/mcp/octavios_mcp.py` (Python stdlib only, MCP over stdio,
+  server name `wowcube-octavios-sim`, `--port` default 8077) turns it into MCP tools.
 
-These are different things and confusing them wastes a playtest.
+Clients without the bridge. Windows: the repo's `mcp.ps1` (one connection, one reply
+line per command, exit 1 on any `err`):
 
-- **`orbit_camera` / `set_camera` / `look_at_face` / `reset_view` walk the viewer
-  around a cube that stays put.** Nothing in the game changes; only what is
-  visible does. Use them to *see* another face.
-- **`set_cube` / `turn_cube` rotate the cube itself**, the way a hand would.
-  Gravity turns with it, so an app reading `OCT_TM_gravity_x/y/n` or
-  `OCT_TM_top_side_plane` sees a new orientation and reacts.
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File <skills>\tools\sim_headless\mcp.ps1 -Port <port> ping info "screens faces C:\abs\p03_idle.png" "twist 3"
+```
 
-Pose is measured from the upright cube, front face forward: yaw 90 brings the
-right face to the front, pitch 90 brings the front face to the top, roll 90
-brings the right face to the top. `set_cube(0, 0, 0)` stands it upright again —
-**`reset_view` does not**, it only moves the camera. Both cube tools answer with
-the normalized pose they ended at, read back off the scene, so a pose is never
-tracked by hand.
+Linux: a shell function (keep the heredoc lines at column 0):
 
-### Shaking exits the game — use it last or not at all
+```bash
+simcmd() { python3 - "$@" <<'EOF'
+import socket, sys
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), 300)
+s.sendall((" ".join(sys.argv[2:]) + "\n").encode())
+print(s.makefile().readline().strip())
+EOF
+}
+# start-up: poll until it answers
+for i in $(seq 60); do simcmd 8177 ping 2>/dev/null | grep -q pong && break; sleep 0.5; done
+```
 
-A shake is not a neutral input. For any ordinary game app the engine runs
-`OCT_on_shake_default`, which calls `OCT_go_home()`: **the game under test is
-unloaded and the launcher comes up.** The app's own `on_shake` is not consulted
-at all — that is why the coding rules forbid building gameplay on shake.
+## Hard rules
 
-So in a playtest:
+1. **Hidden and muted only.** The stock Windows simulator always shows its window, idles
+   until the window is activated (a never-activated window answers nothing) and always
+   plays audio. Agent runs therefore use `<skills>/tools/sim_headless` (window never
+   shown, killed by PID if one ever becomes visible, no audio device, crash dialogs
+   suppressed, runs without activation; `references/VISUAL_GATE.md`). Linux: a virtual
+   display and audio off. A visible simulator only when the user asks to play.
+2. **Never inject global input**: no SendInput, keybd_event, SetForegroundWindow; no
+   SPACE for the unfold view (a synthetic SPACE once unmuted the user's call
+   microphone). Interaction is socket commands or the game's test hooks.
+3. **Never touch the user's instance.** 8077 belongs to whatever the user runs; agent
+   instances start at 8177 (`run.ps1 -McpPort`, recorded as `playtest_port`), and `info`
+   confirms the app before anything is scored.
+4. **One instance per check, stopped by its PID.** There is no quit command; the hidden
+   tool's `-Seconds` lifetime is the watchdog. An instance you will stop before its time
+   (a playtest) is started with `run.ps1 -AllowEarlyStop`; without it the stop ends the
+   run with exit 7 (`references/VISUAL_GATE.md`). Never kill by process name.
+5. **Playtests run their own build**: autoplay off, plane pin -1, muted
+   (`references/VISUAL_GATE.md`, Playtest Agent). The visual gate's autoplay binary would
+   override every tap, twist and tilt the agent sends.
+6. **Never claim a playtest that did not happen**, never describe frames you did not open.
 
-- Never shake to "see what happens" mid-script. Everything after it is scored
-  against the launcher, not the game.
-- Shake only as a deliberate final check, after every other observation is done.
-- A screenshot after a shake showing the **launcher is correct behaviour** — a
-  pass, not a crash, and not a finding. The finding would be a game that keeps
-  running.
+## Availability probe (once per session, before Stage 4)
 
-## Availability probe (run once per session, before Stage 4)
+Record `sim_mcp` in `context/<game>_context.json`:
 
-The MCP server is **optional infrastructure**. Decide once, up front, and record
-the answer in `context/<game>_context.json` as `"sim_mcp": "available" | "absent"`.
+| Value | Meaning |
+|---|---|
+| `bridge` | MCP tools whose names end in `__screens`, `__twist_face` and `__tap` exist under a server whose name contains `octavios` and `sim` (match the suffix; the prefix depends on how the host registered it) |
+| `wire` | no bridge tools, but a hidden instance answers `ping` with `ok pong` (`mcp.ps1` / `simcmd`) |
+| `absent` | no answer: an SDK older than dev, or the instance died at start-up (a finding by itself) |
 
-Available **iff** the current tool list contains MCP tools whose names end in
-`__screenshot`, `__twist_face`, `__tap` under a server whose name contains
-`octavios` and `sim` — e.g. `mcp__wowcube-octavios-sim__screenshot` or
-`mcp__octavios-sim__screenshot`. **Match the suffix, not the prefix:** the prefix
-is whatever name the host registered the server under and differs between setups.
+With the dev SDK `wire` is the floor, so the Playtest Agent normally runs. With
+`absent` the visual gate still runs on the hidden frames and every summary says
+nobody drove the game.
 
-- **Present** → the playtest gate is ON for this session (Stage 4, Mod mode M5,
-  and the infra gate's launch check).
-- **Absent** → the playtest gate is skipped, `"sim_mcp": "absent"` goes into the
-  context, and every per-prompt summary says so explicitly, so the user knows
-  nobody watched the game run. Mention **once** per session how to enable it
-  (below) — then stop mentioning it.
+### Enabling the bridge (tell the user once, then move on)
 
-Never claim a playtest happened when the tools were absent, and never invent
-screenshot contents.
-
-### Enabling it (tell the user once, then move on)
-
-Register the bridge with the agent host, e.g. a `.mcp.json` in the working project:
+A `.mcp.json` in the workspace:
 
 ```json
-{
-  "mcpServers": {
-    "wowcube-octavios-sim": {
-      "command": "python3",
-      "args": ["<octavios>/tools/mcp/octavios_mcp.py"]
-    }
-  }
-}
+{"mcpServers": {"wowcube-octavios-sim": {
+  "command": "C:\\full\\path\\to\\python.exe",
+  "args": ["C:\\ws\\octavios\\tools\\mcp\\octavios_mcp.py", "--port", "8177"]}}}
 ```
 
-On Windows use `"command": "py"` or the full path to `python.exe`. The bridge is
-stdlib-only — no install step. A newly registered server usually needs the agent
-session restarted before its tools appear, so do not block the pipeline waiting
-for it: run this prompt's cycle with the gate skipped.
+On Windows give the full path of a real Python 3.10+ (`python` may be the Microsoft
+Store alias, `py` may be missing); on Linux `"command": "python3"`. New tools appear
+after the agent session restarts: do not wait for them, use `wire` meanwhile.
 
-### Degraded fallback (no MCP registration)
+## Commands
 
-If the MCP tools are absent but the simulator itself is built, its wire protocol
-is still reachable and is enough for a **smoke check** — launch the sim, then:
+| Wire request | Reply / effect | Bridge tool |
+|---|---|---|
+| `ping` | `ok pong` | — |
+| `info` | `ok info <port> <w> <h> <app_folder> <app_title>` | `list_simulators`, `connect(port)` |
+| `screens faces <png>` | six faces 3×2 in scene orientation, byte-exact from the 24 framebuffers, gaps RGB(1,1,1) | `screens(save_as?)` |
+| `screens <png>` | the raw 960×1440 atlas of the 24 displays plus the layout map | `screens(save_as?, raw=true)` |
+| `record <n 1..100> <ms 20..2000> <prefix>` | frames `<prefix>000.png …` and `<prefix>meta.txt`: pose, gravity, layout and sound starts (`snd <ms> frame module id vol`, `sndq … quad owner id`) | `record_frames(frames, period_ms, save_prefix)` |
+| `shot <max_side> <png>` | the 3D window; **unreliable on a hidden window**, use `screens` | `screenshot(max_side, save_as?)` |
+| `twist <0..23>` | replies after the snap settles; twid = 2·plane (CCW) or 2·plane+1 (CW), +12 = half twist; planes top 0, front 1, right 2, back 3, left 4, bottom 5 | `twist_face(face, cw/ccw/half_cw/half_ccw)` |
+| `tap <x> <y>` | `ok tap` or `err no_screen`; window pixels | `tap(x, y)` (last-screenshot pixels) |
+| `cube <yaw> <pitch> <roll>` / `turn …` | rotates the **cube**: gravity and the IMU follow | `set_cube`, `turn_cube` |
+| `camera <yaw> <pitch>` / `orbit …` / `face <0..5>` / `reset` | moves the **viewer** only | `set_camera`, `orbit_camera`, `look_at_face`, `reset_view` |
+| `unfold <0\|1>` | the six-face cross in the 3D view | `unfold(on)` |
+| `idle` | replies once no twist or drag is in flight | `wait_idle` |
+| `shake` | the game exits to the launcher (below) | `shake` |
+| `log` | `ok log <run-start offset> <abs log path>`; includes `OCT_trace` and telemetry lines | `read_log(since?, max_bytes?)` |
 
-```bash
-printf 'shot 0 /tmp/octsim_<game>.png\n' | nc -w2 127.0.0.1 <port>   # -> ok shot <w> <h> <nw> <nh>
-```
+Give absolute paths (the simulator's working folder is its own). There is no pause,
+step, speed, mute or quit command.
 
-and open `/tmp/octsim_<game>.png` with the Read tool. This proves the game
-renders, but scoring gameplay this way is slow and error-prone — treat it as a
-stability check only, not as the playtest gate, and still record
-`"sim_mcp": "absent"`.
+## Observation script (Playtest Agent)
 
-## Running a playtest
+Short and scripted: every image costs tokens.
 
-### 1. Build first
+1. **Identity**: `info` names `app_<game>`; otherwise stop, wrong instance.
+2. **Idle**: `screens faces` → does it render, right backdrop, no garbage, no blank
+   faces where art belongs?
+3. **This prompt's mechanic**, with `verification_criteria` as the script: `twist` the
+   faces it names, `tap` where it says (aiming below), `cube` poses when it reads
+   gravity; `screens faces` after each action.
+4. **Motion**: `record 20 100 <prefix>` and compare frames: what should move moved, what
+   should hold held. `meta.txt` shows **whether and when sounds started** (`snd` /
+   `sndq` lines), never how they sound.
+5. **Orientation** (games that read gravity): `cube 0 0 0`, `cube 0 0 90`, `cube 0 90 0`,
+   `screens faces` each, then `cube 0 0 0` again before anything else is judged.
+6. **Survival**: `ping` still answers, a final `screens faces`, the log tail has no
+   `terminate` or assert lines.
+7. **Shake** only when the prompt is about shake-to-exit, and only as the last action.
 
-The simulator runs the binary, not the source. Always rebuild before a playtest
-or the screenshots show the *previous* prompt's game:
+### Moving the camera vs moving the cube
 
-```bash
-cmake --build <workspace>/app_<game>/build-sim        # Linux
-```
+- `camera`, `orbit`, `face`, `reset` walk the viewer around a cube that stays put.
+  Nothing in the game changes.
+- `cube` and `turn` rotate the cube itself, as a hand would. Gravity turns with it, so
+  a game reading `OCT_TM_gravity_*` or `OCT_TM_top_side()` reacts. Pose is measured from
+  the upright cube, front face forward: yaw 90 brings the right face to the front, pitch
+  90 the front face to the top, roll 90 the right face to the top. `cube 0 0 0` stands
+  it upright again; `reset` does not (it only moves the camera).
 
-### 2. Pick and record a port
+### Aiming taps and twists
 
-Leave the default `8077` to whatever instance the user may have open. Pick a free
-port in **8078–8092** for the pipeline's own sim, record it in
-`context/<game>_context.json` as `"playtest_port": <n>`, and reuse it for the
-whole session. A simulator whose port is taken silently moves to the next free
-one, so always confirm the port from the log line rather than assuming it.
+- Twists need no aiming.
+- Taps take window pixels. `face <n>` points the camera at face n; `info` gives the
+  window size; aim at the middle of one quad, about a quarter of the face's width off
+  the centre (the centre of a face is a bezel gap). `err no_screen` means the aim
+  missed, not that the game ignored the tap: re-aim and retry. Check the effect with
+  `screens faces`.
+- Long scripted sequences belong to the visual gate's autoplay run; the playtest build
+  has autoplay off, so every input you send reaches the game and nothing else plays.
+- Turning the cube or the camera while unfolded does nothing: `unfold 0` first.
+- Leave the cube upright when done: `cube 0 0 0`.
 
-### 3. Launch in the background
+### Shaking exits the game
 
-```bash
-<workspace>/app_<game>/build-sim/octavios_sim --mcp-port <port> \
-    > /tmp/octsim_<game>.log 2>&1 &
-```
-
-Then poll `/tmp/octsim_<game>.log` for:
-
-```
-[mcp] control socket listening on 127.0.0.1:<port> (app_<game>)
-```
-
-Wait for that line (a second or two) before the first tool call — connecting
-sooner just fails the call. If the line never appears, or the process exits
-early, that is itself a **critical** finding: the game crashed at startup,
-almost always missing or unpacked assets. Capture the log tail as evidence.
-
-The simulator is an SDL3 window and **needs a display** — on a headless host it
-cannot start, which is an environment problem, not a game defect. Report it as
-"playtest unavailable" rather than as a failing gate.
-
-With more than one sim up, call `list_simulators`, then `connect` to the port
-recorded above before anything else.
-
-### 4. Drive the game, then stop it
-
-Run the observation script (below), then **always** kill the process:
-
-```bash
-kill <pid> 2>/dev/null || true
-```
-
-One sim per prompt cycle: launch → playtest → kill. Never leave an instance
-dangling between prompts — a stale sim serves stale pixels and steals the port.
-
-## The `.oct` clobber rule (non-negotiable)
-
-**The simulator rewrites `app_<game>/app_<game>.oct` as an asset-only pack on
-every launch.** A playtest is a sim launch, so:
-
-- Every playtest happens **before** Stage 5 / M6, never after.
-- If a sim is launched for any reason after the device build, the device build
-  **must be re-run** before the `.oct` is handed to the user.
-- Never deliver an `.oct` whose last writer was a playtest.
-
-## Observation script
-
-A playtest is a scripted observation, not free exploration. Keep it short — every
-screenshot costs tokens.
-
-1. **Idle state.** `screenshot`. Does anything render at all? Correct background,
-   no garbage pixels, no all-black faces where art is expected?
-2. **All six faces.** `unfold(on=true)` → `screenshot` reads the whole cube in one
-   shot. This is the cheapest way to check per-face layout and to catch content
-   drawn on the wrong plane. `unfold(on=false)` before any interaction.
-3. **The prompt's own mechanic.** Exercise exactly what this prompt added, using
-   the prompt's `verification_criteria` as the script — tap where the prompt says
-   a tap does something, twist the face the prompt says responds, screenshot
-   after each action.
-4. **Motion.** For anything animated or tick-driven, take two screenshots a few
-   seconds apart and compare: did the thing that should move, move? Did the thing
-   that should stay put, stay?
-5. **Orientation**, when the game reads gravity at all (`OCT_TM_gravity_*`,
-   `OCT_TM_top_side_plane` / `OCT_TM_bottom_plane` in the code, or a GDD that
-   talks about tilting, falling, or "the bottom face"). `set_cube` a few poses —
-   e.g. `(0,0,0)`, `(0,0,90)`, `(0,90,0)` — screenshotting each: does what should
-   fall, fall the right way; does the game agree with the new bottom face?
-   **Then `set_cube(0, 0, 0)` before anything else**, or every later screenshot
-   is read at the wrong angle.
-6. **Survival.** A final `screenshot` plus a check that the process is still
-   alive. A sim that died mid-playtest is a **critical** finding, with the log
-   tail as evidence.
-7. **Shake**, only if this prompt is about shake-to-exit, and only as the very
-   last action — see the warning above.
-
-Save shots worth comparing with `save_as` (absolute path, e.g.
-`/tmp/playtest_<game>_p<N>_<step>.png`) — the default buffer is overwritten by
-the next shot.
-
-## Aiming taps and twists
-
-- **Tap coordinates are pixels of the most recent screenshot.** Take a shot,
-  read the point off it, then tap. The bridge rescales to native pixels itself.
-- **The centre of a face is not tappable.** Each face is four 240×240 quads with
-  a bezel cross between them; a tap at the exact centre lands in the gap and
-  returns `no_screen`. Aim at the middle of a quad.
-- `no_screen` means the aim was wrong, **not** that the game ignored the tap.
-  Re-aim and retry before recording anything as a finding.
-- **Orbiting or turning the cube while unfolded does nothing** — the cross always
-  faces the camera. Fold back first.
-- **Leave the cube upright when done tilting.** `set_cube(0, 0, 0)`, not
-  `reset_view`. A "sprite on the wrong face" finding recorded against a cube that
-  is still lying on its side is a wasted fix cycle.
-- `twist_face` already blocks until the snap settles; `wait_idle` is only needed
-  after motion the agent did not start.
+For an ordinary game the engine runs its default shake handler and **returns to the
+launcher**; the app's `on_shake` is never consulted. A screenshot after a shake that
+shows the launcher is correct behaviour, not a crash. Never shake mid-script.
 
 ## What a playtest can and cannot judge
 
-**Can:** does it render; is the art on the right face/quad; does a tap, twist, or
-tilt produce the response the prompt promised; does the game read gravity the way
-the design says; does anything move that should move; does it survive a few
-seconds of play; obvious visual breakage (half-size sprites, off-screen objects,
-overlap, wrong palette).
+**Can**: does it render; the right art on the right face and screen; scale; the
+response to taps, twists and tilt; gravity handling; motion; survival; whether and when
+sounds start.
 
-**Cannot:** sound, exact timing and frame rates, long-run balance, RNG-dependent
-behaviour, memory/leak behaviour, and **anything about the physical cube** — the
-sim runs PC-compiled code, so a perfect playtest still says nothing about whether
-the `.oct` contains ARM code. That remains Stage 5's job.
+**Cannot**: how anything sounds, feel and exact timing on hardware, balance,
+RNG-dependent outcomes, memory, and anything about the physical cube (the simulator runs
+PC-compiled code; ARM code is Stage 5's job). **If it cannot be observed, it is not a
+finding.** Say what was not observable and move on.
 
-**If it cannot be observed, it is not a finding.** Uncertainty from a screenshot
-is never a deduction — say what was not observable and move on. The Playtest
-Agent's job is to catch games that are visibly broken, not to re-check what the
-Requirements and Template agents already read in the code.
+## Simulator state and the `.oct` clobber note
+
+- Each simulator keeps per-module SD-card and flash images in its working folder
+  (`e<m>_<inst>.raw`, `i<m>_<inst>.raw`), so saves survive restarts. For a clean run use
+  `run.ps1 -FreshSaves` (it deletes only the hidden tool's own images; never touch the
+  user's).
+- **The stock Windows simulator rewrites `app_<game>/app_<game>.oct` whenever it starts
+  with `out/app_<game>.bin` present** (and deletes it when the ARM code is missing); the
+  Linux simulator writes `<app>_<date>_<time>.oct` when the ARM build is newer than
+  `src/`. The hidden tool writes no `.oct` unless asked (`-OctOut`, diagnostics only).
+  So the deliverable is built last, by Stage 5, into `dist/`; never hand over
+  `app_<game>/app_<game>.oct`.

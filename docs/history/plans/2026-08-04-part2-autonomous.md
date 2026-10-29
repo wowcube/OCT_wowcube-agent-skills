@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
 
-**Goal:** Implement `docs/superpowers/specs/2026-08-04-autonomous-orchestrator-design.md` — autonomous-by-default orchestrator, multi-provider image adapter, agent-authored placeholders, python `.oct` builder, repack command, auto patch-bump, animation guidelines.
+**Goal:** Implement `docs/history/specs/2026-08-04-autonomous-orchestrator-design.md` — autonomous-by-default orchestrator, multi-provider image adapter, agent-authored placeholders, python `.oct` builder, repack command, auto patch-bump, animation guidelines.
 
 **Branch:** `part2-autonomous-orchestrator` (off merged main). PR at the end; NO merge without owner review.
 
