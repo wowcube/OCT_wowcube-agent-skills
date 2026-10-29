@@ -1,7 +1,7 @@
 {
   "name": "wowcube",
-  "version": "2.0.0",
-  "description": "WowCube game development skills for the beta (octavios) container: cube_orchestrator (master controller/entry point), cube_game-designer (GDD), technical_prompter (prompts + asset manifest), cube_asset-builder (AI art/sound -> index.bin beta container), wowcube-boilerplate (scaffold, simulator build, device .oct), and cube_verifier (requirements/template verification agents).",
+  "version": "2.1.0",
+  "description": "WowCube game development skills for the beta (octavios) container: cube_orchestrator (master controller/entry point), cube_game-designer (GDD), technical_prompter (prompts + asset manifest), cube_asset-builder (AI art/sound -> index.bin beta container), wowcube-boilerplate (scaffold, simulator build, device .oct), and cube_verifier (requirements/template/playtest verification agents, the last driving the running simulator over the OctaviOS sim MCP when it is available).",
   "author": {
     "name": "WowCube"
   },
