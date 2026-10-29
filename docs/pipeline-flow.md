@@ -3,7 +3,7 @@
 End-to-end flow driven by `cube_orchestrator`, from a request to a verified `.oct` on
 the user's cube. The default run mode is **autonomous**: the only stop is the style lock
 (`STOP, always`); the stops marked `STOP, stepwise` happen only when the user asked for
-stepwise mode («по шагам»). Rules: `skills/cube_orchestrator/SKILL.md` and its
+stepwise mode ("stepwise"). Rules: `skills/cube_orchestrator/SKILL.md` and its
 `references/`.
 
 ```mermaid

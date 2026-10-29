@@ -64,7 +64,7 @@ Commands below run from `<root>` (the folder holding `plans/`; the orchestrator'
 ## Run modes
 
 - **Autonomous (default)**: one stop — the **style lock** (Step 2). The user approves the style frame there and, in the same message, the **CC0 sound list** (Step 6) — downloads need explicit approval. Everything else runs on: the strict QA loop, the fresh-agent review, the review page (linked in the final report; feedback can come later through `art.py feedback`). Only an explicit user waiver or the `YOLO` token skips the stop: a fresh reviewer subagent picks the style frame against STYLE.md, sounds stay synthesised placeholders (nothing was approved for download), and the report says both. Run-mode details: `cube_orchestrator/references/RUN_MODES.md`; the orchestrator's gates for this stage: `cube_orchestrator/references/STAGE3_ASSETS.md`.
-- **Stepwise** (`по шагам` / "stepwise" / `стоп`): stops at the style lock, the sound list, the review page (OK / Fix per asset) and before packing.
+- **Stepwise** ("stepwise" / "stop", in any language): stops at the style lock, the sound list, the review page (OK / Fix per asset) and before packing.
 
 ## Workflow
 

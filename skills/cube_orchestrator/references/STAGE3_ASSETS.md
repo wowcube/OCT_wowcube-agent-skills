@@ -81,7 +81,7 @@ cannot judge (sizes that read like on-screen pixels, panoramas, the sound plan):
 
 ## 2. Style lock: the one creative checkpoint
 
-Runs in every mode. Only an explicit user waiver ("стиль не согласовывай") or the
+Runs in every mode. Only an explicit user waiver ("skip the style approval") or the
 `YOLO` token skips the user's approval. *(stepwise)* First ask the source: Codex art,
 the user's own art (§8), or PSDs from an artist (§9).
 
