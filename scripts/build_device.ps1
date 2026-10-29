@@ -62,14 +62,16 @@ $OctaviOS = (Resolve-Path -LiteralPath $OctaviOS -ErrorAction SilentlyContinue).
 if (-not $OctaviOS -or -not (Test-Path (Join-Path $OctaviOS 'apps\CMakeLists.txt'))) { Fail "octavios SDK not found (pass -OctaviOS)" }
 
 if (-not $Out) { $Out = Join-Path (Split-Path $AppDir -Parent) "dist\$app.oct" }
-$Out = [IO.Path]::GetFullPath($Out)
+$Out = [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Out))
 New-Item -ItemType Directory -Force -Path (Split-Path $Out -Parent) | Out-Null
 
 $metadata = Join-Path $AppDir 'src\app_metadata.h'
 $octpackProject = Join-Path $OctaviOS 'octpacker'
 # octpacker's environment lives in the workspace, never in the SDK tree (uv would otherwise create octpacker\.venv)
 if (-not $UvEnv) { $UvEnv = $(if ($env:UV_PROJECT_ENVIRONMENT) { $env:UV_PROJECT_ENVIRONMENT } else { Join-Path (Split-Path $AppDir -Parent) '.uv_octpack_venv' }) }
-$env:UV_PROJECT_ENVIRONMENT = [IO.Path]::GetFullPath($UvEnv)
+# absolute from the caller's PowerShell location (uv would resolve a relative one inside octpacker\, the SDK tree;
+# [IO.Path]::GetFullPath alone uses the process cwd, which Set-Location does not move)
+$env:UV_PROJECT_ENVIRONMENT = [IO.Path]::GetFullPath($ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($UvEnv))
 if ($env:WOWCUBE_NO_UV -match '^(1|true|yes)$') { $NoUv = $true }
 $useUv = (Have 'uv') -and -not $NoUv
 if ($NoUv) { Write-Host "    NOTE: -NoUv / WOWCUBE_NO_UV: uv is not started (python builder, local header check)" -ForegroundColor Yellow }

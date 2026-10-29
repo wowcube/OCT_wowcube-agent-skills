@@ -42,6 +42,7 @@ param(
     [switch] $Visible
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'safe_paths.ps1')
 function Fail($m) { Write-Host "ERROR: $m" -ForegroundColor Red; exit 1 }
 function Step($m) { Write-Host "==> $m" -ForegroundColor Cyan }
 
@@ -65,8 +66,16 @@ if (-not $Telemetry -or -not (Test-Path (Join-Path $Telemetry 'octavios_simulato
     Fail "telemetry library not found (pass -Telemetry, or check out wowcube/telemetry next to octavios)"
 }
 if (-not $WorkDir) { $WorkDir = Join-Path $ws ".sim_headless\$app" }
+# the build deletes and rewrites <WorkDir>\<app>\src, sim\src, engine and bin: never the app, the SDK or a home folder
+$why = Test-UnsafeWorkDir -WorkDir $WorkDir -Protect @($AppDir, $Octavios, $Telemetry)
+if ($why) { Fail $why }
 New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 $WorkDir = (Resolve-Path -LiteralPath $WorkDir).Path
+# cl.exe response files, the .cmd and the baked app path are ANSI: non-ASCII (e.g. Cyrillic) paths -> 8.3 or a clear error
+try {
+    $WorkDir = Get-AsciiPath -Path $WorkDir -What 'work dir'
+    $Telemetry = Get-AsciiPath -Path $Telemetry -What 'telemetry checkout'
+} catch { Fail $_.Exception.Message }
 $snap = Join-Path $WorkDir $app
 $bin  = Join-Path $WorkDir 'bin'
 New-Item -ItemType Directory -Force -Path $bin | Out-Null

@@ -31,6 +31,10 @@ param(
     [switch] $SkipMsvc,
     [switch] $ReportOnly
 )
+# A report must never abort half-way. Callers such as new_app.ps1 run with $ErrorActionPreference = 'Stop', which
+# this script would inherit; on Windows PowerShell 5.1 a native tool writing to stderr under `2>$null` (git in a
+# broken clone, uv without Python 3.12, ...) then raises a terminating NativeCommandError. This scope only.
+$ErrorActionPreference = 'Continue'
 
 function Step($m) { Write-Host "==> $m" -ForegroundColor Cyan }
 function Have($exe) { return [bool](Get-Command $exe -ErrorAction SilentlyContinue) }

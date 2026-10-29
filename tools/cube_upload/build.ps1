@@ -19,6 +19,7 @@ param(
     [string] $WorkDir
 )
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot '..\sim_headless\safe_paths.ps1')
 function Fail($m) { Write-Host "ERROR: $m" -ForegroundColor Red; exit 1 }
 function Step($m) { Write-Host "==> $m" -ForegroundColor Cyan }
 function Q($s) { '"' + $s + '"' }
@@ -32,8 +33,16 @@ if (-not $Telemetry -or -not (Test-Path (Join-Path $Telemetry 'octavios_simulato
     Fail "telemetry library not found (pass -Telemetry, or check out wowcube/telemetry next to octavios)"
 }
 if (-not $WorkDir) { $WorkDir = Join-Path (Split-Path $Octavios -Parent) '.cube_upload' }
+# the build rewrites <WorkDir>\sim\src, engine and bin: never the SDK, the telemetry checkout or a home folder
+$why = Test-UnsafeWorkDir -WorkDir $WorkDir -Protect @($Octavios, $Telemetry)
+if ($why) { Fail $why }
 New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
 $WorkDir = (Resolve-Path -LiteralPath $WorkDir).Path
+# cl.exe response files and the .cmd are ANSI: non-ASCII (e.g. Cyrillic) paths -> 8.3 short form or a clear error
+try {
+    $WorkDir = Get-AsciiPath -Path $WorkDir -What 'work dir'
+    $Telemetry = Get-AsciiPath -Path $Telemetry -What 'telemetry checkout'
+} catch { Fail $_.Exception.Message }
 $bin = Join-Path $WorkDir 'bin'
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
 

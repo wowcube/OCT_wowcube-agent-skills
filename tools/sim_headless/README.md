@@ -56,7 +56,13 @@ Defaults: `-Octavios <AppDir>\..\octavios`, `-Telemetry <octavios>\..\telemetry`
 `-Face` (`-1` = the six faces as an unfolded cross: TOP above FRONT, LEFT FRONT RIGHT BACK in a row, BOTTOM
 below; `0..5` = one face), `-OutDir`, `-McpPort` (default 8177, away from the stock 8077), `-FreshSaves`
 (delete the simulated SD/flash images first), `-OctOut <path>`, `-AllowStale`, `-AllowEarlyStop` (accept a
-run you stopped by PID before `-Seconds`, e.g. after an MCP playtest).
+run you stopped with `stop.ps1` before `-Seconds`, e.g. after an MCP playtest; only a kill's exit code -1/1 or 0
+passes, a crash always fails with exit 5).
+
+`-WorkDir` is refused when it is a drive root, the home folder, or is / contains / lies inside the app, octavios
+or telemetry (the build rewrites folders under it). Paths with non-ASCII characters (e.g. Cyrillic) are passed to
+MSVC, cmd.exe and the simulator in their 8.3 short form; when the volume keeps no short names the scripts stop
+early and name the path: move the workspace to a Latin-only path.
 
 Exit codes of `run.ps1`: 0 ok = the timed run completed (exit 0 after `-Seconds` and `bin\headless_summary.txt`
 written), 1 setup error, 2 a window became visible (killed), 3 did not end in time (killed), 4 no frames
@@ -110,8 +116,9 @@ powershell -NoProfile -File $T\mcp.ps1 -Port 8177 "twist 3" "record 40 50 C:\ws\
 | `log` | path of `log_1.txt` + offset of this run (engine/app `WLOG` records included) |
 | `ping`, `info`, `idle` | liveness, port/app/title, wait for twists to settle |
 
-There is no quit command: stop early with `Stop-Process -Id <pid>` (that PID only, never by name), otherwise the
-instance closes itself after `-Seconds`. A run you mean to stop early is started with `-AllowEarlyStop`;
+There is no quit command: stop early with `stop.ps1 -RunInfo <out dir>\run_info.json` (it stops that PID only
+when it still runs the same exe started at the recorded time, so a reused PID is never hit; never by name),
+otherwise the instance closes itself after `-Seconds`. A run you mean to stop early is started with `-AllowEarlyStop`;
 without it the stopped run reports exit 7 (not a completed run).
 
 Gameplay video for the user (no audio): from `record` frames

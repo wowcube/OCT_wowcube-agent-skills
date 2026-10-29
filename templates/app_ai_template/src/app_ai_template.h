@@ -302,6 +302,8 @@ typedef struct {
     demo19State_t demo19;
     demo20State_t demo20;
     uint32_t tick; // ticks since the current demo started
+    int32_t heldTop; // playfieldPlane's held top face (topWithHysteresis), -1 = not picked yet
+    bool tapQuadReal; // appTapQuad saw a non-zero octTapSource_t.Quad: the firmware fills Quad (fw >= 0.100.1)
 } appvars_t;
 
 
@@ -549,15 +551,31 @@ void showLabel(appObject_t* label, bool show) {
 }
 
 // Util: copy this code if needed
+// The face that is up, with the engine's own top-change rule (oct_tm.h OCT_TM_face_up_update: the challenger must lead
+// by OCT_TM_TOP_HYSTERESIS 0.29 in gravity_n, ~12 degrees past 45). OCT_TM_top_side() has no hysteresis: between ~45
+// and ~57 degrees it already names the new face while OCT_TM_face_up still holds the old top's latch. This one switches
+// together with that latch (checked in the simulator: 55 degrees keeps it, 60 switches; back at 40 it holds, at 30 it
+// returns). Keep *held in your vars, -1 at start; gravity_n is the same on all 8 modules, so it is lockstep-safe.
+#define TOP_HYSTERESIS 0.29f
+static inline int32_t topWithHysteresis(int32_t* held) {
+    int32_t c = (int32_t)OCT_TM_top_side();
+    if (*held < 0 || *held >= SIDES_COUNT ||
+        (c != *held && OCT_TM_gravity_n(c) <= OCT_TM_gravity_n(*held) - TOP_HYSTERESIS)) *held = c;
+    return *held;
+}
+
+// Util: copy this code if needed
 int32_t playfieldPlane(void) {
     // API info + util
-    // The face the playfield lives on: the face that is up, unless the TPL_DEBUG_ROOM_PLANE test hook pins it.
+    // The face the playfield lives on: the face that is up (with the engine's hysteresis, held in vars.heldTop, -1 at
+    // on_init), unless the TPL_DEBUG_ROOM_PLANE test hook pins it. Call it once per tick and keep the result.
 #if TPL_DEBUG_ROOM_PLANE >= 0
     return (int32_t)TPL_DEBUG_ROOM_PLANE;
 #else
     // Short: OCT_TM_top_side / OCT_TM_bottom_side return the plane facing up / down (from the leader's gravity, the same on all 8 modules, no hysteresis).
     // Declaration: int OCT_TM_top_side(); int OCT_TM_bottom_side();
-    return (int32_t)OCT_TM_top_side();
+    // Comment: raw top_side switches ~12 degrees before OCT_TM_face_up's latch does; topWithHysteresis switches with it.
+    return topWithHysteresis(&vars.heldTop);
 #endif
 }
 
@@ -664,14 +682,28 @@ void saveLoad(void) {
     int32_t got = (int32_t)OCT_save_read(&rec, 0U, (uint32_t)sizeof(rec));
     vars.save.lastResult = got;
 
+    // The rule: a record is overwritten ONLY when it is today's layout or a layout this build knows how to upgrade.
+    //  - got < 0: no usable area -> defaults, writes off.
+    //  - not ours (got == 0 / short read / other magic, a fresh area reads as zeros) -> defaults, writes on.
+    //  - ours, today's SAVE_VERSION and size -> use it, writes on.
+    //  - ours, an OLDER version this build migrates -> read through the old layout, upgrade in memory, writes on
+    //    (add one `else if (rec.header.version == N)` branch per known old layout here; the template has none yet).
+    //  - ours, any OTHER version (newer build, unknown layout, wrong size) -> defaults for this session, writes OFF:
+    //    the record is preserved for the build that understands it instead of being silently replaced.
     bool mine = (got == (int32_t)sizeof(rec)) && (rec.header.magic == SAVE_MAGIC);
-    if (mine && rec.header.version == (uint16_t)SAVE_VERSION && rec.header.size == (uint16_t)sizeof(rec)) {
-        vars.save.rec = rec;
-    } else {
-        // An older SAVE_VERSION would be read through its old layout and upgraded here; anything else starts fresh.
+    if (got < 0) {
         saveDefaults();
+        vars.save.valid = false;
+    } else if (!mine) {
+        saveDefaults();
+        vars.save.valid = true;
+    } else if (rec.header.version == (uint16_t)SAVE_VERSION && rec.header.size == (uint16_t)sizeof(rec)) {
+        vars.save.rec = rec;
+        vars.save.valid = true;
+    } else {
+        saveDefaults();
+        vars.save.valid = false; // unknown/newer layout: never write over it
     }
-    vars.save.valid = (got >= 0); // a usable area (even if empty): writes may go back to it
 #endif
 }
 
@@ -1320,19 +1352,6 @@ static inline int32_t uprightToPlane(int32_t plane, float ux, float uy, float* x
     int32_t a = (int32_t)OCT_TM_normalize_angle(((OCT_TM_face_up(plane) + 45) / 90) * 90);
     uprightOffset(a, ux, uy, x, y);
     return a;
-}
-
-// The face that is up, with the engine's own top-change rule (oct_tm.h OCT_TM_face_up_update: the challenger must lead
-// by OCT_TM_TOP_HYSTERESIS 0.29 in gravity_n, ~12 degrees past 45). OCT_TM_top_side() has no hysteresis: between ~45
-// and ~57 degrees it already names the new face while OCT_TM_face_up still holds the old top's latch. This one switches
-// together with that latch (checked in the simulator: 55 degrees keeps it, 60 switches; back at 40 it holds, at 30 it
-// returns). Keep *held in your vars, -1 at start; gravity_n is the same on all 8 modules, so it is lockstep-safe.
-#define TOP_HYSTERESIS 0.29f
-static inline int32_t topWithHysteresis(int32_t* held) {
-    int32_t c = (int32_t)OCT_TM_top_side();
-    if (*held < 0 || *held >= SIDES_COUNT ||
-        (c != *held && OCT_TM_gravity_n(c) <= OCT_TM_gravity_n(*held) - TOP_HYSTERESIS)) *held = c;
-    return *held;
 }
 
 // Demo: do not copy-paste this code
@@ -1999,7 +2018,7 @@ void tapDemo20(int32_t tapid) {
         lightButtonDemo20(quad);
         playSoundAt(vars.snd.sfxB, SFX_VOLUME, quad); // heard from the struck screen's module only
     } else {
-        // per-face fallback (firmware < fw-0.100.0, or the screen is unbound): the whole face reacts
+        // per-face fallback (no usable Quad: firmware < fw-0.100.1, or the screen is unbound): the whole face reacts
         for (int32_t q = 0; q < OCT_QUADS_AT_PLANE; q++) lightButtonDemo20(tapid * OCT_QUADS_AT_PLANE + q);
         playSound(vars.snd.sfxB, SFX_VOLUME);
     }
@@ -2091,6 +2110,7 @@ OCT_CALLBACK void on_init() {
     OCT_dev_mode(OCT_dev_mode(-1) | OCT_DEV_TEXT);
 
     memset(&vars, 0, sizeof(vars));
+    vars.heldTop = -1; // playfieldPlane picks the top on its first call
     resolveSounds();
     saveBegin();
 
@@ -2161,7 +2181,12 @@ OCT_CALLBACK void on_twisted(int32_t twid, uint32_t disconnected_ms) {
 // Which SCREEN the tap being handled struck. Call ONLY from on_tap.
 // Returns the scene quadId [0..23] (= quad [0; 3] + plane * OCT_QUADS_AT_PLANE, the numbering OCT_TM_quad returns), or -1
 // when it is unknown: firmware older than fw-0.100.0 (OCT_tap_source answers 0), the struck screen is not bound to a
-// quad, or fw-0.100.0 without the Quad field (reads 0, caught by the plane check). The value is the same on all 8 modules.
+// quad, or fw-0.100.0 without the Quad field. On fw-0.100.0 the struct has the same size (8) but Quad sits in what was
+// Padding[0] and always reads 0 (engine oct_shared.h): a tap on a side face fails the plane check, but EVERY tap on TOP
+// would look like quad 0. So a Quad of 0 is trusted only after some tap returned a non-zero Quad (a real quad >= 1 or
+// -1 = unbound, both of which only fw >= 0.100.1 writes) or OCT_cube_pose proved fw >= 0.100.5: until then a TOP tap
+// on quad 0 answers -1 (the fallback).
+// vars.tapQuadReal holds that proof; it comes from the tap command, so it is the same on all 8 modules.
 // ALWAYS keep a per-face fallback for -1.
 int32_t appTapQuad(int32_t tapid) {
     // Short: OCT_tap_source copies up to `size` bytes of the octTapSource_t of the tap being handled into out; returns the engine's struct size (8), 0 on firmware without it (out untouched).
@@ -2170,6 +2195,13 @@ int32_t appTapQuad(int32_t tapid) {
     memset(&src, 0, sizeof(src));
     src.Quad = (int8_t)-1;
     if ((int32_t)OCT_tap_source(&src, (uint32_t)sizeof(src)) < (int32_t)sizeof(src)) return -1;
+    if (src.Quad != 0) vars.tapQuadReal = true; // fw-0.100.0 never writes a non-zero byte there
+    if (!vars.tapQuadReal) {
+        // OCT_cube_pose answers > 0 only on fw >= 0.100.5, which certainly fills Quad (same answer on all 8 modules)
+        octCubePose_t pose;
+        if ((int32_t)OCT_cube_pose(&pose, (uint32_t)sizeof(pose)) > 0) vars.tapQuadReal = true;
+        else return -1; // 0 may be fw-0.100.0's padding: not proven yet
+    }
     if ((int32_t)src.Quad < 0 || (int32_t)src.Quad >= OCT_QUADS_TOTAL) return -1;
     if ((int32_t)src.Quad / OCT_QUADS_AT_PLANE != tapid) return -1;
     return (int32_t)src.Quad;

@@ -49,10 +49,21 @@ typedef struct {
     uint32_t nextTick; // vars.tick of the next retrigger
 } music_t;
 
+// the save: the game's own copy of the record (app_save.h), loaded in on_init, kept current while playing, written
+// in on_save and at safe moments (new best, level end). `valid` = the record may be written back.
+typedef struct {
+#ifdef APP_SAVE_SIZE
+    saveRecord_t rec;
+#endif
+    bool valid;
+} save_t;
+
 // game specific vars (group related state into _t sub-structs)
 typedef struct {
     uint32_t tick; // on_tick calls since on_init: the game clock, identical on all 8 modules
+    int32_t heldTop; // playfieldPlane's held top face (topWithHysteresis), -1 until the first pick
     music_t music;
+    save_t save;
 } appvars_t;
 
 
@@ -63,6 +74,7 @@ typedef struct {
 appObject_t* spriteAt(int32_t id);
 bool isAlive(const appObject_t* obj);
 int32_t playfieldPlane(void);
+void saveLoad(void);
 void playSound(int32_t id, int32_t volume);
 void playSoundAt(int32_t id, int32_t volume, int32_t quad);
 void updateMusic(void);
@@ -96,12 +108,50 @@ bool isAlive(const appObject_t* obj) {
     return obj != NULL && (int32_t)obj->Idx == (int32_t)(obj - gObjects);
 }
 
+// The face that is up, with the engine's own top-change rule (a new top must lead by 0.29 in gravity_n, ~12 degrees
+// past 45), so it switches together with OCT_TM_face_up's latch; OCT_TM_top_side() alone switches too early.
+// API.md "Orientation"; the annotated copy is in app_ai_template.h.
+static inline int32_t topWithHysteresis(int32_t* held) {
+    int32_t c = (int32_t)OCT_TM_top_side();
+    if (*held < 0 || *held >= SIDES_COUNT ||
+        (c != *held && OCT_TM_gravity_n(c) <= OCT_TM_gravity_n(*held) - 0.29f)) *held = c;
+    return *held;
+}
+
 // The face the playfield lives on: the face that is up, unless the GAME_DEBUG_ROOM_PLANE test hook pins it.
+// Call it once per tick and keep the result (it updates vars.heldTop).
 int32_t playfieldPlane(void) {
 #if GAME_DEBUG_ROOM_PLANE >= 0
     return (int32_t)GAME_DEBUG_ROOM_PLANE;
 #else
-    return (int32_t)OCT_TM_top_side();
+    return topWithHysteresis(&vars.heldTop);
+#endif
+}
+
+// Loads vars.save.rec from the card (display-only data, or after a successful OCT_save_sync verdict). Writes are allowed
+// only for today's layout or a fresh area: a record of an unknown/newer SAVE_VERSION is kept, never overwritten.
+// Older layouts this build knows are upgraded here (see saveLoad in app_ai_template.h).
+void saveLoad(void) {
+#ifdef APP_SAVE_SIZE
+    saveRecord_t rec;
+    int32_t got = (int32_t)OCT_save_read(&rec, 0U, (uint32_t)sizeof(rec));
+    bool mine = (got == (int32_t)sizeof(rec)) && (rec.header.magic == SAVE_MAGIC);
+    memset(&vars.save.rec, 0, sizeof(vars.save.rec)); // defaults
+    vars.save.rec.header.magic = SAVE_MAGIC;
+    vars.save.rec.header.version = (uint16_t)SAVE_VERSION;
+    vars.save.rec.header.size = (uint16_t)sizeof(saveRecord_t);
+    if (got < 0) {
+        vars.save.valid = false; // no usable area
+    } else if (!mine) {
+        vars.save.valid = true; // fresh area: start from the defaults
+    } else if (rec.header.version == (uint16_t)SAVE_VERSION && rec.header.size == (uint16_t)sizeof(rec)) {
+        vars.save.rec = rec;
+        vars.save.valid = true;
+    } else {
+        vars.save.valid = false; // unknown/newer layout: play on defaults, keep the card's record
+    }
+#else
+    vars.save.valid = false;
 #endif
 }
 
@@ -149,10 +199,15 @@ OCT_CALLBACK void on_init() {
     // OCT_dev_mode(OCT_dev_mode(-1) | OCT_DEV_TEXT);
 
     memset(&vars, 0, sizeof(vars));
+    vars.heldTop = -1;
     vars.music.trackId = -1; // e.g. (int32_t)SND_music_loop from app_<game>_ids.h, or SND_getAssetId("music_loop.mp3")
 
     // Random content: roll it in the first on_tick (OCT_random draws made here after OCT_restart repeat every launch).
-    // Saves: load here (OCT_save_read, or OCT_save_sync + on_save_synced when saved data drives game logic).
+    // Saves: load here. saveLoad() reads this module's card: fine for display-only data. When saved data drives game
+    // logic, call OCT_save_sync(0, sizeof(saveRecord_t)) instead, keep the defaults with vars.save.valid = false, and
+    // call saveLoad() in on_save_synced on OCT_SAVE_OK (app_ai_template.h saveBegin).
+    saveLoad();
+    // ... then apply vars.save.rec to the game (unlocked level, best score, settings) ...
 }
 
 OCT_CALLBACK void on_tick() {
@@ -196,15 +251,14 @@ OCT_CALLBACK void on_shake(int32_t shakeid) {
 #ifdef APP_HAS_ON_SAVE
 OCT_CALLBACK void on_save() {
     // On every exit, on docking and before sleep: OCT_save_write the state the game trusts and return. No animation,
-    // no sound. Never overwrite a good save with a record that was never loaded.
+    // no sound. Never overwrite a good save with a record that was never loaded (vars.save.valid is false then).
 #ifdef APP_SAVE_SIZE
-    saveRecord_t rec; // a local is fine: the engine reads it before the call returns
-    memset(&rec, 0, sizeof(rec));
-    rec.header.magic = SAVE_MAGIC;
-    rec.header.version = (uint16_t)SAVE_VERSION;
-    rec.header.size = (uint16_t)sizeof(rec);
-    // ... fill the record from the game state ...
-    OCT_save_write(&rec, 0U, (uint32_t)sizeof(rec));
+    if (!vars.save.valid) return;
+    // ... copy the CURRENT game state into vars.save.rec here (or keep it current while playing) ...
+    vars.save.rec.header.magic = SAVE_MAGIC;
+    vars.save.rec.header.version = (uint16_t)SAVE_VERSION;
+    vars.save.rec.header.size = (uint16_t)sizeof(saveRecord_t);
+    OCT_save_write(&vars.save.rec, 0U, (uint32_t)sizeof(saveRecord_t));
 #endif
 }
 #endif
@@ -212,7 +266,8 @@ OCT_CALLBACK void on_save() {
 #ifdef APP_HAS_ON_SAVE_SYNCED
 OCT_CALLBACK void on_save_synced(int32_t result) {
     // The verdict of OCT_save_sync, same tick on all 8 modules: OCT_SAVE_OK or a negative OCT_SAVE_* code. Read back here.
-    (void)result;
+    if (result == OCT_SAVE_OK) saveLoad(); // the 8 copies are identical now: safe for game logic
+    else vars.save.valid = false;          // copies may differ: stay on the shared defaults, write nothing
 }
 #endif
 

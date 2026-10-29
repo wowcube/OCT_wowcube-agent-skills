@@ -233,7 +233,11 @@ if [ "$SMOKE" -eq 1 ]; then
         printf 'sound_muted=1\n' > "$WORK/sim_user_linux.cfg"
         PORT=8177; SHOT="$WORK/smoke_faces.png"
         step "Hidden smoke run (${SMOKE_SECONDS}s under xvfb-run, muted, MCP port $PORT)"
-        ( cd "$WORK" && SDL_AUDIO_DRIVER=dummy SDL_AUDIODRIVER=dummy exec setsid xvfb-run -a -s "-screen 0 1280x1024x24" \
+        # Force X11 so the window lands on xvfb's virtual display: on a Wayland session SDL/GLFW/GTK would otherwise
+        # pick WAYLAND_DISPLAY and open a real window on the user's screen despite xvfb-run's DISPLAY.
+        ( cd "$WORK" && exec env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 SDL_VIDEODRIVER=x11 GDK_BACKEND=x11 \
+              GLFW_PLATFORM=x11 QT_QPA_PLATFORM=xcb SDL_AUDIO_DRIVER=dummy SDL_AUDIODRIVER=dummy \
+              setsid xvfb-run -a -s "-screen 0 1280x1024x24" \
               "$SIM" --mcp-port "$PORT" > "$WORK/stdout.txt" 2>&1 ) &
         PGID=$!
         cleanup() { kill -TERM -- "-$PGID" 2>/dev/null || true; sleep 1; kill -KILL -- "-$PGID" 2>/dev/null || true; }

@@ -23,8 +23,10 @@ differing, while font_1/font_2 sat at ~1.3-1.8 (benign palette requantization).
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+import pytest
 from PIL import Image
 
 from pack_psd import resolve_font_atlas
@@ -67,13 +69,14 @@ def test_multi_page_uses_the_page_index(tmp_path: Path):
         == str(tmp_path / "font_1_1.png")
 
 
+@pytest.mark.skipif(not os.environ.get("OCT_LADYBUG_ART"),
+                    reason="set OCT_LADYBUG_ART to OCT_ladybug's art/ folder (the reference font_3.fnt)")
 def test_ladybug_font_3_fnt_really_declares_the_wrong_page():
     """Regression guard against the actual shipped source file."""
-    art = Path("C:/Users/igort/Desktop/wowcube_vibecode/OCT_ladybug/art")
+    art = Path(os.environ["OCT_LADYBUG_ART"])
     fnt = art / "font_3.fnt"
     if not fnt.is_file():
-        import pytest
-        pytest.skip("OCT_ladybug reference art not available")
+        pytest.skip(f"no font_3.fnt in OCT_LADYBUG_ART={art}")
     blob = fnt.read_bytes()
     assert b"font_1_0.png" in blob, "the stale page name this rule exists for"
     assert (art / "font_3_0.png").is_file(), "the atlas that should be used"

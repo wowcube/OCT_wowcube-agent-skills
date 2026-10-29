@@ -115,7 +115,13 @@ def test_tool_scripts_kill_only_by_pid_and_never_inject_input():
         assert not re.search(r"Stop-Process\s+(-Name|-ProcessName)|taskkill\s+/IM|pkill|killall", text, re.I), p
         assert not re.search(r"\b(SendInput|keybd_event|mouse_event|SetForegroundWindow)\b", text), p
     launcher = (TOOLS / "sim_headless" / "hidden_launch.ps1").read_text(encoding="utf-8")
-    assert "Start-Sleep -Milliseconds 50" in launcher and "Stop-Process -Id $ProcessId" in launcher
+    assert "Start-Sleep -Milliseconds 50" in launcher
+    # kills go only through the handle held on the process we started (PID reuse-safe), never a bare PID or a name
+    code = "\n".join(line for line in launcher.splitlines() if not line.lstrip().startswith("#"))
+    assert "Stop-Process" not in code and "$p.Kill()" in code and "held[pi.pid] = pi.hp" in code
+    for p in _scripts("*/*.ps1"):
+        body = "\n".join(line for line in p.read_text(encoding="utf-8").splitlines() if not line.lstrip().startswith("#"))
+        assert not re.search(r"Stop-Process\s+-Id", body), f"bare-PID kill in {p.name}"
 
 
 def test_uploader_has_no_personal_defaults():

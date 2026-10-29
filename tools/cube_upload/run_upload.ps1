@@ -35,6 +35,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..\sim_headless\hidden_launch.ps1')
+. (Join-Path $PSScriptRoot '..\sim_headless\safe_paths.ps1')
 function Fail($code, $m) { Write-Host "FAIL: $m" -ForegroundColor Red; exit $code }
 
 $hex = ($Mac -replace '^0x', '' -replace '[:\-\s]', '').ToUpperInvariant()
@@ -42,6 +43,8 @@ if ($hex -notmatch '^[0-9A-F]{12}$') { Fail 1 "bad -Mac '$Mac' (expected 12 hex 
 $macArg = "0x$hex"
 $Oct = (Resolve-Path -LiteralPath $Oct -ErrorAction SilentlyContinue).Path
 if (-not $Oct) { Fail 1 ".oct not found" }
+# the uploader reads CUBE_UPLOAD_PATH with the ANSI API: a non-ASCII (e.g. Cyrillic) path -> 8.3 form or a clear error
+try { $Oct = Get-AsciiPath -Path $Oct -What '.oct path' } catch { Fail 1 $_.Exception.Message }
 $size = (Get-Item -LiteralPath $Oct).Length
 if ($size -le 0 -or $size -gt 50MB) { Fail 1 "$Oct is $size bytes (the uploader takes 1 byte .. 50 MB)" }
 

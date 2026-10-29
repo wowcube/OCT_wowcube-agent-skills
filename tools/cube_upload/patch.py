@@ -32,13 +32,40 @@ _spec = importlib.util.spec_from_file_location("hl_patch", os.path.join(HL_DIR, 
 hl = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(hl)
 
-# generic pieces shared with the headless simulator (they key on SIM_headless(), true under SIM_HEADLESS_FORCE)
-_SHARED = [p for p in hl.PATCHES if p[0] in ("sim3d_input.h", "sim_hal_windows.h")] + [
-    p for p in hl.PATCHES if p[0] == "sim_wrap_win.h" and (
-        "switch(message)" in p[1] or "(void)(showmode);" in p[1] or "CreateWindowExA" in p[1]
-        or "ShowWindow(WND, SW_NORMAL)" in p[1])] + [
-    p for p in hl.PATCHES if p[0] == "sim_pcm.h" or (p[0] == "sim.h" and (
-        "waveOutSetVolume" in p[1] or "mciSendStringA" in p[1] or "VarsToCfg();" in p[1]))]
+# generic pieces shared with the headless simulator (they key on SIM_headless(), true under SIM_HEADLESS_FORCE).
+# Each one is picked from hl.PATCHES by (file, a needle in its anchor), and every needle must select EXACTLY ONE
+# headless patch: a needle that stops matching, or starts matching two, fails at import instead of silently dropping
+# or duplicating a safety patch. Whole-file entries (needle None) take all of that file's patches, at least one.
+_SHARED_PICKS: list[tuple[str, str | None]] = [
+    ("sim3d_input.h", None),
+    ("sim_hal_windows.h", None),
+    ("sim_wrap_win.h", "switch(message)"),
+    ("sim_wrap_win.h", "(void)(showmode);"),
+    ("sim_wrap_win.h", "CreateWindowExA"),
+    ("sim_wrap_win.h", "ShowWindow(WND, SW_NORMAL)"),
+    ("sim_pcm.h", None),
+    ("sim.h", "waveOutSetVolume"),
+    ("sim.h", "mciSendStringA"),
+    ("sim.h", "VarsToCfg();"),
+]
+
+
+def pick_shared(patches, picks=_SHARED_PICKS) -> list[tuple[str, str, str]]:
+    """The headless patches the uploader reuses, in hl.PATCHES order; raises when a pick is not exactly one patch."""
+    chosen: list[int] = []
+    for fn, needle in picks:
+        idx = [i for i, p in enumerate(patches) if p[0] == fn and (needle is None or needle in p[1])]
+        if not idx or (needle is not None and len(idx) != 1):
+            raise SystemExit(f"PATCH TABLE: {fn} / {needle!r} selects {len(idx)} headless patches (expected "
+                             f"{'1' if needle is not None else '>= 1'}): update _SHARED_PICKS in tools/cube_upload/patch.py")
+        dup = set(idx) & set(chosen)
+        if dup:
+            raise SystemExit(f"PATCH TABLE: {fn} / {needle!r} selects a headless patch another pick already took")
+        chosen += idx
+    return [patches[i] for i in sorted(chosen)]
+
+
+_SHARED = pick_shared(hl.PATCHES)
 
 PATCHES: list[tuple[str, str, str]] = [
     ('sim.cpp', '#include "sim3d_debug.h"\n',

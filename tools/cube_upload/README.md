@@ -19,7 +19,9 @@ Agents upload only when the user asked for it, and only to the cube the user nam
 ## Requirements
 
 Windows, octavios dev 609d5ae or later, `wowcube/telemetry` next to octavios, MSVC, Python 3, and the cube
-**paired in Windows Bluetooth settings** (Settings > Bluetooth & devices). Only module 0 of a cube is
+**paired in Windows Bluetooth settings** (Settings > Bluetooth & devices). The upload goes over Bluetooth only:
+the dock is USB power and a serial port, and the upload does not go through it (a docked cube still uploads over
+Bluetooth). Only module 0 of a cube is
 discoverable over SPP. To read its address, e.g.
 `Get-PnpDevice -Class Bluetooth | Where-Object FriendlyName -like 'Wow*' | Select-Object FriendlyName, InstanceId`
 (the 12 hex digits after `DEV_` in the instance id; check against the device's properties page).
@@ -52,8 +54,8 @@ RESULT) and `<WorkDir>\bin\upload_result.txt`, e.g. `status=SUCCESS fin=1 bytes=
 
 ## Timing and the reboot note
 
-- About 46 KB/s over SPP: a 0.5 MB pack takes 10-15 s plus 3 s of settle time before and after (measured with
-  the previous uploader: 311 KB in 9 s, 552 KB in 15 s).
+- About 40-46 KB/s over SPP: a ~550 KB `.oct` takes about 12-15 s with this uploader (measured 2026-10-28 and
+  2026-10-29), plus 3 s of settle time before and after.
 - The previous uploader sometimes stalled at chunk 0 and gave up after 120 s; simply rerunning fixed it. With
   the long-chunk flag this should be rare; the advice stands: rerun once.
 - **Reboot the cube after an upload** when the new version does not show up in the launcher or the next upload
@@ -72,6 +74,12 @@ RESULT) and `<WorkDir>\bin\upload_result.txt`, e.g. `status=SUCCESS fin=1 bytes=
 
 ## Maintenance
 
-`python patch.py --octavios <dir> --check`: every anchor must match once (24/24 on octavios dev 609d5ae). The
-patch shares its window/dialog/audio pieces with `tools/sim_headless/patch.py`. Verified: builds with MSVC
-against dev 609d5ae; **not run** against a cube in this repo's validation.
+`python patch.py --octavios <dir> --check`: every anchor must match once (24/24 on octavios dev 609d5ae or later).
+The patch shares its window/dialog/audio pieces with `tools/sim_headless/patch.py`, picked by `_SHARED_PICKS`:
+each pick must select exactly one headless patch, or the import fails. Verified: builds with MSVC against octavios
+dev (609d5ae and later); run successfully against a real cube on 2026-10-28 and 2026-10-29 (`BLOB_TYPE_SOFTWARE`
+upload over Bluetooth SPP, ~12-15 s for a 550 KB `.oct`, `status=SUCCESS`).
+
+Paths: the build and run scripts pass non-ASCII paths (e.g. Cyrillic) to MSVC, cmd.exe and the uploader in their
+8.3 short form, or stop with a clear error; `-WorkDir` may not be a drive root, the home folder, or is / contain
+/ lie inside octavios or telemetry.

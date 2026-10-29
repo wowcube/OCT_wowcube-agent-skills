@@ -9,10 +9,11 @@
     the background when you want to talk MCP to the instance; it returns when the instance ends.
 
     Exit codes: 0 ok = the timed run COMPLETED (exit 0 after -Seconds and headless_summary.txt written; with
-                -AllowEarlyStop also a run you stopped early) | 1 usage/setup error | 2 a window became visible
-                (killed) | 3 did not end in time (killed) | 4 no frames written (-EveryMs > 0) | 5 crashed (exit 99,
-                headless_crash.txt) | 6 exe older than the app (run build.ps1 again, or pass -AllowStale)
-                | 7 ended before its timed exit (early exit, killed, no summary) without -AllowEarlyStop
+                -AllowEarlyStop also a run you stopped early with stop.ps1) | 1 usage/setup error | 2 a window became
+                visible (killed) | 3 did not end in time (killed) | 4 no frames written (-EveryMs > 0) | 5 crashed
+                (exit 99, headless_crash.txt, an NTSTATUS crash code such as 0xC0000005, or abort() = 3: ALWAYS a
+                failure, -AllowEarlyStop included) | 6 exe older than the app (run build.ps1 again, or pass
+                -AllowStale) | 7 ended before its timed exit (early exit, killed, no summary) without -AllowEarlyStop
 
 .PARAMETER AppDir      The app the exe was built for (locates the default work dir and checks staleness).
 .PARAMETER WorkDir     Default: <AppDir>\..\.sim_headless\<app> (same rule as build.ps1).
@@ -26,7 +27,9 @@
 .PARAMETER OctOut      Also write the simulator-assembled .oct to this path (diagnostics only; the deliverable
                        comes from scripts/build_device.*).
 .PARAMETER AllowEarlyStop  Accept a run that ended before -Seconds without its summary (an MCP playtest you
-                       stopped by PID when done). Crashes, visible windows, missing frames and timeouts still fail.
+                       stopped when done: tools\sim_headless\stop.ps1 -RunInfo <out>\run_info.json). Only the exit
+                       code of a kill (-1 from stop.ps1 / Stop-Process, 1 from TerminateProcess) or a clean 0 is
+                       accepted; crashes, visible windows, missing frames and timeouts still fail.
                        Without it such a run fails with exit 7.
 
 .EXAMPLE
@@ -49,6 +52,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'hidden_launch.ps1')
+. (Join-Path $PSScriptRoot 'safe_paths.ps1')
 function Fail($code, $m) { Write-Host "FAIL: $m" -ForegroundColor Red; exit $code }
 
 # --- resolve ---------------------------------------------------------------
@@ -85,6 +89,17 @@ if ($AppDir -and -not $AllowStale) {
 if (-not $OutDir) { $OutDir = Join-Path $WorkDir ("frames\" + (Get-Date -Format 'yyyyMMdd_HHmmss')) }
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $OutDir = (Resolve-Path -LiteralPath $OutDir).Path
+# the simulator reads SIM_HEADLESS_DIR / _OCT_OUT with the ANSI API: non-ASCII (e.g. Cyrillic) -> 8.3 or a clear error
+try {
+    $OutDir = Get-AsciiPath -Path $OutDir -What 'frame dir (-OutDir)'
+    if ($OctOut) {
+        $octFull = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OctOut)
+        $octParent = Split-Path $octFull -Parent
+        New-Item -ItemType Directory -Force -Path $octParent | Out-Null
+        $OctOut = Join-Path (Get-AsciiPath -Path $octParent -What '-OctOut folder') (Split-Path $octFull -Leaf)
+        if ($OctOut -match '[^ -~]') { throw "the -OctOut file name '$(Split-Path $octFull -Leaf)' must be ASCII" }
+    }
+} catch { Fail 1 $_.Exception.Message }
 
 if ($FreshSaves) {
     Get-ChildItem -LiteralPath $bin -File | Where-Object { $_.Name -match '^[ei]\d+_\d+\.raw$' } | Remove-Item -Force
@@ -99,17 +114,20 @@ $envBlock = @{
     SIM_HEADLESS_EVERY_MS = "$EveryMs"
     SIM_HEADLESS_DIR      = $OutDir
     SIM_HEADLESS_FACE     = "$Face"
-    SIM_HEADLESS_OCT_OUT  = $(if ($OctOut) { [IO.Path]::GetFullPath($OctOut) } else { $null })
+    SIM_HEADLESS_OCT_OUT  = $(if ($OctOut) { $OctOut } else { $null })
     SIM_HEADLESS_APP_DIR  = $null   # always the snapshot baked in by build.ps1
 }
 $visLog = Join-Path $OutDir 'visibility_log.txt'
 $procId = Start-HiddenProcess -Exe $Exe -WorkDir $bin -Arguments "--mcp-port $McpPort" -Env $envBlock
-"pid=$procId exe=$Exe started=$(Get-Date -Format o) mcp_port_requested=$McpPort" | Out-File $visLog -Encoding utf8
-$info = [ordered]@{ pid = $procId; exe = $Exe; out_dir = $OutDir; log = $logPath; mcp_port = $null; seconds = $Seconds; every_ms = $EveryMs }
+# the creation handle still pins the PID here (Watch-HiddenProcess releases it), so this is our process
+$procStart = $null
+try { $procStart = (Get-Process -Id $procId -ErrorAction Stop).StartTime.ToUniversalTime().ToString('o') } catch { }
+"pid=$procId exe=$Exe started=$(Get-Date -Format o) process_start=$procStart mcp_port_requested=$McpPort" | Out-File $visLog -Encoding utf8
+$info = [ordered]@{ pid = $procId; exe = $Exe; start_time = $procStart; out_dir = $OutDir; log = $logPath; mcp_port = $null; seconds = $Seconds; every_ms = $EveryMs }
 $infoPath = Join-Path $OutDir 'run_info.json'
 $info | ConvertTo-Json | Set-Content -LiteralPath $infoPath -Encoding utf8
-Write-Host ("started hidden: pid $procId  (stop early: Stop-Process -Id $procId - exit 7 unless -AllowEarlyStop" +
-            "$(if ($AllowEarlyStop) { ', given' }))  out: $OutDir")
+Write-Host ("started hidden: pid $procId  (stop early: stop.ps1 -RunInfo $infoPath - it checks the PID is still this " +
+            "exe; exit 7 unless -AllowEarlyStop$(if ($AllowEarlyStop) { ', given' }))  out: $OutDir")
 
 # --- watch: visibility every 50 ms; learn the MCP port from the log ---------
 $script:mcpPort = $null
@@ -128,7 +146,7 @@ $onPoll = {
         Write-Host "mcp: listening on 127.0.0.1:$($script:mcpPort)  (t=$elapsedMs ms; client: mcp.ps1 -Port $($script:mcpPort) ping)"
     }
 }
-$r = Watch-HiddenProcess -ProcessId $procId -TimeoutSec ($Seconds + 90) -LogFile $visLog -OnPoll $onPoll
+$r = Watch-HiddenProcess -ProcessId $procId -TimeoutSec ($Seconds + 90) -LogFile $visLog -OnPoll $onPoll -Exe $Exe
 
 # --- report ----------------------------------------------------------------
 $frames = @(Get-ChildItem -LiteralPath $OutDir -Filter 'frame_*.png' -ErrorAction SilentlyContinue | Sort-Object Name)
@@ -167,19 +185,28 @@ if ($logLen -gt $logStart) {
     if ($tail) { "log (filtered tail of this run):"; $tail | ForEach-Object { "  $_" } }
 }
 
+if ($r.Exit -eq 'not-ours') { Fail 1 "PID $procId no longer runs $Exe - nothing was touched" }
 if ($r.MaxVisible -gt 0) { Fail 2 "a window of the simulator became VISIBLE and the process was killed: $($r.FirstVisible)" }
 if ($r.Exit -eq 'timeout') { Fail 3 "the simulator did not end within $($Seconds + 90) s and was killed by PID" }
-if ($r.Exit -eq 99 -or (Test-Path $crash)) { Fail 5 "the simulator crashed (exit $($r.Exit)); see $crash and $logPath" }
+# a crash is a failure in EVERY mode (-AllowEarlyStop included): the marker, exit 99, an NTSTATUS exception code
+# (0xC0000005 access violation, 0xC00000FD stack overflow, 0xC0000409 fast-fail ... all < -1 as Int32) or abort() = 3
+$crashCode = ($r.Exit -is [int]) -and ($r.Exit -eq 99 -or $r.Exit -eq 3 -or $r.Exit -lt -1)
+if ($crashCode -or (Test-Path $crash)) {
+    $hex = if ($r.Exit -is [int]) { ' = 0x{0:X8}' -f $r.Exit } else { '' }
+    Fail 5 "the simulator crashed (exit $($r.Exit)$hex); see $crash and $logPath"
+}
 if ($EveryMs -gt 0 -and $frames.Count -eq 0) { Fail 4 "no frames written to $OutDir" }
 if (-not ($r.Exit -eq 0 -and $completed)) {
     $why = "exit $($r.Exit)$(if (-not $completed) { ', no headless_summary.txt' })"
-    if ($AllowEarlyStop -and ($r.Exit -is [int])) {
+    # only what a deliberate stop leaves: -1 (stop.ps1 / Stop-Process / Process.Kill), 1 (TerminateProcess), 0
+    if ($AllowEarlyStop -and ($r.Exit -is [int]) -and ($r.Exit -in @(-1, 0, 1))) {
         Write-Host "NOTE: ended before its timed exit ($why) - accepted: -AllowEarlyStop (a deliberate stop by PID)" -ForegroundColor Yellow
         "OK: never visible; stopped early on purpose (-AllowEarlyStop)"
         exit 0
     }
     Fail 7 ("the simulator ended before its timed exit ($why): an early exit, a kill or a crash without the " +
-            "marker - not a completed run. For a deliberate stop by PID (MCP playtest) pass -AllowEarlyStop.")
+            "marker - not a completed run. For a deliberate stop (stop.ps1, MCP playtest) pass -AllowEarlyStop; it " +
+            "accepts only the exit codes of a kill (-1, 1) or 0.")
 }
 "OK: never visible; timed run completed"
 exit 0

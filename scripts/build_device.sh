@@ -54,7 +54,11 @@ OUT="$(cd "$(dirname "$OUT")" && pwd)/$(basename "$OUT")"
 
 OCTPACK="$OCTAVIOS/octpacker"
 # octpacker's environment lives in the workspace, never in the SDK tree (uv would otherwise create octpacker/.venv)
-export UV_PROJECT_ENVIRONMENT="${UV_ENV:-${UV_PROJECT_ENVIRONMENT:-$(dirname "$APP_DIR")/.uv_octpack_venv}}"
+UV_ENV="${UV_ENV:-${UV_PROJECT_ENVIRONMENT:-$(dirname "$APP_DIR")/.uv_octpack_venv}}"
+# uv resolves a RELATIVE UV_PROJECT_ENVIRONMENT against --project (octpacker/), which would put the venv inside the
+# SDK: make it absolute from the caller's working directory first
+case "$UV_ENV" in /*|[A-Za-z]:[/\\]*) ;; *) UV_ENV="$PWD/$UV_ENV";; esac
+export UV_PROJECT_ENVIRONMENT="$UV_ENV"
 use_uv=0
 have uv && [ "$NO_UV" -eq 0 ] && use_uv=1
 [ "$NO_UV" -eq 1 ] && echo "    NOTE: --no-uv / WOWCUBE_NO_UV: uv is not started (python builder, local header check)" >&2
