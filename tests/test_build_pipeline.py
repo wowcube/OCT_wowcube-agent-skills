@@ -127,13 +127,54 @@ def test_generate_rejects_invalid_manifest(tmp_path, tmp_manifest, stub_ai):
     assert rc == 2
 
 
-def test_generate_missing_api_key_fails(tmp_path, tmp_manifest, minimal_manifest, monkeypatch):
-    """Without OPENROUTER_API_KEY the generate stage stops at the dep check."""
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+def test_generate_no_provider_configured_fails(tmp_path, tmp_manifest, minimal_manifest,
+                                               monkeypatch, capsys):
+    """No image provider from ANY config source stops the generate stage at
+    the dep check, with a message naming all three sources + the placeholder
+    fallback (mocked resolve_provider so host env/config files don't leak in)."""
+    import image_providers
+    monkeypatch.setattr(image_providers, "resolve_provider", lambda: None)
     manifest = tmp_manifest(minimal_manifest)
     rc = _cli(["generate", "--manifest", str(manifest),
                "--workspace", str(tmp_path / "assets")])
     assert rc == 3
+    err = capsys.readouterr().err
+    assert "OPENROUTER_API_KEY" in err
+    assert "IMAGE_API" in err
+    assert "image_api.json" in err
+    assert "placeholder" in err
+
+
+def test_generate_any_configured_provider_passes(tmp_path, tmp_manifest, minimal_manifest,
+                                                 monkeypatch, stub_ai, stub_ffmpeg):
+    """A provider resolved from ANY source (not just OPENROUTER_API_KEY env)
+    passes the dep check: key env removed, resolve_provider mocked to a
+    non-openrouter config."""
+    import image_providers
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setattr(
+        image_providers, "resolve_provider",
+        lambda: image_providers.ProviderConfig(provider="openai", key="sk-x"))
+    manifest = tmp_manifest(minimal_manifest)
+    rc = _cli(["generate", "--manifest", str(manifest),
+               "--workspace", str(tmp_path / "assets")])
+    assert rc == 0
+
+
+def test_generate_invalid_provider_config_fails(tmp_path, tmp_manifest, minimal_manifest,
+                                                monkeypatch, capsys):
+    """A present-but-broken config (e.g. garbage IMAGE_API) is a dep error too."""
+    import image_providers
+
+    def boom():
+        raise image_providers.UnknownProviderError("cannot identify an image provider")
+
+    monkeypatch.setattr(image_providers, "resolve_provider", boom)
+    manifest = tmp_manifest(minimal_manifest)
+    rc = _cli(["generate", "--manifest", str(manifest),
+               "--workspace", str(tmp_path / "assets")])
+    assert rc == 3
+    assert "cannot identify an image provider" in capsys.readouterr().err
 
 
 @pytest.mark.slow
@@ -304,6 +345,41 @@ def test_pack_without_mp3s_still_passes_beta_args(tmp_path, monkeypatch):
     assert rc == 0
     assert "--beta-app-dir" in calls[1]
     assert not (app_dir / "sound").exists()
+
+
+def test_pack_forwards_icon_to_pack_py(tmp_path, monkeypatch):
+    """--icon is passed through to pack.py alongside the beta args, so
+    repack_app's detected icon reaches the beta emit (launcher ico/ahover)."""
+    import build_pipeline
+    from PIL import Image
+
+    workspace = tmp_path / "assets"
+    (workspace / "art").mkdir(parents=True)
+    Image.new("RGB", (4, 4), (1, 2, 3)).save(workspace / "art" / "x.png")
+    (workspace / "packed").mkdir()
+    (workspace / "packed" / "pal.png").write_bytes(b"x")
+    (workspace / "app_tiny_ids.h").write_text("enum BMP { BMP_none = 0, BMP_last};")
+    app_dir = tmp_path / "app_tiny"
+    (app_dir / "src").mkdir(parents=True)
+    (app_dir / "src" / "app_tiny_ids.h").write_text(
+        "enum BMP { BMP_none = 0, BMP_last};")
+    icon = tmp_path / "icon.png"
+    Image.new("RGB", (8, 8), (9, 9, 9)).save(icon)
+
+    calls: list[list[str]] = []
+    monkeypatch.setattr(build_pipeline, "_run",
+                        lambda cmd, cwd=None: (calls.append([str(c) for c in cmd]), 0)[1])
+
+    rc = build_pipeline._cli([
+        "pack", "--game", "tiny",
+        "--workspace", str(workspace),
+        "--src-dir", str(tmp_path / "src"),
+        "--app-dir", str(app_dir),
+        "--icon", str(icon),
+    ])
+    assert rc == 0
+    pack_cmd = calls[1]
+    assert pack_cmd[pack_cmd.index("--icon") + 1] == str(icon)
 
 
 def test_pack_app_dir_keeps_beta_ids_header(tmp_path, monkeypatch):

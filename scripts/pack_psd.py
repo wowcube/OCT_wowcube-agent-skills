@@ -36,20 +36,34 @@ except ImportError:
     sys.exit(1)
 
 from config import (
-    BMFONT_BLOCK_CHARS, BMFONT_BLOCK_PAGES, BMFONT_CHAR_SIZE,
+    BMFONT_BLOCK_CHARS, BMFONT_BLOCK_COMMON, BMFONT_BLOCK_PAGES,
+    BMFONT_CHAR_SIZE,
     BMFONT_FIRST_PRINTABLE, BMFONT_MAGIC, BMFONT_VERSION,
-    DEFAULT_ASSET_NAME, DEFAULT_LAYER_MARK,
+    DEFAULT_ASSET_NAME,
     HDR_OFF_HEIGHT, HDR_OFF_PIVOT_X, HDR_OFF_PIVOT_Y, HDR_OFF_WIDTH,
-    HEADER_SIZE, MAP_FILENAME_PREFIX,
-    NUMBER_FIELD_MASK, OCT_PLACE_RATE_DEFAULT,
-    PALETTE_SPRITE_NAME, PLACEHOLDER_SPRITE_NAME,
+    HEADER_SIZE, LAYER_MARK_COLOR_MASK, MAP_FILENAME_PREFIX,
+    MAP_MARKER_LABEL, MAP_MARKER_PLACE_FLAGS, MARKER_RATE_PREFIX,
+    NUMBER_FIELD_MASK,
+    OCT_PLACE_FONT_MAX, OCT_PLACE_FONT_MIN,
+    OCT_PLACE_LABEL_ALIGN_DEFAULT, OCT_PLACE_LABEL_MASK,
+    OCT_PLACE_LABEL_SHIFT, OCT_PLACE_RATE_DEFAULT,
+    PALETTE_SPRITE_NAME, PLACE_PIVOT_BIAS, PLACEHOLDER_SPRITE_NAME,
     PLACEHOLDER_SPRITE_SIZE, PLACEHOLDER_SPRITE_COLOR,
     PSL_CENTER_X_OFFSET, PSL_CENTER_Y_OFFSET, PSL_GROUP_OFFSET,
     PSL_GROUP_SIZE, PSL_HEADER_SIZE, PSL_LAYERMARK_OFFSET,
-    PSL_NAME_OFFSET, PSL_NAME_SIZE, PSL_NUMBER_OFFSET, PSL_RATE_OFFSET,
-    PSL_RATE_SIZE, PSL_RECORD_SIZE, PSL_RESERVED_1, PSL_RESERVED_2,
-    PSL_SIDE_OFFSET, PSL_TYPE_ASSET, PSL_TYPE_MAP, PSL_TYPE_OFFSET,
+    PSL_MARKER_CELL_SIZE, PSL_MARKER_MAX,
+    PSL_NAME_OFFSET, PSL_NAME_SIZE, PSL_NUMBER_OFFSET,
+    PSL_PIVOT_MARK_ASSET, PSL_PIVOT_MARK_OFFSET, PSL_PIVOT_OFFSET,
+    PSL_RATE_OFFSET,
+    PSL_RATE_SIZE, PSL_RECORD_SIZE,
+    PSL_FONT_ADVANCE_OFFSET, PSL_FONT_LINEHEIGHT_OFFSET,
+    PSL_FONT_PIVOT_X_OFFSET, PSL_FONT_PIVOT_Y_OFFSET, PSL_FONT_RATE_STRING,
+    PSL_SIDE_H_OFFSET, PSL_SIDE_OFFSET, PSL_SIDE_W_OFFSET,
+    PSL_TYPE_ASSET, PSL_TYPE_FONT, PSL_TYPE_MAP,
+    PSL_TYPE_OFFSET,
     PSL_TYPE_SIZE, PSL_XYWH_OFFSET, PlaceFlag,
+    SIDE_MARKER_1PX_ORIGIN_SHIFT, SIDE_MARKER_MIN_SIZE,
+    layer_mark_of, rate_from_layer_mark,
 )
 
 from pack_codec import blob_to_packed_png
@@ -80,13 +94,46 @@ _RE_META_SPLIT_PNG  = re.compile(rf'[{_META_STOPS_PNG}]')
 _RE_META_CSV_SPL    = re.compile(r'([%&=!])')
 _RE_RATE_SUFFIX  = re.compile(r'!rate(\d+)', re.I)
 _RE_RATE_INLINE  = re.compile(r'rate(\d+)', re.I)
+# `!font` marks a text placement and carries its font index. The digit is
+# optional: ladybug's win.psd spells all 14 of its anchors `$pat!font`, and the
+# legacy container gives every one of them Label == 1, so a bare suffix is
+# font 1. `$score!font2` -> 2.
+_RE_FONT_SUFFIX  = re.compile(r'!font(\d*)', re.I)
+_RE_FONT_INLINE  = re.compile(r'font(\d*)$', re.I)
 _RE_SPRITE_NUM   = re.compile(r'=([0-9]+)')
 _RE_SEQ_FRAME    = re.compile(r'^(.+?)_(\d{2,})$')
+# Every `!token` of a layer name, in source order. `psd.exe` does not know the
+# vocabulary -- it copies each token verbatim into the PSL marker slot, and
+# `utils.exe` is what interprets them (see config.MAP_MARKER_PLACE_FLAGS).
+_RE_MARKERS      = re.compile(r'!([^!%&=$#]*)')
 
 
 def _norm(s: str) -> str:
     """Normalize a free-form string to a lowercase snake-case identifier."""
     return s.lower().replace('-', '_').replace(' ', '_')
+
+
+# A layer whose name *starts* with `$` is a NAME DECLARATION, not artwork.
+NAME_DECL_PREFIX = '$'
+
+
+def is_name_declaration(name: str) -> bool:
+    """True for a ``$name`` layer: a named anchor, never a sprite.
+
+    ``$`` normally annotates a sprite layer (``hero$player`` is the sprite
+    ``hero`` carrying ``NAME_player``). When it is the *first* character
+    there is no artwork left in front of it: the layer is a bare placement
+    anchor the app looks up by ``NAME_``. ``OCT_ladybug``'s map PSDs hold 26
+    of them (``$score!font2``, 2x2 px), and the legacy container proves what
+    ``utils.exe`` does with them — ``index.bin`` has 544 records and not one
+    name starting with ``$``, while ``src/app_ids.h`` defines
+    ``NAME_score``. They register in the NAME_ table and produce no asset.
+
+    Letting one through is not a cosmetic miscount: ``BMP_$score`` is not a
+    C identifier, so :func:`pack_beta.generate_beta_ids_h` raises and the
+    whole pack dies.
+    """
+    return name.startswith(NAME_DECL_PREFIX)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -95,7 +142,7 @@ def _norm(s: str) -> str:
 
 @dataclass(frozen=True)
 class LayerName:
-    """Parsed PSD layer name (with %type / &group / #tag / =num / !rate suffixes)."""
+    """Parsed PSD layer name (with %type / &group / #tag / =num / !marker suffixes)."""
     base: str
     png_name: str
     obj_name: str
@@ -105,10 +152,23 @@ class LayerName:
     rate: int | None
     sprite_number: int
     marker_number: int | None
+    font: int | None = None
+    # every `!token`, in source order and lower-cased, capped at the
+    # PSL_MARKER_MAX cells the marker slot holds. `psd.exe` writes exactly
+    # these, verbatim; `utils.exe` interprets them.
+    markers: tuple[str, ...] = ()
 
     @property
     def is_marker(self) -> bool:
-        return self.base.startswith('=')
+        """True for a ``=NN`` layer marker: the whole name is the token.
+
+        ``base`` is already split on ``=`` (so ``eat=3`` keeps ``eat``), which
+        leaves a bare ``=20`` with an *empty* base — testing ``base`` for a
+        leading ``=`` therefore never fired, and every layer marker exported
+        with ``Number = 0``. ``marker_number`` is the field that actually
+        records the token, so ask it instead.
+        """
+        return self.marker_number is not None
 
     @classmethod
     def parse(cls, name: str) -> 'LayerName':
@@ -125,6 +185,10 @@ class LayerName:
 
         m = _RE_RATE_SUFFIX.search(name)
         rate = int(m.group(1)) if m else None
+
+        # `!font` with no digit is font 1 (see _RE_FONT_SUFFIX).
+        m = _RE_FONT_SUFFIX.search(name)
+        font = (int(m.group(1)) if m.group(1) else 1) if m else None
 
         marker_num: int | None = None
         sprite_num = 0
@@ -147,6 +211,9 @@ class LayerName:
         png_stem = _RE_META_SPLIT_PNG.split(name, 1)[0]
         png_name = _norm(png_stem)
 
+        markers = tuple(m.lower() for m in _RE_MARKERS.findall(name)
+                        if m)[:PSL_MARKER_MAX]
+
         return cls(
             base=base,
             png_name=png_name,
@@ -157,6 +224,8 @@ class LayerName:
             rate=rate,
             sprite_number=sprite_num,
             marker_number=marker_num,
+            font=font,
+            markers=markers,
         )
 
 
@@ -177,6 +246,42 @@ def parse_layer_metadata(name: str) -> tuple[str, str, str, str, str]:
 
 def parse_layer_rate(name: str) -> int | None:
     return LayerName.parse(name).rate
+
+
+def parse_layer_font(name: str) -> int | None:
+    """Font index from a ``!font`` / ``!fontN`` suffix, else None."""
+    return LayerName.parse(name).font
+
+
+def parse_layer_markers(name: str) -> tuple[str, ...]:
+    """Every ``!token`` of a layer name, in source order, lower-cased."""
+    return LayerName.parse(name).markers
+
+
+def layer_sheet_color(layer) -> int:
+    """The Photoshop sheet colour of a psd-tools layer (0 when unlabelled).
+
+    ``psd.exe`` folds this into the PSL LayerMark, and ``utils.exe`` turns it
+    into the default Rate — see :func:`config.rate_from_layer_mark`. It lives
+    in the layer's ``lclr`` tagged block; a layer with no colour swatch has no
+    block at all.
+    """
+    blocks = getattr(layer, 'tagged_blocks', None)
+    if blocks is None:
+        return 0
+    try:
+        value = blocks.get_data(b'lclr')
+    except Exception:                            # pragma: no cover - psd-tools
+        return 0
+    if value is None:
+        return 0
+    # psd-tools hands back either the bare enum/int or a 1-tuple of it
+    if isinstance(value, (tuple, list)):
+        value = value[0] if value else 0
+    try:
+        return int(value) & LAYER_MARK_COLOR_MASK
+    except (TypeError, ValueError):              # pragma: no cover
+        return 0
 
 
 def parse_marker_number(name: str) -> int | None:
@@ -214,15 +319,115 @@ class SpriteRecord:
     type_name: str
     group_name: str
     rate: int
+    # every `!token` of the layer name, in source order; written verbatim into
+    # the PSL marker slot, one per PSL_MARKER_CELL_SIZE-byte cell
+    markers: tuple[str, ...] = ()
+    # ~sideN marker size (0 x 0 when the PSD declares no sides).
+    side_w: int = 0
+    side_h: int = 0
+    # Pivot rect: the ~pivot marker blob overlapping this layer, else the
+    # layer's own rect.  The packer turns it into the octBmp_t pivot as
+    #     pivot = 2 * (rect_centre - layer_xy) - 0.5
+    pivot_x: int = 0
+    pivot_y: int = 0
+    pivot_w: int = 0
+    pivot_h: int = 0
+
+
+def find_pivot_markers(psd) -> list[tuple[int, int, int, int]]:
+    """Bounding boxes of every marker blob on the PSD's ``~pivot*`` layer(s).
+
+    psd.exe treats each 4-connected run of non-transparent pixels on a layer
+    whose name starts with ``~pivot`` as one pivot marker, and gives a sprite
+    layer the marker whose bbox overlaps it.  Returned in raster (top-left
+    first) order, in canvas coordinates, as ``(x, y, w, h)``.
+    """
+    blobs: list[tuple[int, int, int, int]] = []
+    for layer in psd:
+        if not layer.name.startswith('~pivot'):
+            continue
+        try:
+            img = layer.composite()
+        except Exception as e:                      # pragma: no cover - psd-tools
+            print(f"    WARNING: failed to composite '{layer.name}': {e}")
+            continue
+        if img is None:
+            continue
+        alpha = np.array(img.convert('RGBA'))[:, :, 3] > 0
+        ys, xs = np.nonzero(alpha)
+        remaining = set(zip(ys.tolist(), xs.tolist()))
+        ox, oy = layer.left, layer.top
+        for seed in sorted(remaining):
+            if seed not in remaining:
+                continue
+            remaining.discard(seed)
+            stack = [seed]
+            min_y = max_y = seed[0]
+            min_x = max_x = seed[1]
+            while stack:
+                cy, cx = stack.pop()
+                if cy < min_y: min_y = cy
+                if cy > max_y: max_y = cy
+                if cx < min_x: min_x = cx
+                if cx > max_x: max_x = cx
+                for nb in ((cy + 1, cx), (cy - 1, cx), (cy, cx + 1), (cy, cx - 1)):
+                    if nb in remaining:
+                        remaining.discard(nb)
+                        stack.append(nb)
+            blobs.append((min_x + ox, min_y + oy,
+                          max_x - min_x + 1, max_y - min_y + 1))
+    blobs.sort(key=lambda b: (b[1], b[0]))
+    return blobs
+
+
+def pivot_for_layer(x: int, y: int, w: int, h: int,
+                    markers: list[tuple[int, int, int, int]]
+                    ) -> tuple[int, int, int, int]:
+    """Pivot rect for a layer: the first overlapping marker, else its own rect."""
+    for mx, my, mw, mh in markers:
+        if _rects_overlap((x, y, w, h), (mx, my, mw, mh)):
+            return mx, my, mw, mh
+    return x, y, w, h
+
+
+def _rects_overlap(a: tuple[int, int, int, int],
+                   b: tuple[int, int, int, int]) -> bool:
+    """Half-open (x, y, w, h) rectangle overlap test."""
+    return (a[0] < b[0] + b[2] and a[0] + a[2] > b[0]
+            and a[1] < b[1] + b[3] and a[1] + a[3] > b[1])
+
+
+def side_marker_rect(side: int, x: int, y: int, w: int, h: int
+                     ) -> tuple[int, int, int, int]:
+    """A ``~sideN`` layer's rect as ``psd.exe`` writes it into the PSL.
+
+    Verbatim, except for a 1x1 marker: that becomes a 2x2 square whose origin
+    is shifted by :data:`config.SIDE_MARKER_1PX_ORIGIN_SHIFT` for its side.
+    See that constant for how the table was measured and why the pixel
+    matters (the side centre is ``left + w/2``, so it is worth one engine unit
+    on every place of that side).
+    """
+    if (w, h) != (1, 1):
+        return (x, y, w, h)
+    dx, dy = SIDE_MARKER_1PX_ORIGIN_SHIFT.get(side, (0, 0))
+    return (x + dx, y + dy, SIDE_MARKER_MIN_SIZE, SIDE_MARKER_MIN_SIZE)
 
 
 def nearest_side(x: int, y: int, w: int, h: int,
-                 side_centers: dict[int, tuple[int, int]]) -> int:
-    """Return the ~sideN id whose marker is closest to the layer center."""
-    cx, cy = x + w / 2.0, y + h / 2.0
+                 side_centers: dict[int, tuple[int, ...]]) -> int:
+    """Return the ``~sideN`` id whose marker is closest to the layer.
+
+    ``psd.exe`` measures from the layer's **top-left corner**, not its centre,
+    to the *normalised* marker origin (:func:`side_marker_rect`), and keeps
+    the first marker on a tie. ``OCT_ladybug``'s ``ico.psd`` is the case that
+    tells the two apart: its 145x141 icon is nearer side 1 by its centre and
+    nearer side 0 by its corner, and the reference toolchain files it under
+    side 0. ``w``/``h`` are part of the signature but deliberately unused.
+    """
     best_side, best_dist = -1, math.inf
-    for sn, (sx, sy) in side_centers.items():
-        d = math.hypot(cx - sx, cy - sy)
+    for sn, rect in side_centers.items():
+        sx, sy = rect[0], rect[1]
+        d = math.hypot(x - sx, y - sy)
         if d < best_dist:
             best_dist, best_side = d, sn
     return best_side
@@ -243,6 +448,9 @@ def _write_records_csv(csv_path: str, records: list[SpriteRecord]) -> None:
 
 
 def _write_records_psl(psl_path: str, records: list[SpriteRecord], psl_type: int) -> None:
+    # psd.exe keeps zero-area layers in the CSV but drops them from the PSL.
+    records = [r for r in records if r.w > 0 and r.h > 0]
+    is_map = psl_type == PSL_TYPE_MAP
     with open(psl_path, 'wb') as f:
         f.write(struct.pack('<4I', psl_type, 0, 0, len(records)))
         for r in records:
@@ -254,14 +462,28 @@ def _write_records_psl(psl_path: str, records: list[SpriteRecord], psl_type: int
 
             struct.pack_into('<4i', rec_buf, PSL_XYWH_OFFSET, r.x, r.y, r.w, r.h)
             struct.pack_into('<i',  rec_buf, PSL_LAYERMARK_OFFSET, r.layer_mark)
-            struct.pack_into('<4I', rec_buf, PSL_SIDE_OFFSET,
-                             r.side if r.side >= 0 else 0,
-                             r.side_cx, r.side_cy, 1)
-            struct.pack_into('<I',  rec_buf, PSL_RESERVED_2, 1)
+            # side block: id then the ~sideN marker rect (all zero when absent)
+            struct.pack_into('<5i', rec_buf, PSL_SIDE_OFFSET,
+                             r.side, r.side_cx, r.side_cy, r.side_w, r.side_h)
+            # pivot block: only Assets-mode PSLs carry it
+            if not is_map:
+                struct.pack_into('<i', rec_buf, PSL_PIVOT_MARK_OFFSET,
+                                 PSL_PIVOT_MARK_ASSET)
+                struct.pack_into('<4i', rec_buf, PSL_PIVOT_OFFSET,
+                                 r.pivot_x, r.pivot_y, r.pivot_w, r.pivot_h)
 
-            if r.rate:
-                rate_str = f'rate{r.rate}'.encode('ascii')[:PSL_RATE_SIZE - 1]
-                rec_buf[PSL_RATE_OFFSET:PSL_RATE_OFFSET + len(rate_str)] = rate_str
+            # Marker slot: psd.exe writes every `!token` of the layer name
+            # verbatim, one per PSL_MARKER_CELL_SIZE-byte cell, in source
+            # order ("winscreen_00!rate5!pingpong" -> 'rate5' at +0,
+            # 'pingpong' at +16). It interprets none of them.
+            markers = r.markers
+            if not markers and r.rate:
+                markers = (f'{MARKER_RATE_PREFIX}{r.rate}',)
+            for cell, marker in enumerate(markers[:PSL_MARKER_MAX]):
+                token = marker.encode('ascii', errors='replace')[
+                    :PSL_MARKER_CELL_SIZE - 1]
+                off = PSL_RATE_OFFSET + cell * PSL_MARKER_CELL_SIZE
+                rec_buf[off:off + len(token)] = token
 
             gname = r.group_name.encode('ascii', errors='replace')[:PSL_GROUP_SIZE - 1]
             rec_buf[PSL_GROUP_OFFSET:PSL_GROUP_OFFSET + len(gname)] = gname
@@ -288,22 +510,25 @@ def export_psd_file_python(psd_path: str, exported_dir: str,
     psd = PSDImage.open(psd_path)
     stem = Path(psd_path).stem
 
-    # Pass 1: collect ~sideN centers. The ~pivot layer is intentionally
-    # skipped — utils.exe ignores its markers and so do we, to stay
-    # byte-identical with the legacy psd.exe/utils.exe pipeline.
-    side_centers: dict[int, tuple[int, int]] = {}
+    # Pass 1a: collect ~sideN marker rects (used by Map-mode PSLs).
+    side_centers: dict[int, tuple[int, int, int, int]] = {}
     for layer in psd:
         if layer.name.startswith('~side'):
             try:
                 sn = int(layer.name[5:])
-                side_centers[sn] = (layer.left, layer.top)
+                side_centers[sn] = side_marker_rect(
+                    sn, layer.left, layer.top, layer.width, layer.height)
             except ValueError:
                 pass
+
+    # Pass 1b: collect ~pivot marker blobs (Assets-mode PSLs only — psd.exe
+    # leaves the pivot block zeroed in -map mode).
+    pivot_markers = [] if is_map else find_pivot_markers(psd)
 
     types_seen: dict[str, int] = {}
     groups_seen: dict[str, int] = {}
     records: list[SpriteRecord] = []
-    layer_id = 1
+    fallback_id = 1
 
     for layer in psd:
         name = layer.name
@@ -326,20 +551,29 @@ def export_psd_file_python(psd_path: str, exported_dir: str,
         group_id = groups_seen.get(parsed.group_name, 0)
 
         # Nearest side (for maps)
-        side, side_cx, side_cy = -1, 0, 0
+        side, side_cx, side_cy, side_w, side_h = -1, 0, 0, 0, 0
         if side_centers:
             side = nearest_side(x, y, w, h, side_centers)
             if side in side_centers:
-                side_cx, side_cy = side_centers[side]
+                side_cx, side_cy, side_w, side_h = side_centers[side]
+
+        pivot_x, pivot_y, pivot_w, pivot_h = pivot_for_layer(
+            x, y, w, h, pivot_markers)
+
+        # psd.exe writes Photoshop's own layer id + 1 into the CSV Id column.
+        psd_layer_id = getattr(layer, 'layer_id', None)
+        csv_id = fallback_id if psd_layer_id is None else psd_layer_id + 1
 
         records.append(SpriteRecord(
-            id=layer_id,
+            id=csv_id,
             name=name,
             group_id=group_id,
             kind=kind,
             bmp='',
             x=x, y=y, w=w, h=h,
-            layer_mark=DEFAULT_LAYER_MARK,
+            # The layer's Photoshop colour swatch rides in the mark, and
+            # utils.exe reads it back as the default Rate.
+            layer_mark=layer_mark_of(layer_sheet_color(layer)),
             side=side,
             side_cx=side_cx, side_cy=side_cy,
             png_name=parsed.png_name,
@@ -349,11 +583,20 @@ def export_psd_file_python(psd_path: str, exported_dir: str,
             type_name=parsed.type_name,
             group_name=parsed.group_name,
             rate=parsed.rate or 0,
+            markers=parsed.markers,
+            side_w=side_w, side_h=side_h,
+            pivot_x=pivot_x, pivot_y=pivot_y,
+            pivot_w=pivot_w, pivot_h=pivot_h,
         ))
-        layer_id += 1
+        fallback_id += 1
 
-        # Export PNG (skip markers, zero-size, already-exported names)
-        if not parsed.is_marker and w > 0 and h > 0:
+        # Export PNG (skip markers, name declarations, zero-size,
+        # already-exported names).
+        # -map PSDs are placement documents: psd.exe emits no PNGs for them,
+        # their layers only reference sprites another PSD already exported.
+        if not is_map and not parsed.is_marker \
+                and not is_name_declaration(parsed.png_name) \
+                and w > 0 and h > 0:
             out_png = os.path.join(exported_dir, f"{parsed.png_name}.png")
             if not os.path.exists(out_png):
                 try:
@@ -374,6 +617,75 @@ def export_psd_file_python(psd_path: str, exported_dir: str,
 # Font (BMFont) export
 # ─────────────────────────────────────────────────────────────────────────────
 
+def derive_font_glyph_metrics(ch: dict, common: dict
+                              ) -> tuple[float, float, float, float]:
+    """BMFont char + `common` block -> octBmp_t (PivotX, PivotY, Bw, Bh).
+
+    The engine treats a glyph descriptor as font metrics, not as a plain
+    sprite (``oct_scene.h::OCT_label_set``)::
+
+        cx += zoom * bmp->Bw;                       // pen advance
+        cy -= bmp->Bh;                              // newline
+        OCT_add(..., cx + 2 * bmp->PivotX, cy, ...) // left bearing
+
+    so ``Bw`` is the advance, ``Bh`` the line height and ``PivotX`` the left
+    bearing (doubled at the call site to cancel the renderer's ``-PivotX``
+    shift). ``PivotY`` lifts the glyph off the baseline. Hence:
+
+        PivotX = xoffset
+        PivotY = base - yoffset
+        Bw     = xadvance
+        Bh     = lineHeight
+        Bx = By = 0
+
+    Reproduces all 282 font glyph descriptors of the shipped legacy
+    ``app_ladybug.oct`` with zero residual, and the pivot/advance/lineHeight
+    fields of a legacy-toolchain ``font_1.psl``. Note the values are *not*
+    scaled by the FULLSIZE draw zoom: the engine applies ``zoom`` itself and
+    reads ``zoom = 1`` off the FULLSIZE bit, which every glyph carries.
+    """
+    return (float(ch['xoff']),
+            float(common['base'] - ch['yoff']),
+            float(ch['xadvance']),
+            float(common['lineHeight']))
+
+
+def resolve_font_atlas(fnt_path: str, page: int, declared: str) -> str | None:
+    """Locate page ``page``'s atlas PNG for a BMFont ``.fnt``.
+
+    The name embedded in the ``.fnt`` pages block is NOT authoritative. It is
+    whatever the generating tool happened to write, and it goes stale: ladybug's
+    ``art/font_3.fnt`` declares ``font_1_0.png`` while its real atlas
+    ``font_3_0.png`` sits beside it. Trusting the declared name silently
+    exported all 94 font_3 glyphs as crops of the font_1 atlas — and because
+    font_3 is a 25px face indexing into a 45px sheet, its rects landed on the
+    inter-glyph padding, so glyphs came out nearly blank ('R' kept 1 ink pixel
+    of 120) rather than obviously wrong.
+
+    So resolve by the ``<stem>_<page>.png`` convention first, which is what the
+    legacy ``psd.exe`` does (it derives the atlas from the ``.fnt`` filename and
+    ignores the embedded name), and fall back to the declared name only when the
+    conventional file is absent. Returns None when neither exists.
+    """
+    fnt_dir = os.path.dirname(fnt_path)
+    stem = Path(fnt_path).stem
+
+    conventional = os.path.join(fnt_dir, f"{stem}_{page}.png")
+    if os.path.isfile(conventional):
+        # A stale page name is a real authoring defect in the .fnt; say so
+        # rather than fixing it silently a second time.
+        if declared and declared != f"{stem}_{page}.png":
+            print(f"    NOTE: {os.path.basename(fnt_path)} page {page} declares "
+                  f"{declared!r}; using {stem}_{page}.png (filename convention, "
+                  f"matching psd.exe)")
+        return conventional
+
+    fallback = os.path.join(fnt_dir, declared) if declared else None
+    if fallback and os.path.isfile(fallback):
+        return fallback
+    return None
+
+
 def export_font_python(fnt_path: str, exported_dir: str) -> int | None:
     """Export a BMFont binary (.fnt + atlas PNG) into individual glyph PNGs."""
     fnt_dir = str(Path(fnt_path).parent)
@@ -391,6 +703,7 @@ def export_font_python(fnt_path: str, exported_dir: str) -> int | None:
 
         pages: list[str] = []
         chars: list[dict] = []
+        common: dict = {}
 
         while True:
             block_header = f.read(5)
@@ -401,7 +714,10 @@ def export_font_python(fnt_path: str, exported_dir: str) -> int | None:
             if len(block_data) < block_size:
                 break
 
-            if block_type == BMFONT_BLOCK_PAGES:
+            if block_type == BMFONT_BLOCK_COMMON:
+                line_height, base = struct.unpack_from('<HH', block_data, 0)
+                common = {'lineHeight': line_height, 'base': base}
+            elif block_type == BMFONT_BLOCK_PAGES:
                 parts = block_data.rstrip(b'\x00').split(b'\x00')
                 pages = [p.decode('ascii', errors='replace') for p in parts if p]
             elif block_type == BMFONT_BLOCK_CHARS:
@@ -420,19 +736,29 @@ def export_font_python(fnt_path: str, exported_dir: str) -> int | None:
     if not pages:
         print(f"    WARNING: no atlas pages in {fnt_path}")
         return 0
+    if not common:
+        # Without `common` there is no baseline and no line height, so every
+        # glyph would silently fall back to a sprite-shaped pivot and the
+        # engine's pen would never advance (all text drawn on top of itself).
+        print(f"    WARNING: no `common` block in {fnt_path} - "
+              f"cannot derive glyph metrics")
+        return None
 
     atlases: dict[int, Image.Image] = {}
     for i, page_file in enumerate(pages):
-        atlas_path = os.path.join(fnt_dir, page_file)
-        if os.path.isfile(atlas_path):
+        atlas_path = resolve_font_atlas(fnt_path, i, page_file)
+        if atlas_path is not None:
             atlases[i] = Image.open(atlas_path).convert('RGBA')
         else:
-            print(f"    WARNING: atlas not found: {atlas_path}")
+            print(f"    WARNING: atlas not found for page {i} of {fnt_path} "
+                  f"(declared {page_file!r})")
+
+    glyphs = [ch for ch in chars
+              if ch['w'] > 0 and ch['h'] > 0
+              and ch['id'] >= BMFONT_FIRST_PRINTABLE]
 
     exported_count = 0
-    for ch in chars:
-        if ch['w'] == 0 or ch['h'] == 0 or ch['id'] < BMFONT_FIRST_PRINTABLE:
-            continue
+    for ch in glyphs:
         atlas = atlases.get(ch['page'])
         if atlas is None:
             continue
@@ -441,19 +767,29 @@ def export_font_python(fnt_path: str, exported_dir: str) -> int | None:
         glyph.save(os.path.join(exported_dir, f"{font_stem}_{ch['id']:05d}.png"))
         exported_count += 1
 
-    # Lightweight PSL for font (no side data)
+    # Font PSL (type 3), mirroring what `psd.exe <font>.fnt` emits: the atlas
+    # rect in the XYWH block, the BMFont metrics the packer turns into
+    # octBmp_t.PivotX/PivotY/Bw/Bh, and a "letter" rate slot. The layer-mark,
+    # side and ~pivot-marker blocks stay zeroed - a glyph is not a PSD layer,
+    # it has no side and no marker rect, and the pivot arrives as a float pair
+    # rather than as a rect to be reduced.
     psl_path = os.path.join(exported_dir, f"{font_stem}.psl")
     with open(psl_path, 'wb') as f:
-        f.write(struct.pack('<4I', PSL_TYPE_ASSET, 0, 0, len(chars)))
-        for ch in chars:
+        f.write(struct.pack('<4I', PSL_TYPE_FONT, 0, 0, len(glyphs)))
+        for ch in glyphs:
+            pivot_x, pivot_y, bw, bh = derive_font_glyph_metrics(ch, common)
             rec_buf = bytearray(PSL_RECORD_SIZE)
             name = f"{font_stem}_{ch['id']:05d}"
             name_bytes = name.encode('ascii', errors='replace')[:PSL_NAME_SIZE - 1]
             rec_buf[:len(name_bytes)] = name_bytes
-            struct.pack_into('<4I', rec_buf, PSL_XYWH_OFFSET,
+            struct.pack_into('<4i', rec_buf, PSL_XYWH_OFFSET,
                              ch['x'], ch['y'], ch['w'], ch['h'])
-            struct.pack_into('<i', rec_buf, PSL_LAYERMARK_OFFSET, DEFAULT_LAYER_MARK)
-            struct.pack_into('<I', rec_buf, PSL_RESERVED_1, 1)
+            struct.pack_into('<i', rec_buf, PSL_FONT_ADVANCE_OFFSET, int(bw))
+            struct.pack_into('<i', rec_buf, PSL_FONT_LINEHEIGHT_OFFSET, int(bh))
+            struct.pack_into('<f', rec_buf, PSL_FONT_PIVOT_X_OFFSET, pivot_x)
+            struct.pack_into('<f', rec_buf, PSL_FONT_PIVOT_Y_OFFSET, pivot_y)
+            rate_bytes = PSL_FONT_RATE_STRING.encode('ascii')[:PSL_RATE_SIZE - 1]
+            rec_buf[PSL_RATE_OFFSET:PSL_RATE_OFFSET + len(rate_bytes)] = rate_bytes
             f.write(rec_buf)
 
     print(f"    {exported_count} glyphs exported")
@@ -487,8 +823,19 @@ def _ensure_placeholder_sprite(art_dir: str) -> str:
 def export_all_python(art_dir: str, exported_dir: str,
                       map_filter=None,
                       asset_names: set[str] | None = None,
+                      psd_names: list[str] | None = None,
+                      font_sources: list[str] | None = None,
                       ) -> tuple[list[str], list[str]]:
-    """Export all PSD and FNT files using psd-tools."""
+    """Export all PSD and FNT files using psd-tools.
+
+    ``psd_names`` / ``font_sources``, when given, are the exact source list
+    declared by the app's ``art/!pack.bat`` (see :mod:`packbat`) and replace
+    the ``art/*.psd`` + ``art/fonts/*.fnt`` globs. A PSD the batch file never
+    mentions is not part of the pack: ``OCT_get_started`` keeps a stray
+    ``map_18_18.psd`` and ``OCT_ladybug`` keeps ``ladybug-assets.psd`` (the
+    pre-split original of ``ladybug-assets_1/_2``), neither of which the
+    legacy container contains.
+    """
     if asset_names is None:
         asset_names = {DEFAULT_ASSET_NAME}
 
@@ -523,15 +870,38 @@ def export_all_python(art_dir: str, exported_dir: str,
     asset_names_out: list[str] = []
     map_names_exported: list[str] = []
 
-    # Fonts
-    fonts_dir = os.path.join(art_dir, 'fonts')
-    if os.path.isdir(fonts_dir):
-        for fnt in sorted(Path(fonts_dir).glob('*.fnt')):
+    # Fonts. A declared list wins: ladybug ships art/font_1.fnt AND a
+    # DIFFERENT art/fonts/font_1.fnt, and !pack.bat names the former.
+    if font_sources is not None:
+        fnts = [Path(art_dir) / f.replace('\\', '/') for f in font_sources]
+        for fnt in fnts:
+            if not fnt.is_file():
+                print(f"  WARNING: !pack.bat declares font {fnt} - not found")
+                continue
             print(f"  Export font: {fnt.name}")
             export_font_python(str(fnt), exported_dir)
+    else:
+        fonts_dir = os.path.join(art_dir, 'fonts')
+        if os.path.isdir(fonts_dir):
+            for fnt in sorted(Path(fonts_dir).glob('*.fnt')):
+                print(f"  Export font: {fnt.name}")
+                export_font_python(str(fnt), exported_dir)
 
     # PSDs
-    for psd in sorted(Path(art_dir).glob('*.psd')):
+    psds = sorted(Path(art_dir).glob('*.psd'))
+    if psd_names is not None:
+        declared = list(psd_names)
+        by_stem = {p.stem: p for p in psds}
+        missing = [n for n in declared if n not in by_stem]
+        for n in missing:
+            print(f"  WARNING: !pack.bat declares {n}.psd - not found in {art_dir}")
+        skipped = [p.stem for p in psds if p.stem not in set(declared)]
+        if skipped:
+            print(f"  Not exported (not declared in !pack.bat): "
+                  f"{', '.join(skipped)}")
+        psds = [by_stem[n] for n in declared if n in by_stem]
+
+    for psd in psds:
         name = psd.stem
         if map_filter is None:
             is_map = name not in asset_names
@@ -562,10 +932,13 @@ def export_all_python(art_dir: str, exported_dir: str,
 
 
 def export_psd(art_dir: str, exported_dir: str,
-               map_filter=None, asset_names: set[str] | None = None
+               map_filter=None, asset_names: set[str] | None = None,
+               psd_names: list[str] | None = None,
+               font_sources: list[str] | None = None,
                ) -> tuple[list[str], list[str]]:
     """Wrapper: export PSD/FNT into exported_dir using psd-tools."""
-    return export_all_python(art_dir, exported_dir, map_filter, asset_names)
+    return export_all_python(art_dir, exported_dir, map_filter, asset_names,
+                             psd_names=psd_names, font_sources=font_sources)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -598,30 +971,70 @@ def parse_psl(psl_path: str) -> tuple[int, list[dict]]:
         side = struct.unpack_from('<I', rec, PSL_SIDE_OFFSET)[0]
         center_x = struct.unpack_from('<I', rec, PSL_CENTER_X_OFFSET)[0]
         center_y = struct.unpack_from('<I', rec, PSL_CENTER_Y_OFFSET)[0]
+        side_w = struct.unpack_from('<i', rec, PSL_SIDE_W_OFFSET)[0]
+        side_h = struct.unpack_from('<i', rec, PSL_SIDE_H_OFFSET)[0]
+        pivot_x, pivot_y, pivot_w, pivot_h = \
+            struct.unpack_from('<4i', rec, PSL_PIVOT_OFFSET)
 
         group_name = _bytes_to_str_at(rec, PSL_GROUP_OFFSET, PSL_GROUP_SIZE)
         type_name  = _bytes_to_str_at(rec, PSL_TYPE_OFFSET,  PSL_TYPE_SIZE)
         number = struct.unpack_from('<I', rec, PSL_NUMBER_OFFSET)[0]
 
-        rate_str = _bytes_to_str_at(rec, PSL_RATE_OFFSET, PSL_RATE_SIZE)
+        # Marker slot: up to PSL_MARKER_MAX tokens, one per
+        # PSL_MARKER_CELL_SIZE-byte cell (see _write_records_psl).
+        markers = tuple(
+            m for m in (
+                _bytes_to_str_at(rec,
+                                 PSL_RATE_OFFSET + c * PSL_MARKER_CELL_SIZE,
+                                 PSL_MARKER_CELL_SIZE).lower()
+                for c in range(PSL_MARKER_MAX))
+            if m
+        )
         rate_val = 0
-        if rate_str.startswith('rate'):
-            try:
-                rate_val = int(rate_str[4:])
-            except ValueError:
-                rate_val = 0
+        for marker in markers:
+            if marker.startswith(MARKER_RATE_PREFIX):
+                try:
+                    rate_val = int(marker[len(MARKER_RATE_PREFIX):])
+                except ValueError:
+                    rate_val = 0
+                break
 
-        records.append({
+        parsed = {
             'name': name,
             'x': x, 'y': y, 'w': w, 'h': h,
             'layer_mark': layer_mark,
             'side': side,
+            # `center_*` is the ~sideN marker's top-left and `side_*` its size;
+            # the side CENTRE the packer anchors places on is
+            # `center + side/2` (see psl_to_octplace).
             'center_x': center_x, 'center_y': center_y,
+            'side_w': side_w, 'side_h': side_h,
+            'pivot_x': pivot_x, 'pivot_y': pivot_y,
+            'pivot_w': pivot_w, 'pivot_h': pivot_h,
             'group_name': group_name,
             'type_name': type_name,
             'number': number,
+            # `rate` stays "the explicit !rateN, or 0" -- callers need to tell
+            # a declared rate from the layer-colour default below.
             'rate': rate_val,
-        })
+            'markers': markers,
+            'mark_rate': rate_from_layer_mark(layer_mark),
+        }
+
+        # Font PSLs reuse the tail of the record for BMFont metrics; the same
+        # offsets mean something else (or nothing) in Assets/Map mode, so they
+        # are only surfaced for type 3.
+        if psl_type == PSL_TYPE_FONT:
+            parsed['font_advance'] = struct.unpack_from(
+                '<i', rec, PSL_FONT_ADVANCE_OFFSET)[0]
+            parsed['font_lineheight'] = struct.unpack_from(
+                '<i', rec, PSL_FONT_LINEHEIGHT_OFFSET)[0]
+            parsed['font_pivot_x'] = struct.unpack_from(
+                '<f', rec, PSL_FONT_PIVOT_X_OFFSET)[0]
+            parsed['font_pivot_y'] = struct.unpack_from(
+                '<f', rec, PSL_FONT_PIVOT_Y_OFFSET)[0]
+
+        records.append(parsed)
 
     return psl_type, records
 
@@ -666,11 +1079,16 @@ def parse_map_csv(csv_path: str) -> list[dict]:
                         rate = int(m.group(1))
                 i += 2
 
+            parsed = LayerName.parse(raw_name)
             records.append({
                 'csv_id': int(row[0]),
                 'raw_name': raw_name,
                 'sprite_name': _norm(base_name),
                 'base_name': base_name,
+                'png_name': parsed.png_name,
+                'obj_name': parsed.obj_name,
+                'tag_name': parsed.tag_name,
+                'font': parsed.font,
                 'type_name': type_name,
                 'group_name': group_name,
                 'number': number,
@@ -690,15 +1108,20 @@ def build_bmp_name_index(packed_dir: str, exported_dir: str
     """Build alphabetically-sorted BMP name → index mapping from packed sprites."""
     names: set[str] = set()
 
+    # A `$name.png` on disk is not a sprite (see is_name_declaration): a real
+    # psd.exe run may have left one in art/exported/, and CI packs committed
+    # exports as-is, so filter here as well as in the exporter.
     if os.path.isdir(packed_dir):
         for f in Path(packed_dir).glob('*.png'):
-            if f.stem != PLACEHOLDER_SPRITE_NAME:
+            if f.stem != PLACEHOLDER_SPRITE_NAME \
+                    and not is_name_declaration(f.stem):
                 names.add(f.stem)
 
     if os.path.isdir(exported_dir):
         for f in Path(exported_dir).glob('*.png'):
             stem = f.stem
-            if stem != PLACEHOLDER_SPRITE_NAME and not stem.endswith('.csv'):
+            if stem != PLACEHOLDER_SPRITE_NAME and not stem.endswith('.csv') \
+                    and not is_name_declaration(stem):
                 names.add(stem)
 
     names.add(PALETTE_SPRITE_NAME)
@@ -786,11 +1209,11 @@ def _load_packed_pivots(packed_dir: str
 def _pack_octplace(x: float, y: float, w: int, h: int, bmp_idx: int,
                    number: int, flags: int, side: int, rate: int,
                    name_byte: int, group_idx: int, parent: int,
-                   type_idx: int) -> bytes:
+                   type_idx: int, tags: int = 0) -> bytes:
     """Pack a single octPlace_t (28 bytes)."""
     return b''.join((
         struct.pack('<ff', x, y),
-        struct.pack('<I',  0),                              # Tags
+        struct.pack('<I',  tags & 0xFFFFFFFF),              # Tags
         struct.pack('<hh', w & NUMBER_FIELD_MASK, h & NUMBER_FIELD_MASK),
         struct.pack('<h',  bmp_idx),
         struct.pack('<h',  number & NUMBER_FIELD_MASK),
@@ -804,15 +1227,72 @@ def _pack_octplace(x: float, y: float, w: int, h: int, bmp_idx: int,
     ))
 
 
+def _label_bits(font: int, where: str = '') -> int:
+    """``!font`` index -> the Label bits of an octPlace_t flags word.
+
+    Refuses an out-of-range index rather than shipping it: OCT_add_label
+    asserts ``font_idx`` is in [1..3] and calls OCT_terminate otherwise, so a
+    bad suffix would take the app down on the cube instead of here.
+    """
+    if not (OCT_PLACE_FONT_MIN <= font <= OCT_PLACE_FONT_MAX):
+        raise ValueError(
+            f"layer {where!r}: !font{font} is out of the [{OCT_PLACE_FONT_MIN}.."
+            f"{OCT_PLACE_FONT_MAX}] range the engine accepts "
+            f"(OCT_add_label terminates outside it)")
+    return (font << OCT_PLACE_LABEL_SHIFT) & OCT_PLACE_LABEL_MASK
+
+
+def _unpack_layer_meta(entry, name: str) -> tuple[str, str, int | None]:
+    """``layer_meta`` lookup -> ``(obj_name, tag_name, font)``.
+
+    Falls back to what the layer name alone still carries when the PSD was
+    exported without its CSV sidecar.
+    """
+    if entry is None:
+        parsed = LayerName.parse(name) if name else None
+        return (parsed.obj_name if parsed else '', '',
+                parsed.font if parsed else None)
+    if len(entry) == 2:          # sidecar written before !font was carried
+        return entry[0], entry[1], None
+    return entry[0], entry[1], entry[2]
+
+
 def psl_to_octplace(records: list[dict],
                     bmp_index: dict[str, int],
                     type_map: dict[str, int],
                     group_map: dict[str, int],
-                    packed_pivots: dict[str, tuple[float, float, int, int]] | None = None
+                    packed_pivots: dict[str, tuple[float, float, int, int]] | None = None,
+                    name_map: dict[str, int] | None = None,
+                    tag_map: dict[str, int] | None = None,
+                    layer_meta: dict[tuple, tuple[str, str]] | None = None,
                     ) -> bytes:
-    """Convert parsed PSL records to an octPlace_t binary blob (map payload)."""
+    """Convert parsed PSL records to an octPlace_t binary blob (map payload).
+
+    ``name_map``/``tag_map`` are the ``$names``/``#tags`` index maps from
+    :func:`build_metadata_maps`; they fill octPlace_t's ``Name`` byte and
+    ``Tags`` word, which is how the app finds a placement at runtime
+    (``octObject_t.Name == NAME_score``, ``.Tags & TAG_health2``).
+
+    A ``$name`` layer (see :func:`is_name_declaration`) is an anchor with no
+    artwork: its place keeps the rect and the ``Name`` byte but gets
+    ``BmpIdx = 0``, matching the legacy container where no ``$`` asset exists.
+
+    ``layer_meta`` maps ``(png_name, x, y, w, h)`` to
+    ``(obj_name, tag_name, font)`` recovered from the PSD's own CSV, because
+    the PSL record layout we mirror from ``psd.exe`` has slots for the group
+    and type suffixes but none for ``$name``/``#tag``/``!font``. Without it
+    those fall back to what the PSL name alone can carry (the ``$`` prefix),
+    no tags, and no font index.
+
+    A layer carrying ``!font``/``!fontN`` becomes a LABEL place: the font index
+    goes into the ``Label`` bits of the flags word and the ``Rate`` byte
+    becomes the label's alignment (``ALIGN_CENTER``), not the animation rate.
+    """
     if packed_pivots is None:
         packed_pivots = {}
+    name_map = name_map or {}
+    tag_map = tag_map or {}
+    layer_meta = layer_meta or {}
 
     places: list[bytes] = []
     for rec in records:
@@ -825,42 +1305,98 @@ def psl_to_octplace(records: list[dict],
         group_name = rec.get('group_name', '')
         number = rec.get('number', 0)
         rate = rec.get('rate', 0)
+        markers = rec.get('markers', ())
+        mark_rate = rec.get('mark_rate', OCT_PLACE_RATE_DEFAULT)
 
         is_layer_marker = (not name and w <= 1 and h <= 1)
-        bmp_idx = bmp_index.get(name, 0) if name else 0
+        is_decl = is_name_declaration(name)
+        bmp_idx = 0 if (is_decl or not name) else bmp_index.get(name, 0)
+
+        obj_name, tag_name, font = _unpack_layer_meta(
+            layer_meta.get((name, rec['x'], rec['y'], w, h)), name)
+        if rec.get('font') is not None:
+            font = rec['font']
+        if font is None:
+            # The PSL marker slot carries the label marker too, and it is the
+            # only place `!label`/`!labelN` (utils.exe's synonym for `!font`)
+            # survives -- LayerName only knows the `font` spelling.
+            for marker in markers:
+                if marker in MAP_MARKER_LABEL:
+                    font = MAP_MARKER_LABEL[marker]
+                    break
+        name_byte = name_map.get(obj_name, 0) if obj_name else 0
+        tags = tag_bits(tag_name, tag_map)
 
         stored_pvx = stored_pvy = 0.0
         if name and name in packed_pivots:
             stored_pvx, stored_pvy, _, _ = packed_pivots[name]
 
-        # Position formula matching utils.exe exactly
-        local_x = 2.0 * (x_psd - cx) + stored_pvx
-        local_y = -2.0 * (y_psd - cy) - stored_pvy
-        if local_x < 0:
-            local_x -= 1
-        if local_y > 0:
-            local_y += 1
+        # Position formula matching utils.exe exactly.
+        #
+        # A place is the sprite's PIVOT POINT, measured from the CENTRE of its
+        # cube side, in the engine's 2x (half-pixel) units:
+        #
+        #     place.x =  2 * (layer_x + pivot_local_x - side_centre_x)
+        #     place.y = -2 * (layer_y + pivot_local_y - side_centre_y)
+        #
+        # The packed octBmp_t pivot already carries the doubling and the
+        # half-pixel bias (`pivot = 2*pivot_local - 0.5`, test_pivot_parity),
+        # so undoing the bias with PLACE_PIVOT_BIAS is all that is left. Y is
+        # negated because PSD coordinates grow downwards and side space up.
+        #
+        # The side centre is the ~sideN marker's centre, `left + w/2` -- not
+        # its top-left corner, which is what the PSL stores.
+        side_cx = cx + rec.get('side_w', 0) / 2.0
+        side_cy = cy + rec.get('side_h', 0) / 2.0
+        local_x = 2.0 * (x_psd - side_cx) + stored_pvx + PLACE_PIVOT_BIAS
+        local_y = -2.0 * (y_psd - side_cy) - stored_pvy - PLACE_PIVOT_BIAS
 
         type_idx = type_map.get(type_name, 0) if type_name else 0
         group_idx = group_map.get(group_name, 0) if group_name else 0
 
-        # Animation start flag: name ends with "_00" or explicit !rate suffix
+        # Animation start flag: name ends with "_00" or explicit !rate suffix.
+        #
+        # Both are PROXIES. utils.exe's actual rule, measured: a place is
+        # Looped iff the octBmp_t it references has Seq != 0, i.e. the sprite
+        # belongs to any `<base>_NN` group -- a place on eat_03, mid-sequence,
+        # comes back Looped too, and an explicit `!rate7` on a lone sprite
+        # does NOT. The two proxies happen to agree with it on all 272
+        # OCT_ladybug places (every animated place there is a `_00` head), so
+        # they are left alone rather than churned without a corpus that can
+        # tell the difference.
         flags = 0
         if name and name.endswith('_00'):
             flags |= int(PlaceFlag.LOOPED)
         if rate > 0:
             flags |= int(PlaceFlag.LOOPED)
 
-        rate_out = rate if rate > 0 else OCT_PLACE_RATE_DEFAULT
+        # Every other `!marker` the grammar allows. `!pingpong` is the one
+        # OCT_ladybug actually uses (win.psd's winscreen_00, place flags 0x12
+        # in the shipped container); the rest are here so the table is closed
+        # rather than discovered one crash at a time.
+        for marker in markers:
+            flags |= MAP_MARKER_PLACE_FLAGS.get(marker, 0)
+
+        # No `!rateN`? The Rate is the layer's Photoshop colour swatch + 1,
+        # exactly as for a sprite (config.rate_from_layer_mark).
+        rate_out = rate if rate > 0 else mark_rate
+
+        # A `!font` layer is a text placement, not artwork: the font index goes
+        # into the Label bits and Rate carries the alignment instead.
+        if font is not None:
+            flags |= _label_bits(font, name)
+            rate_out = OCT_PLACE_LABEL_ALIGN_DEFAULT
 
         if is_layer_marker:
-            bmp_idx = type_idx = group_idx = 0
+            bmp_idx = type_idx = group_idx = name_byte = 0
+            tags = 0
             flags = 0
             rate_out = OCT_PLACE_RATE_DEFAULT
 
         places.append(_pack_octplace(
             local_x, local_y, w, h, bmp_idx, number,
-            flags, sid, rate_out, 0, group_idx, 0, type_idx,
+            flags, sid, rate_out, name_byte, group_idx, 0, type_idx,
+            tags=tags,
         ))
 
     return struct.pack('<ii', 1, len(places)) + b''.join(places)
@@ -869,8 +1405,16 @@ def psl_to_octplace(records: list[dict],
 def csv_to_octplace(csv_records: list[dict],
                     bmp_index: dict[str, int],
                     type_map: dict[str, int],
-                    group_map: dict[str, int]) -> bytes:
-    """Convert parsed CSV records to an octPlace_t blob (map payload, no sides)."""
+                    group_map: dict[str, int],
+                    name_map: dict[str, int] | None = None,
+                    tag_map: dict[str, int] | None = None) -> bytes:
+    """Convert parsed CSV records to an octPlace_t blob (map payload, no sides).
+
+    With ``name_map``/``tag_map`` the ``Name`` byte and ``Tags`` word come
+    from the layer's own ``$name``/``#tag`` suffixes (same rule as
+    :func:`psl_to_octplace`); without them the historical behaviour is kept,
+    where ``Name`` is just a running counter.
+    """
     places: list[bytes] = []
     name_counter = 1
 
@@ -897,17 +1441,66 @@ def csv_to_octplace(csv_records: list[dict],
             places.append(place_data)
             continue
 
-        bmp_idx  = bmp_index.get(sprite_name, 0)
+        png_name = rec.get('png_name', sprite_name)
+        bmp_idx = 0 if is_name_declaration(png_name) \
+            else bmp_index.get(sprite_name, 0)
         type_idx = type_map.get(rec['type_name'], 0) if rec['type_name'] else 0
         group_idx = group_map.get(rec['group_name'], 0) if rec['group_name'] else 0
 
+        if name_map is None:
+            name_byte = name_counter & 0xFF
+            tags = 0
+        else:
+            obj = rec.get('obj_name', '')
+            name_byte = name_map.get(obj, 0) if obj else 0
+            tags = tag_bits(rec.get('tag_name', ''), tag_map or {})
+
+        # A `!font` layer is a label: font index into the Label bits, and Rate
+        # carries the alignment rather than an animation rate.
+        font = rec.get('font')
+        if font is None:
+            font = LayerName.parse(raw_name).font
+        flags = 0
+        rate_out = rec['rate']
+        if font is not None:
+            flags = _label_bits(font, raw_name)
+            rate_out = OCT_PLACE_LABEL_ALIGN_DEFAULT
+
         places.append(_pack_octplace(
             float(x), float(y), w, h, bmp_idx, rec['number'],
-            0, -1, rec['rate'], name_counter & 0xFF, group_idx, 0, type_idx,
+            flags, -1, rate_out, name_byte, group_idx, 0, type_idx,
+            tags=tags,
         ))
         name_counter += 1
 
     return struct.pack('<ii', 1, len(places)) + b''.join(places)
+
+
+def _csv_layer_meta(csv_path) -> dict[tuple, tuple[str, str, int | None]]:
+    """``(png_name, x, y, w, h) -> ($name, #tag, !font)`` from a per-PSD CSV.
+
+    The PSL record layout we mirror from ``psd.exe`` has fixed slots for the
+    ``&group`` and ``%type`` suffixes but none for ``$name``, ``#tag`` or
+    ``!font``, so a map built from the PSL alone would lose all three. The CSV
+    written by the same export carries the raw layer name, and (name, rect)
+    identifies the layer in it — that is the sidecar this reads. Returns {}
+    when the PSD was exported without ``-log`` (no CSV).
+
+    Losing ``!font`` here is what silenced every ladybug label: the PSL name is
+    already split at ``!`` (``$score!font2`` arrives as ``$score``), so this
+    sidecar is the only place the font index still exists.
+    """
+    if csv_path is None or not Path(csv_path).is_file():
+        return {}
+    meta: dict[tuple, tuple[str, str, int | None]] = {}
+    try:
+        for rec in parse_map_csv(str(csv_path)):
+            key = (rec['png_name'], rec['x'], rec['y'], rec['w'], rec['h'])
+            meta.setdefault(key, (rec['obj_name'], rec['tag_name'],
+                                  rec.get('font')))
+    except Exception:
+        return {}
+    return meta
 
 
 def pack_maps(exported_dir: str, packed_dir: str, output_dir: str,
@@ -957,8 +1550,11 @@ def pack_maps(exported_dir: str, packed_dir: str, output_dir: str,
             if explicit_set is None and map_filter != 'all' and psl_type != PSL_TYPE_MAP:
                 print(f"    Skipping (not a map PSL, type={psl_type})")
                 continue
+            layer_meta = _csv_layer_meta(csv_files.get(map_name))
             blob = psl_to_octplace(records, bmp_index, type_map, group_map,
-                                   packed_pivots=packed_pivots)
+                                   packed_pivots=packed_pivots,
+                                   name_map=name_map, tag_map=tag_map,
+                                   layer_meta=layer_meta)
         elif has_csv:
             print(f"\n  Map: {map_name} (from CSV, no side conversion)")
             csv_records = parse_map_csv(str(csv_files[map_name]))
@@ -966,7 +1562,8 @@ def pack_maps(exported_dir: str, packed_dir: str, output_dir: str,
             if not csv_records:
                 print("    Skipping (empty CSV)")
                 continue
-            blob = csv_to_octplace(csv_records, bmp_index, type_map, group_map)
+            blob = csv_to_octplace(csv_records, bmp_index, type_map, group_map,
+                                   name_map=name_map, tag_map=tag_map)
         else:
             continue
 
@@ -1000,14 +1597,55 @@ def pack_maps(exported_dir: str, packed_dir: str, output_dir: str,
 
 def _emit_index_block(lines: list[str], prefix: str, label: str,
                       idx_map: dict[str, int]) -> None:
-    """Append a '// label\\n const uint8_t PREFIX_X = N;\\n ...' block to lines."""
+    """Append one ``//label`` + ``const … PREFIX_X = N;`` block.
+
+    Shape measured on the two committed legacy headers
+    (``OCT_ladybug/src/app_ids.h``, ``OCT_get_started/art/app_get_started_ids.h``):
+
+      * only ``%types`` gets a ``TYPE_last`` sentinel, and it is emitted even
+        when the block is empty (``const uint8_t TYPE_last = 1;`` in
+        get_started, which declares no types at all). ``NAME_``/``GROUP_``/
+        ``TAG_`` have no sentinel;
+      * ``#tags`` is a BITMASK, not a counter: ladybug's four health tags are
+        ``TAG_health1 = 1, TAG_health2 = 2, TAG_health3 = 4, TAG_health4 = 8``
+        and the type is ``uint32_t``, because the app ORs them into
+        ``octObject_t.Tags`` and tests with ``&``. Emitting the 1-based index
+        (…= 3, …= 4) as ``uint8_t`` compiles fine and silently makes
+        ``TAG_health3`` alias ``TAG_health1|TAG_health2``.
+    """
+    ctype = 'uint32_t' if prefix == 'TAG' else 'uint8_t'
     lines.append(f'//{label}\n')
     for name, idx in sorted(idx_map.items(), key=lambda x: x[1]):
-        lines.append(f'const uint8_t {prefix}_{name} = {idx};\n')
-    last = (max(idx_map.values()) + 1) if idx_map else 1
-    if idx_map or prefix != 'TAG':
-        lines.append(f'const uint8_t {prefix}_last = {last};\n')
+        value = (1 << (idx - 1)) if prefix == 'TAG' else idx
+        lines.append(f'const {ctype} {prefix}_{name} = {value};\n')
+    if prefix == 'TYPE':
+        last = (max(idx_map.values()) + 1) if idx_map else 1
+        lines.append(f'const uint8_t TYPE_last = {last};\n')
     lines.append('\n')
+
+
+def emit_index_blocks(name_map: dict[str, int], type_map: dict[str, int],
+                      group_map: dict[str, int], tag_map: dict[str, int]) -> str:
+    """The ``$names``/``%types``/``&groups``/``#tags`` tail of an ids header.
+
+    Shared by the legacy :func:`generate_app_ids_h` and the beta
+    ``pack_beta.generate_beta_ids_h`` so the two can never disagree: the beta
+    header OVERWRITES the app's committed ``src/<app>_ids.h``, and an app that
+    reads ``octObject_t.Name``/``.Type``/``.Tags`` (ladybug does, for its HUD
+    labels and health hearts) stops compiling the moment these go missing.
+    """
+    parts: list[str] = []
+    _emit_index_block(parts, 'NAME',  '$names',  name_map)
+    _emit_index_block(parts, 'TYPE',  '%types',  type_map)
+    _emit_index_block(parts, 'GROUP', '&groups', group_map)
+    _emit_index_block(parts, 'TAG',   '#tags',   tag_map)
+    return ''.join(parts)
+
+
+def tag_bits(tag_name: str, tag_map: dict[str, int]) -> int:
+    """``TAG_<tag_name>``'s bitmask value, or 0 for an unknown/absent tag."""
+    idx = tag_map.get(tag_name, 0) if tag_name else 0
+    return (1 << (idx - 1)) if idx > 0 else 0
 
 
 def generate_app_ids_h(sorted_sprite_names: list[str],
@@ -1082,10 +1720,7 @@ def generate_app_ids_h(sorted_sprite_names: list[str],
     out_parts.extend(map_lines)
     out_parts.append('typedef enum BMP BMP;\ntypedef enum MAP MAP;\n\n')
 
-    _emit_index_block(out_parts, 'NAME',  '$names',  name_map)
-    _emit_index_block(out_parts, 'TYPE',  '%types',  type_map)
-    _emit_index_block(out_parts, 'GROUP', '&groups', group_map)
-    _emit_index_block(out_parts, 'TAG',   '#tags',   tag_map)
+    out_parts.append(emit_index_blocks(name_map, type_map, group_map, tag_map))
 
     with open(output_path, 'w') as f:
         f.write(''.join(out_parts))

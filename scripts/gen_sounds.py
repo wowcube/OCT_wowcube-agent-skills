@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import wave
+from collections.abc import Iterable
 from pathlib import Path
 
 import numpy as np
@@ -42,6 +43,102 @@ EVENT_PRESETS = {
     "music":   {"freq_scale": (1.0, 1.0), "attack_ms": 5,  "release_ms": 80,  "style": "arpeggio"},
     "default": {"freq_scale": (1.0, 1.0), "attack_ms": 10, "release_ms": 60,  "style": "pad"},
 }
+
+
+# ── sound asset names ────────────────────────────────────────────────
+#
+# The packer turns every sound asset name straight into a `SND_<name>` C enum
+# member (pack_beta.emit_beta_layout), so an asset name that is not a legal C
+# identifier breaks the app's compile. Artists name their WAV sources freely
+# (`Congratulations-007.wav`, `StageGreetings.wav`), which makes the *encode*
+# step — not the app repo — the place where the name becomes legal. These two
+# functions are the single definition of that rule, shared by this module and
+# by oct-builder's `ci_build.py`.
+
+DEFAULT_SOUND_NAME = "sound"
+DIGIT_PREFIX = "s_"
+
+
+def sound_asset_name_problem(stem: str) -> str | None:
+    """Why `stem` cannot become a `SND_<stem>` C enum member, or None."""
+    if not stem:
+        return "empty name"
+    if not all((c.isascii() and c.isalnum()) or c == "_" for c in stem):
+        bad = sorted({c for c in stem if not ((c.isascii() and c.isalnum()) or c == "_")})
+        return f"illegal character(s) {''.join(bad)!r}"
+    if stem[0].isdigit():
+        return "starts with a digit"
+    return None
+
+
+def sound_asset_name(stem: str) -> str:
+    """WAV basename -> the asset name the container will carry.
+
+    Lowercase; every character that is not `[a-z0-9_]` becomes `_`; a leading
+    digit is prefixed with `s_`. This reproduces the names the legacy
+    toolchain shipped in the reference corpus (`Congratulations-007.wav` ->
+    `congratulations_007`, `StageGreetings.wav` -> `stagegreetings`).
+
+    Idempotent — a name that is already legal is returned unchanged, so
+    re-running a build never renames an already-encoded asset.
+    """
+    out = "".join(c if ((c.isascii() and c.isalnum()) or c == "_") else "_" for c in stem).lower()
+    if not out:
+        return DEFAULT_SOUND_NAME
+    return f"{DIGIT_PREFIX}{out}" if out[0].isdigit() else out
+
+
+def resolve_sound_asset_names(stems: Iterable[str]) -> dict[str, str]:
+    """Map each source basename to its asset name; collisions are an error.
+
+    Two sources that normalise to the same asset name would clobber each
+    other's encoded mp3 and silently drop one `SND_` id, so this raises
+    `ValueError` instead of picking a winner.
+    """
+    mapping: dict[str, str] = {}
+    by_asset: dict[str, list[str]] = {}
+    for stem in stems:
+        asset = sound_asset_name(stem)
+        mapping[stem] = asset
+        by_asset.setdefault(asset, []).append(stem)
+    clashes = {a: s for a, s in by_asset.items() if len(s) > 1}
+    if clashes:
+        detail = "; ".join(
+            f"{', '.join(sorted(srcs))} -> {asset!r}"
+            for asset, srcs in sorted(clashes.items()))
+        raise ValueError(
+            f"sound sources collide after name normalisation ({detail}) - "
+            f"rename them so each yields a distinct SND_ id")
+    return mapping
+
+
+def plan_mp3_adoption(sources, committed=()) -> list[tuple[Path, str]]:
+    """Which pre-encoded mp3s to adopt into ``sound/assets/``, and as what.
+
+    A third real app shape: ``OCT_ladybug`` commits twelve ready mp3s in
+    ``sound/`` itself — no WAV sources, no ``sound/assets/`` at all — and its
+    legacy container has the matching twelve KIND_SOUND records. A build that
+    only scans ``sound/assets/`` produces zero, and every
+    ``SND_getAssetId()`` in the app returns -1 at runtime: a silent game that
+    passes every structural check.
+
+    They are adopted by COPY, never re-encoded: they are already the shipped
+    audio, and a round trip through ffmpeg would change bytes for nothing
+    (and needs a tool CI may not have). The asset name is normalised exactly
+    like a WAV source's, so the ``SND_`` enum member is legal C, and two
+    sources normalising onto one name raise instead of one silently winning
+    (that would drop a ``SND_`` id the app compiles against).
+
+    ``committed`` are asset names already present in ``sound/assets/``; those
+    win, because a committed encoded asset is the authority over a loose
+    source file. Returns ``[(source_path, asset_name), ...]`` in asset order.
+    """
+    sources = [Path(s) for s in sources]
+    asset_of = resolve_sound_asset_names(s.stem for s in sources)
+    committed = set(committed)
+    return sorted(((s, asset_of[s.stem]) for s in sources
+                   if asset_of[s.stem] not in committed),
+                  key=lambda pair: pair[1])
 
 
 def _md5_seed(label: str) -> int:
@@ -148,6 +245,10 @@ def encode_beta_mp3(wav_path: Path, assets_dir: Path) -> Path:
     22050 Hz mono CBR 32k, no Xing header, no metadata
     (mirrors octavios/CMakeLists.txt pack target).
 
+    The output is named `sound_asset_name(wav.stem) + '.mp3'`, so an artist's
+    `Congratulations-007.wav` lands as `congratulations_007.mp3` and the
+    packer can emit `SND_congratulations_007`.
+
     Raises RuntimeError with FFMPEG_MISSING_MSG if ffmpeg isn't on PATH.
     """
     if shutil.which("ffmpeg") is None:
@@ -155,7 +256,7 @@ def encode_beta_mp3(wav_path: Path, assets_dir: Path) -> Path:
     wav_path = Path(wav_path)
     assets_dir = Path(assets_dir)
     assets_dir.mkdir(parents=True, exist_ok=True)
-    out = assets_dir / (wav_path.stem + ".mp3")
+    out = assets_dir / (sound_asset_name(wav_path.stem) + ".mp3")
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(wav_path),
            "-ac", "1", "-ar", "22050", "-sample_fmt", "s16p",
            "-b:a", "32k", "-codec:a", "libmp3lame", "-cbr", "1",
@@ -179,9 +280,16 @@ def generate(
     raises RuntimeError with a clear message if it's missing). Defaults to
     False so plain WAV generation (e.g. in tests) never requires ffmpeg.
     The returned list contains only the WAV paths, unchanged either way.
+
+    WAV filenames use `sound_asset_name(snd.name)`, so the WAV, the mp3 and
+    the `SND_` id the packer emits all carry one name. Manifest names are
+    already `[a-z0-9_]+`, which normalises to itself, so this is a no-op for
+    every valid manifest bar a leading-digit name. Two sounds that would
+    normalise to the same asset name raise ValueError.
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    asset_names = resolve_sound_asset_names(s.name for s in manifest.sounds)
     written: list[Path] = []
     for snd in manifest.sounds:
         grp = _derived_group(snd)
@@ -191,7 +299,7 @@ def generate(
             group=grp, name=snd.name, event_type=snd.event_type,
             duration_ms=snd.duration_ms,
         )
-        target = out_dir / f"{snd.name}.wav"
+        target = out_dir / f"{asset_names[snd.name]}.wav"
         _write_wav(wav_bytes, target)
         written.append(target)
         if encode_mp3:

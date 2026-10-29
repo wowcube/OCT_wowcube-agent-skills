@@ -4,19 +4,20 @@
 
 .DESCRIPTION
     The .oct is the file you load onto the physical WowCube. It is assembled by
-    the SIMULATOR at launch, which packs: the art .raw assets + the sounds +
-    (if present) the ARM device code from out/<app>.bin. So producing a
-    *loadable* .oct is two steps:
+    the pure-Python builder (scripts/pack_beta.py --build-oct), which packs:
+    the art .raw assets + the sounds + the ARM device code from
+    out/<app>.bin. So producing a *loadable* .oct is two steps:
 
       1. ARM device build  -> app_<game>/out/app_<game>.bin
          (cmake -G Ninja -S <octavios>/apps -B out ; cmake --build out)
-      2. Launch the sim once -> it writes app_<game>/app_<game>.oct
-         (assets + sounds + ARM code)
+      2. python scripts/pack_beta.py --build-oct -> app_<game>/app_<game>.oct
+         (assets + sounds + ARM code, deterministic bytes)
 
-    Requires the device toolchain (arm-none-eabi-gcc, cmake, ninja) -- run
-    check_env.ps1 first. Without the ARM .bin the sim still writes a .oct, but it
-    contains assets only and will NOT run on the cube; this script treats a
-    missing .bin as a failure.
+    This no longer launches the simulator or needs MSVC -- only the ARM
+    device toolchain (arm-none-eabi-gcc, cmake, ninja) and python. Run
+    check_env.ps1 first if any of those are missing. Without the ARM .bin
+    there is no code to embed; this script treats a missing/empty .bin as a
+    failure.
 
 .PARAMETER AppDir
     Path to the app_<game> folder (must contain <app>.target and art/packed).
@@ -47,11 +48,13 @@ $OctaviOS = (Resolve-Path $OctaviOS -ErrorAction SilentlyContinue).Path
 if (-not $OctaviOS) { Fail "octavios SDK not found (pass -OctaviOS)" }
 $appsDir = Join-Path $OctaviOS 'apps'
 
-foreach ($t in 'arm-none-eabi-gcc', 'cmake', 'ninja') {
+foreach ($t in 'arm-none-eabi-gcc', 'cmake', 'ninja', 'python') {
     if (-not (Get-Command $t -ErrorAction SilentlyContinue)) {
         Fail "$t not on PATH -- run check_env.ps1 to install the device toolchain"
     }
 }
+$packPy = Join-Path $PSScriptRoot 'pack_beta.py'
+if (-not (Test-Path $packPy)) { Fail "python builder not found: $packPy" }
 
 # --- 1. ARM device build --------------------------------------------------
 Step "ARM device build (cmake + ninja) for $app"
@@ -70,34 +73,32 @@ $binLen = (Get-Item $bin).Length
 if ($binLen -le 0) { Fail "$bin is empty -- ARM build produced no code" }
 Write-Host "    built $bin ($binLen bytes ARM code)"
 
-# --- 2. Pack the .oct by launching the sim once ---------------------------
-# The simulator assembles the .oct at launch. It embeds out/<app>.bin ONLY if
-# that file exists (sim.h treats ARM code as optional -- a sim-only launch
-# writes an asset-only .oct that runs on the PC but is DEAD on the cube). We
-# just built the .bin above, so this launch must embed it -- and we verify it.
-$exe = Join-Path $AppDir "bin\$app.exe"
-if (-not (Test-Path $exe)) {
-    Fail "simulator exe missing ($exe) -- run new_app.ps1 / build_sim.cmd first"
-}
+# --- 2. Pack the .oct with the pure-Python builder -------------------------
+# scripts/pack_beta.py --build-oct assembles the pack directly from
+# index.bin + art/packed + sound/assets + the ARM code, byte-identical to
+# what the simulator used to write (minus its wall-clock BuildDateTime stamp,
+# which the python builder pins to 0 for determinism). No simulator launch,
+# no MSVC needed.
 $oct = Join-Path $AppDir "$app.oct"
 if (Test-Path $oct) { Remove-Item $oct -Force }
 
-Step "Packing .oct (launching simulator to assemble the package)"
-$p = Start-Process -FilePath $exe -PassThru
-Start-Sleep -Seconds 5
-if (-not $p.HasExited) { $p | Stop-Process -Force }
+Step "Packing .oct (python scripts/pack_beta.py --build-oct)"
+python $packPy --build-oct --app-dir "$AppDir" --code "$bin" --out "$oct" | Out-Host
+if ($LASTEXITCODE -ne 0) { Fail "python .oct builder failed (exit $LASTEXITCODE)" }
 
 if (-not (Test-Path $oct)) {
-    Fail "simulator did not produce $oct"
+    Fail "python builder did not produce $oct"
 }
 
 # --- 3. Verify the ARM code is actually embedded --------------------------
 # This is the whole point: prove the cube package contains the ARM binary, not
-# just assets. The sim appends the ARM code as the LAST chunk of the pack
-# (sim.h: assets -> sounds -> code, then header->Size = end), so the final
+# just assets. The builder appends the ARM code as the LAST chunk of the pack
+# (assets -> sounds -> code, then header->Size = end), so the final
 # <binLen> bytes of the .oct must equal the .bin byte-for-byte. If they don't,
-# the sim packed an asset-only .oct (e.g. it couldn't find the .bin) and the
-# package would silently fail on the cube -- so we refuse to ship it.
+# something upstream (e.g. a stale --code path) produced an asset-only .oct
+# and the package would silently fail on the cube -- so we refuse to ship it.
+# This check is unchanged from when the simulator wrote the .oct; it now
+# verifies our own python builder instead, which is still valuable.
 $binBytes = [System.IO.File]::ReadAllBytes($bin)
 $octBytes = [System.IO.File]::ReadAllBytes($oct)
 $embedded = $false
@@ -133,7 +134,8 @@ Write-Host "  $oct"
 Write-Host "  ($($octBytes.Length) bytes -- assets + sounds + $binLen bytes ARM code)"
 Write-Host "Load this .oct onto the WowCube."
 Write-Host ""
-Write-Host "NOTE: launching the simulator again will OVERWRITE this .oct with an" -ForegroundColor Yellow
-Write-Host "asset-only pack (no ARM code). Re-run this script after any sim testing" -ForegroundColor Yellow
-Write-Host "to regenerate the cube-loadable .oct as the LAST step before shipping." -ForegroundColor Yellow
+Write-Host "NOTE: launching the simulator manually will still OVERWRITE this .oct with" -ForegroundColor Yellow
+Write-Host "an asset-only pack (no ARM code) -- but device delivery no longer depends" -ForegroundColor Yellow
+Write-Host "on the sim. Re-run this script after any sim play-testing session to" -ForegroundColor Yellow
+Write-Host "regenerate the cube-loadable .oct as the LAST step before shipping." -ForegroundColor Yellow
 exit 0

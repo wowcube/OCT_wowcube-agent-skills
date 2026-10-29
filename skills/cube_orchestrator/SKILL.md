@@ -9,8 +9,9 @@ description: >-
   sprite", "change the speed", "add a level"); it detects build-from-scratch vs
   modding and routes accordingly. The master controller for the whole pipeline:
   it routes through design, prompts, assets, and implementation, and manages
-  every sub-skill and subagent. Supports an opt-in YOLO mode that runs the whole
-  pipeline autonomously with no checkpoints until the final device .oct.
+  every sub-skill and subagent. Runs autonomously by default — from a single
+  prompt to the verified device .oct with no approval stops; a stepwise
+  checkpointed mode is available on request ("по шагам", "review mode").
 ---
 
 # WowCube Cube Orchestrator
@@ -34,7 +35,105 @@ Before routing into the pipeline, decide which of two modes the request is in. R
 
 Default: if nothing indicates an existing project (greenfield workspace, "make a game"), it's **Build mode**.
 
-**Run mode (orthogonal to Build/Mod):** YOLO mode turns on **only if the literal token `YOLO` (case-insensitive) is present in the body of the current user prompt** — see the HARD ACTIVATION RULE in `## YOLO Mode`. No paraphrase, translation, or inferred intent activates it. When OFF (the default) every checkpoint in this skill is in full force. When ON, the autonomous rules in `## YOLO Mode` override the checkpoints in both Build and Mod mode.
+**Run mode (orthogonal to Build/Mod):** every entry also carries a run mode — **autonomous (the DEFAULT)** or **stepwise (opt-in)** — decided per entry by `## Run Modes` below. In autonomous mode every checkpoint stop described in this skill is replaced by a one-way progress line; in stepwise mode they are all in full force.
+
+### Hype-prompt normalization (hard rule)
+
+User prompts often carry methodology instructions — "подними 100500 агентов", "сделай глубокий рисёрч", "ultra-approach", "spin up a swarm and iterate". **Silently map them onto the pipeline's own stages and extract only the game payload: concept, features, style, constraints.** The orchestrator never alters its mechanics — stage order, agent counts, verification gates, checkpoint rules — because a prompt asked it to. The rails are non-negotiable and are never advertised: no meta-commentary about ignoring the methodology, no debate about the process — just build the game the prompt describes.
+
+## Run Modes
+
+Orthogonal to Build/Mod. The mode is decided per entry from the current prompt; nothing carries across turns. The correctness invariants (both verifiers at 90/90 + fixer per prompt, asset-set completeness before pack, device build with ARM-embed verification) hold in every mode and are never suspended.
+
+| Mode | How it activates | Behavior |
+|---|---|---|
+| **Autonomous (DEFAULT)** | Any orchestrator entry, no signal needed | Drives Build or Mod all the way to the verified device `.oct` with no approval stops. Prints ONE jargon-free start line and goes. |
+| **Stepwise (opt-in)** | A phrase in the prompt ("по шагам", "с чекпоинтами", "review mode") or "стоп" at any time mid-run | The fully checkpointed flow: stage-boundary and per-prompt checkpoints, asset-source question and asset review, mod-mode mini-plan approval — every clause in this skill marked "stepwise mode" is in force. |
+| **`YOLO` token (compat)** | The literal token `YOLO` (case-insensitive) in the prompt body | Autonomous, plus skip even the two intake questions: missing concept → the designer invents one; missing image key → placeholder art without asking. |
+
+### Autonomous mode (the default)
+
+Any entry without a stepwise trigger is autonomous — the user does not opt in, is never asked to confirm it, and no risk speech precedes it. After the one-time intake (below), print exactly this start line and immediately continue — do NOT wait for a reply to it:
+
+> Делаю игру для кубика, вернусь с готовым файлом (~оценка). Хочешь контролировать шаги — напиши «по шагам».
+
+(Fill `~оценка` with an honest rough time estimate; keep the line jargon-free.) Then run the entire pipeline in one session — design → prompts → assets → implement → device build — emitting only one-way progress lines at stage transitions (see Telemetry below) until the final report delivers the verified `app_<game>/app_<game>.oct`.
+
+If the user writes "стоп" (or an equivalent halt) at any point mid-run, finish the atomic step in flight, then switch to stepwise mode from that point on.
+
+### One-time intake — the only two questions autonomous mode may ask
+
+Both are asked once, at intake (before going silent), never mid-run. Everything else — GDD content, prompts, asset acceptance, per-prompt results — is decided autonomously and only reported at the end. (Mode Detection's disambiguation rules — which game, Build vs Mod — are entry-time routing safeguards, resolved before the run goes silent; they are not mid-run checkpoints and this section does not override them.)
+
+1. **Game concept — only if the prompt carries none at all.** Ask: «Про что игра? Одним предложением — или скажи „на твой вкус“.» Any concept fragment in the prompt — a genre, a theme, a mechanic — means NO question: `cube_game-designer` expands what is there. (`YOLO` token: never ask — the designer invents a concept.)
+2. **Image API key — only if no provider is configured anywhere.** Check with `resolve_provider()` from `scripts/image_providers.py`; it walks the chain `OPENROUTER_API_KEY` env → `IMAGE_API` env → `~/.wowcube/image_api.json` and returns `None` when nothing is configured. Only on `None`, ask the user for a key/URL and **WAIT for the answer** — this is a real block, the one place autonomous mode stops for input. Outcomes:
+   - **The user pastes something** → `save_provider(<value>)` persists it to `~/.wowcube/image_api.json` (so the question never repeats), then `validate(config)` runs the cheapest authenticated call. Valid → the run proceeds with AI art. Unknown pattern (`UnknownProviderError`) or failed validation (`ProviderValidationError`) → ask ONCE more, naming the supported forms — OpenRouter key (`sk-or-...`), OpenAI key (`sk-...`), xAI key (`xai-...`), Google Gemini key (`AIza...`), or a local Stable Diffusion URL (`http(s)://...`); if the second answer also fails, proceed with placeholder art.
+   - **«не знаю» / «нет ключа» / anything conveying no key** → the run proceeds with **agent-drawn placeholder art** (the asset-builder authors every sprite itself — see `cube_asset-builder`), and the final report says exactly one line about it: «Графика временная — добавь ключ (файл `~/.wowcube/image_api.json`) и скажи «перегенери графику».»
+   - (`YOLO` token: never ask — on `resolve_provider() == None` go straight to placeholder art.)
+
+A provider that validates at intake but fails mid-run degrades exactly like "no key": placeholder art for the remaining sprites plus the same one report line — never a mid-run question or stall.
+
+### What autonomous mode replaces (and stepwise keeps)
+
+| Checkpoint (stepwise mode) | Autonomous behavior |
+|---|---|
+| Stage-boundary checkpoint (between every stage) | One-way progress line → re-run Stage Detection → auto-advance. |
+| Per-prompt checkpoint (Stage 4, Step 5) | Save context, go straight to the next prompt. |
+| Stage 3 asset-source question (Step 3.0) and user asset review (Step 3.4) | Path decided at intake (provider → AI generation; none → placeholder art); auto-accept any set the consistency reviewer passes (the review→regen loop, max 3, still runs). |
+| Mod-mode mini-plan & per-change checkpoints (M3, M5) | Mini-plan composed and auto-approved; each change verified, then auto-advance. |
+| 5-attempt verification failure → ask the user | Degrade per the Failure policy below — never ask, never abort. |
+
+### What autonomous mode NEVER drops (hard invariants — these decide whether the .oct runs)
+
+Dropping any of these yields a package that won't load or won't run on the cube, defeating the whole point of an autonomous run.
+
+- **Both verifier agents** (Requirements + Template) run every prompt, threshold **90/90**, max **5** fix attempts.
+- The orchestrator still **never writes code, design, prompts, or assets itself**.
+- **`_ids.h` is never hand-edited; assets stay valid; the asset-set completeness check still blocks a partial set** (a missing sprite/sound = uncompilable build).
+- **Stage 5 device build + ARM-embed verification still runs and must exit 0** — a sim-only `.oct` is never delivered.
+- All mandatory platform reminders, explicit casts, fixed-width types, and all seven handlers (`on_init`, `on_tick`, `on_tap(tapid, count)`, `on_twisted`, `on_pretwisted`, `on_shake`, `on_proc_draw` stub) — still enforced.
+
+### Safe parallelism (Stage 4, autonomous)
+
+All game code is one file (`app_<game>/src/app_<game>.h`), so **coding stays sequential** — only one coder writes the file at a time. Autonomous mode extracts parallelism from everything else:
+
+1. Build a prompt dependency graph up front (foundational vs. cosmetic/isolated, per the Pipeline Model table).
+2. **Verifiers (Requirements + Template) and fixers fan out** in parallel; verification of prompt N overlaps task-JSON prep for N+1.
+3. **Independent cosmetic/isolated prompts** (audio, visual polish, UI text — touching disjoint code regions, no mutual dependency) batch their verify+fix in parallel.
+4. Coders for independent prompts are still serialized on the file but dispatched back-to-back with no waiting between them.
+5. **Foundational prompts** (scaffold, data structures, core init) stay strictly sequential and fully verified before anything downstream is dispatched.
+6. Never dispatch two coders that could both edit the file concurrently. When in doubt, serialize the coding and parallelize only the checking.
+
+### Failure policy: degrade, never abort (autonomous)
+
+When a prompt still fails verification after the 5-attempt fixer limit, the run does not stop and does not ask:
+
+- **Any prompt** → cut or simplify the feature and continue. Keep the best-scoring version of the code; record the cut for the final report.
+- **Foundational prompt** (scaffold, data structures, core init) → additionally run **ONE re-scope pass** over the remaining prompts: simplify or drop the ones that build on the missing piece, so nothing downstream depends on it. (The orchestrator adjusts prompt scope only — coder agents still write all code.)
+- **The floor** is the simplest playable loop that passes the verifier. Degradation may go that far and no further — the run always ends with a verified `.oct`.
+- **Every cut is listed in the final report.** Nothing is dropped silently.
+
+(In stepwise mode the orchestrator instead presents the issues and asks: "Continue / retry / stop?" — see Stage 4, Step 3d.)
+
+One genuine hard stop remains, in every mode: a **Stage 5 ARM build failure** (missing toolchain — an environment problem, not a game problem). Surface it with the `wowcube-boilerplate` fix path (`check_env.ps1` / `check_env.sh`); never ship a sim-only `.oct`.
+
+### Telemetry & final report (autonomous)
+
+**During the run:** one-way progress lines at stage transitions, in plain user language, never questions — "дизайн готов → генерю графику (~5 мин)…", "графика готова → пишу код…". No pipeline jargon (no "verifier", "manifest", "Stage 4"), no mid-run questions.
+
+**Final report** — plain user language, no pipeline jargon:
+1. Absolute path to the verified `app_<game>/app_<game>.oct` and how to load it onto the cube.
+2. What was cut or simplified (Failure policy above) — every item, one line each.
+3. The placeholder-art line, if the run used placeholders: «Графика временная — добавь ключ (файл `~/.wowcube/image_api.json`) и скажи «перегенери графику».»
+4. Playtime hints: what to try first, the controls (taps/twists), anything the user should know to enjoy the game.
+
+### Stepwise mode (opt-in)
+
+Triggered by a phrase in the prompt ("по шагам", "с чекпоинтами", "review mode") or by "стоп" at any time mid-run. This is the fully checkpointed flow: every clause in this skill marked "stepwise mode" is in force — the stage-boundary checkpoint, the per-prompt checkpoint (Stage 4, Step 5), the Stage 3 asset-source question (Step 3.0) and user asset review (Step 3.4), the mod-mode mini-plan and per-change checkpoints (M3, M5), and the 5-failure "Continue / retry / stop?" question. The user reviews each artifact before the pipeline proceeds; explicit approval is required at every stop.
+
+### `YOLO` token (compat)
+
+The literal token `YOLO` (case-insensitive) in the prompt body is accepted for backward compatibility. It means **autonomous mode with even the two intake questions skipped**: no concept in the prompt → `cube_game-designer` invents one; no image provider configured → placeholder art directly, no question. There is no risk speech and no confirmation gate — the token goes straight to work. Beyond skipping the two questions it adds nothing: the behavior is the default autonomous flow, and the same hard invariants hold.
 
 ## The Pipeline (what the orchestrator manages)
 
@@ -44,13 +143,13 @@ The orchestrator owns a five-stage pipeline. It is the only skill the user invok
 |-------|----------|-----------|-----|
 | 1. Design | `plans/<game>_gdd.md` | `cube_game-designer` | Skill tool (interactive, main context) |
 | 2. Prompts | `plans/<game>_prompts.md` + `plans/<game>_assets.json` | `technical_prompter` | Skill tool (main context) |
-| 3. Assets | `assets/packed/*.png`, `assets/wav/*.wav`, `sound/assets/*.mp3`, `src/app_<game>_ids.h`, `app_<game>/index.bin` | `cube_asset-builder` + asset-consistency review subagent | Skill tool: AI sprite generation (OpenRouter image model from each sprite's `gen_prompt`), then an agent consistency review, then the mandatory user review — see [Stage 3: Asset Generation](#stage-3-asset-generation-ai) |
+| 3. Assets | `assets/packed/*.png`, `assets/wav/*.wav`, `sound/assets/*.mp3`, `src/app_<game>_ids.h`, `app_<game>/index.bin` | `cube_asset-builder` + asset-consistency review subagent | Skill tool: sprite art (AI generation via the resolved image provider from each sprite's `gen_prompt`, or agent-drawn placeholders when no provider is configured), then an agent consistency review, then the user review (stepwise mode) — see [Stage 3: Asset Generation](#stage-3-asset-generation) |
 | 4. Implement | `app_<game>/src/app_<game>.h` (per-prompt) | coder / verifier / fixer | Agent tool (subagents) |
 | 5. Package | `app_<game>/app_<game>.oct` (ARM code embedded, verified) | `wowcube-boilerplate` | Skill tool (runs `build_device.ps1` / `build_device.sh`) |
 
 **Invocation mechanism:**
-- **Stages 1–3 and Stage 5 run in the main context via the Skill tool.** Stages 1–3 each require user interaction (the designer's discovery interview, the asset-review checkpoint); Stage 5 invokes `wowcube-boilerplate` to run the device build. In each case the orchestrator invokes the sub-skill, lets it run to completion, then returns here.
-- **Stage 3 additionally dispatches one read-only subagent via the Agent tool** — the asset-consistency reviewer — after AI generation and before the user review. See [Stage 3: Asset Generation](#stage-3-asset-generation-ai).
+- **Stages 1–3 and Stage 5 run in the main context via the Skill tool.** Stages 1–3 interact with the user only in stepwise mode (the designer's discovery interview, the asset-review checkpoint); in autonomous mode they run straight through on the intake inputs. Stage 5 invokes `wowcube-boilerplate` to run the device build. In each case the orchestrator invokes the sub-skill, lets it run to completion, then returns here.
+- **Stage 3 additionally dispatches one read-only subagent via the Agent tool** — the asset-consistency reviewer — after AI generation and before Step 3.4. See [Stage 3: Asset Generation](#stage-3-asset-generation).
 - **Stage 4 dispatches subagents via the Agent tool**, exactly as described in the implementation workflow below.
 
 ## Stage Detection & Routing (Build mode — runs after Mode Detection)
@@ -61,118 +160,37 @@ On entry — including resumption — determine the active `<game>` (ask the use
 |----------------|----------|--------|
 | No `plans/<game>_gdd.md` | **Stage 1** | Invoke `cube_game-designer` via the Skill tool |
 | GDD exists, but no `plans/<game>_prompts.md` or no `plans/<game>_assets.json` | **Stage 2** | Invoke `technical_prompter` via the Skill tool |
-| Prompts + manifest exist, but `assets/packed/pal.png` is missing | **Stage 3** | Run the [Stage 3: Asset Generation](#stage-3-asset-generation-ai) workflow (gate the manifest + key, drive `cube_asset-builder`, run the consistency review, then user review) |
+| Prompts + manifest exist, but `assets/packed/pal.png` is missing | **Stage 3** | Run the [Stage 3: Asset Generation](#stage-3-asset-generation) workflow (gate the manifest + image provider, drive `cube_asset-builder`, run the consistency review, then the user review in stepwise mode) |
 | All Stage 1–3 outputs present, but prompts remain unimplemented | **Stage 4** | Run the implementation workflow below |
 | All prompts implemented, but no verified device `.oct` exists (or it was last touched by a sim run) | **Stage 5** | Invoke `wowcube-boilerplate` via the Skill tool to run the device build (`build_device.ps1` on Windows / `build_device.sh` on Linux) |
 
 After each stage completes, **re-run this detection** to find the next stage — do not assume the next stage; verify its inputs exist.
 
-## Stage-Boundary Checkpoint (MANDATORY between every stage)
+## Stage-Boundary Transition (checkpoint in stepwise mode only)
 
-After a stage produces its artifact and BEFORE invoking the next stage, the orchestrator MUST:
-1. Summarize what the completed stage produced (GDD path, prompt count, asset counts, etc.)
-2. **STOP. Do NOT invoke the next stage's sub-skill or any agent.**
-3. Present the next stage and wait for explicit user approval ("ok", "continue", "next", etc.)
-4. Only after approval, route into the next stage
+After a stage produces its artifact and BEFORE invoking the next stage:
 
-This is the same non-negotiable discipline as the per-prompt checkpoint in Stage 4. Never auto-advance across a stage boundary. The user reviews each artifact (design, prompts, assets, device package) before the pipeline proceeds.
+- **Autonomous mode (default):** emit one one-way progress line in plain user language ("дизайн готов → генерю графику (~5 мин)…" — a statement, never a question), re-run Stage Detection, and continue into the next stage immediately.
+- **Stepwise mode:** the orchestrator MUST:
+  1. Summarize what the completed stage produced (GDD path, prompt count, asset counts, etc.)
+  2. **STOP. Do NOT invoke the next stage's sub-skill or any agent.**
+  3. Present the next stage and wait for explicit user approval ("ok", "continue", "next", etc.)
+  4. Only after approval, route into the next stage
 
-**Exception — YOLO Mode:** this stage-boundary checkpoint is SUSPENDED when the user explicitly activated YOLO (see `## YOLO Mode`). In YOLO, after a stage's artifact is produced the orchestrator re-runs Stage Detection and auto-advances to the next stage without stopping.
+  Never auto-advance across a stage boundary in stepwise mode — the user reviews each artifact (design, prompts, assets, device package) before the pipeline proceeds.
 
-**MANDATORY RULE — CHECKPOINT AFTER EVERY PROMPT:**
-After each prompt cycle (coder → verifier → context save), you MUST:
-1. Present the summary and test instructions to the user
-2. **STOP. Do NOT dispatch the next coder agent.**
-3. Wait for the user's explicit approval ("ok", "continue", "next", etc.)
-4. Only after receiving approval, proceed to the next prompt
+**Per-prompt transition (Stage 4):** after each prompt cycle (coder → verifier → context save):
 
-This is NON-NEGOTIABLE. Never batch multiple prompts. Never skip the checkpoint. Never assume the user wants to continue. The user needs to test every build **in the simulator** before proceeding. (Per-prompt iteration uses the simulator; the authoritative physical-cube test happens once at **Stage 5**, when the device `.oct` is built and verified — see below for why it cannot be built per-prompt without being clobbered.)
+- **Autonomous mode (default):** save context and go straight to the next prompt cycle. No summary, no stop — progress lines are emitted at stage transitions, not per prompt.
+- **Stepwise mode:** you MUST:
+  1. Present the summary and test instructions to the user
+  2. **STOP. Do NOT dispatch the next coder agent.**
+  3. Wait for the user's explicit approval ("ok", "continue", "next", etc.)
+  4. Only after receiving approval, proceed to the next prompt
 
-**Exception — YOLO Mode:** this per-prompt checkpoint, and every "wait for user approval" instruction in this skill, is SUSPENDED in YOLO (see `## YOLO Mode`). YOLO runs all prompts back-to-back and only reports once, at the final device build.
+  Never batch multiple prompts in stepwise mode; the user tests every build **in the simulator** before proceeding.
 
-## YOLO Mode (Autonomous Run — opt-in)
-
-**Default OFF.** YOLO is an explicit, opt-in override of every checkpoint and approval in this skill.
-
-**HARD ACTIVATION RULE — the only way YOLO turns on:** activate YOLO **if and only if the literal token `YOLO` (case-insensitive) appears in the body of the user's prompt.** Nothing else activates it:
-- No paraphrase, synonym, or translation activates YOLO — "автономный режим", "no checkpoints, just build it", "фигачь до финального билда / .oct", "go autonomous", etc. do **NOT** count. Only the literal string `YOLO`.
-- Never infer it from intent, tone, or context.
-- Never carry it across turns or unrelated requests — the token must be present in the current prompt body. A prior prompt's `YOLO` does not keep the mode on.
-- If the user clearly wants autonomy but did not write `YOLO`, do **not** enter YOLO; proceed with normal checkpoints (you may note that they can write `YOLO` to enable it).
-
-When activated this way, it applies to both Build and Mod mode.
-
-### Mandatory pre-activation double-check (risk disclosure + explicit confirmation)
-
-Even when the literal `YOLO` token is present, **the orchestrator does NOT go autonomous immediately.** It MUST first stop, explain the risks in plain language, and get one explicit confirmation. This is the single allowed prompt between seeing `YOLO` and going silent — never skip it, never assume the answer.
-
-Present the risks clearly (adapt wording, but cover all of these):
-- **Result is not guaranteed.** The pipeline runs unattended; the final game may not match what you pictured, and YOLO won't stop to course-correct.
-- **No per-stage verification by you.** Design, prompts, assets, and gameplay are auto-accepted at each boundary — without your eyes on each stage, the cumulative result can drift far from your expectations, and a wrong early decision propagates through everything downstream.
-- **It can take a long time.** A full design → prompts → assets → implement → device-build run is long-running with no interaction in between.
-- **It can burn a lot of tokens / cost.** Autonomous generation, multi-agent verification, and up-to-5 fix cycles per prompt consume significantly more tokens than a checkpointed run.
-- **Rework risk.** If the outcome is off, you may have to redo or heavily mod the game afterward — possibly costing more total than running with checkpoints.
-
-Then ask for an explicit go/no-go, e.g. *"YOLO means I run the whole pipeline unattended to the final `.oct` — no result guarantee, no per-stage review from you, it can take a while and burn a lot of tokens. Confirm you want YOLO, or I'll proceed with normal checkpoints."*
-
-- Proceed into YOLO **only on a clear affirmative** ("yes", "да", "go", "confirm").
-- On anything ambiguous, silence, or "no" → **do NOT enter YOLO**; fall back to the normal checkpointed flow.
-
-Only after this confirmation do the One-time intake and the autonomous run begin.
-
-When YOLO turns on, the orchestrator runs the **entire pipeline in one session** and does not prompt the user again until it delivers the final device package `app_<game>/app_<game>.oct`. The only thing it removes is the human checkpoints — it does NOT remove the correctness gates that decide whether that `.oct` actually runs on the cube.
-
-### One-time intake (gather BEFORE going autonomous)
-
-A truly autonomous run still needs the few inputs that cannot be invented. Collect these once, up front, then go silent:
-
-1. **Game concept** (Build mode, if not already given) — ask for the brief now (genre, core mechanic, vibe, length). YOLO does not run the designer's interview turn-by-turn; it takes the brief once and lets `cube_game-designer` produce the GDD from it.
-2. **Asset source + key** (Stage 3) — default to **Path A (AI generation)**, the autonomous path, and obtain `OPENROUTER_API_KEY` now. Path B (self-supplied art) is inherently non-autonomous (it waits on human-made files); use it in YOLO only if complete assets are already on disk.
-
-Then announce YOLO once ("YOLO ON — running design → prompts → assets → implement → device build autonomously; next stop is the final .oct") and proceed without further prompts.
-
-### What YOLO suspends
-
-| Checkpoint (default) | YOLO behavior |
-|---|---|
-| Stage-Boundary Checkpoint (between every stage) | **Suspended** — re-run Stage Detection, auto-advance. |
-| Per-prompt checkpoint (Stage 4, Step 5) | **Suspended** — save context, go straight to the next prompt. |
-| Stage 3 user asset review (Step 3.4) | **Suspended** — auto-accept any set the consistency reviewer passes (the review→regen loop, max 3, still runs). |
-| Mod-mode mini-plan & per-change checkpoints (M3, M5) | **Suspended** — auto-advance through plan and per-change review. |
-| 5-attempt verification failure → ask user | **Auto-decide** per the Failure policy below. |
-
-### What YOLO NEVER drops (hard invariants — these decide whether the .oct runs)
-
-Dropping any of these yields a package that won't load or won't run on the cube, defeating the whole point of an autonomous run.
-
-- **Both verifier agents** (Requirements + Template) run every prompt, threshold **90/90**, max **5** fix attempts.
-- The orchestrator still **never writes code, design, prompts, or assets itself**.
-- **`_ids.h` is never hand-edited; assets stay valid; the asset-set completeness check still blocks a partial set** (a missing sprite/sound = uncompilable build).
-- **Stage 5 device build + ARM-embed verification still runs and must exit 0** — a sim-only `.oct` is never delivered.
-- All mandatory platform reminders, explicit casts, fixed-width types, and all seven handlers (`on_init`, `on_tick`, `on_tap(tapid, count)`, `on_twisted`, `on_pretwisted`, `on_shake`, `on_proc_draw` stub) — still enforced.
-
-### Safe parallelism (Stage 4)
-
-All game code is one file (`app_<game>/src/app_<game>.h`), so **coding stays sequential** — only one coder writes the file at a time. YOLO extracts parallelism from everything else:
-
-1. Build a prompt dependency graph up front (foundational vs. cosmetic/isolated, per the Pipeline Model table).
-2. **Verifiers (Requirements + Template) and fixers fan out** in parallel; verification of prompt N overlaps task-JSON prep for N+1.
-3. **Independent cosmetic/isolated prompts** (audio, visual polish, UI text — touching disjoint code regions, no mutual dependency) batch their verify+fix in parallel.
-4. Coders for independent prompts are still serialized on the file but dispatched back-to-back with no waiting between them.
-5. **Foundational prompts** (scaffold, data structures, core init) stay strictly sequential and fully verified before anything downstream is dispatched.
-6. Never dispatch two coders that could both edit the file concurrently. When in doubt, serialize the coding and parallelize only the checking.
-
-### Failure policy in YOLO (no user to ask)
-
-When a prompt fails verification after the 5-attempt limit:
-- **Foundational prompt** → **abort the run**, save context, surface immediately. This is the one time YOLO breaks silence before the `.oct` — downstream prompts can't be trusted.
-- **Non-foundational prompt** → keep the best-scoring version, record it as a known issue for the final report, and **continue**.
-
-A **Stage 5 ARM build failure** (missing toolchain, asset-only pack) is always a hard stop — surface it; never ship a sim-only `.oct`.
-
-### YOLO completion
-
-After the device build verifies, present a single end-of-run report: stages run, per-prompt verification scores, total fix cycles, any prompts that finished below threshold (with best scores), the consistency-review outcome, and the absolute path to the verified `app_<game>/app_<game>.oct`.
+(In both modes, per-prompt iteration uses the simulator; the authoritative physical-cube test happens once at **Stage 5**, when the device `.oct` is built and verified — see below for why it cannot be built per-prompt without being clobbered.)
 
 ## When to Use
 
@@ -200,7 +218,7 @@ These files must exist before the **implementation workflow (Stage 4)** runs. Th
 | `OCT_wowcube-agent-skills/templates/app_ai_template/src/app_ai_template.h` | Project template | Yes |
 | `app_<game>/` scaffolded, assets packed, **simulator builds and launches** | `wowcube-boilerplate` skill | Yes |
 
-If any Stage 4 prerequisite is missing when implementation is expected, do NOT proceed — re-run **Stage Detection & Routing** above and drive the missing stage's sub-skill yourself (Stage 1 → `cube_game-designer`, Stage 2 → `technical_prompter`, Stage 3 → `cube_asset-builder`), checkpointing at each boundary.
+If any Stage 4 prerequisite is missing when implementation is expected, do NOT proceed — re-run **Stage Detection & Routing** above and drive the missing stage's sub-skill yourself (Stage 1 → `cube_game-designer`, Stage 2 → `technical_prompter`, Stage 3 → `cube_asset-builder`), running the stage-boundary transition at each boundary (progress line in autonomous mode, checkpoint in stepwise mode).
 
 **Infrastructure gate (do this before Step 1):** Verify the build environment is
 ready — `app_<game>/` exists with its `.target` marker, `art/packed/*.raw` and
@@ -249,7 +267,7 @@ The orchestrator decides at each step whether to pipeline or wait:
 | Prompt N is a foundational prompt (scaffold, data structures, core init) | **Always wait**: later prompts depend heavily on getting this right |
 | Prompt N is cosmetic/isolated (audio, visual polish, UI text) | **Safe to pipeline**: failures here won't cascade |
 
-> **In YOLO mode** this same table drives parallelism: "Pipeline" / "Safe to pipeline" rows become parallel verifier+fixer batches, while "Wait" / "Always wait" rows stay strictly sequential. The decision criteria do not change — only the per-prompt user checkpoint between them is removed.
+> **In autonomous mode** this same table drives parallelism: "Pipeline" / "Safe to pipeline" rows become parallel verifier+fixer batches, while "Wait" / "Always wait" rows stay strictly sequential. The decision criteria do not change — only the per-prompt user checkpoint between them (a stepwise-mode feature) is absent.
 
 ## JSON Communication Protocol
 
@@ -370,7 +388,7 @@ All data between orchestrator and agents is JSON.
 
 ## Stage 3: Asset Generation
 
-Reached when the GDD, prompts, and manifest exist but `assets/packed/` or `src/app_<game>_ids.h` is missing. Stage 3 produces the source art (`assets/art/*.png`, `assets/wav/*.wav`) and then packs it. The **source art can be produced two ways**, and the orchestrator MUST let the user choose before generating or packing anything. Both paths converge on the same pack step (Step 3.5).
+Reached when the GDD, prompts, and manifest exist but `assets/packed/` or `src/app_<game>_ids.h` is missing. Stage 3 produces the source art (`assets/art/*.png`, `assets/wav/*.wav`) and then packs it. The **source art can be produced two ways**: in stepwise mode the orchestrator MUST let the user choose before generating or packing anything; in autonomous mode the path was already decided at intake (see Step 3.0). Both paths converge on the same pack step (Step 3.5).
 
 ### Display & sprite sizing (CRITICAL — applies to every sprite, both paths)
 
@@ -407,37 +425,43 @@ Practical consequences:
 
 **Tier promises are absolute.** Each tier is a commitment: fast (palette ×2), mid (palette fullsize — native sharpness, keeps alpha), fat (full-color — uncompromised color). **Maximum quality = `color: "full"` + `flags.fullsize` + `dither: true` and nothing else** — nearest-level RGB565, Floyd–Steinberg dithering, lossless RLE; no smoothing or lossy steps ever (a degraded full-color sprite ≈ a palette-fullsize sprite at twice the bytes — pointless). Never trade tier-3 fidelity for pack size unless the user explicitly asks to shrink the pack.
 
-### Step 3.0: Choose the asset source (ASK FIRST — before any generation or packing)
+**Animation guidelines (owner's rules — hold across Stage 1/2/3/4).**
+- **20 fps is the hardware cap.** The engine ticks 20 times/second; reject or push back on any design/prompt that implies faster animation.
+- **Default clip length is ≤5 s** — longer is technically possible (only app size limits it), but 5 s is the guideline default `cube_game-designer` and `technical_prompter` should both follow.
+- **Prefer Palette (tier-1) animations** — the cheapest render path; only escalate tier when the design genuinely needs it.
+- **Fullsize animations must stay short and careful** — they load the cube harder than regular sprites; a frametime above **70 ms** is a bad sign (cut frames, size, or tier).
+- **Full-color (tier-3) animations only on an explicit user request**, and must carry a "handle VERY carefully" warning in the GDD/manifest.
+- **At most one animated picture per physical module** — a face's four screens sit on four different modules; adjacent faces share exactly two of them (their common edge); opposite faces share none. `cube_game-designer` validates placement when writing the GDD; `cube_verifier`'s Template Agent re-checks it against the implementation.
 
-Before touching `cube_asset-builder`, present the choice with the **Agent tool's `AskUserQuestion`** (or a short bullet list + wait). Do NOT pick for the user.
+### Step 3.0: Choose the asset source (before any generation or packing)
 
-- **Option 1 — AI generation.** The user provides an image-model API key (GPT Image 2 / OpenRouter); the orchestrator generates every sprite from its `gen_prompt`. → **Path A**.
-- **Option 2 — Self-supplied assets.** The user creates the assets themselves, following the manifest's exact specs (name, size, animation frames) and the GDD's art style. The orchestrator does NOT generate — it validates completeness, then packs. → **Path B**.
+- **Autonomous mode (default):** do NOT ask here — the decision was made at intake (`## Run Modes` → One-time intake). A resolved, validated image provider → **Path A** (AI generation). No provider (the user answered «не знаю», validation failed twice, or `YOLO` token with nothing configured) → **Path A with agent-drawn placeholder art**: `cube_asset-builder` authors every sprite itself per its placeholder-art section, and the final report carries the one placeholder line. Use **Path B** only if a complete self-supplied asset set is already on disk (the completeness check in 3.B2 still applies).
+- **Stepwise mode:** present the choice with the **Agent tool's `AskUserQuestion`** (or a short bullet list + wait). Do NOT pick for the user.
+  - **Option 1 — AI generation.** The user provides an image-model key or endpoint (any supported provider — see the resolution chain in 3.A1); the orchestrator generates every sprite from its `gen_prompt`. → **Path A**.
+  - **Option 2 — Self-supplied assets.** The user creates the assets themselves, following the manifest's exact specs (name, size, animation frames) and the GDD's art style. The orchestrator does NOT generate — it validates completeness, then packs. → **Path B**.
 
 Route to the chosen path below.
-
-> **YOLO mode:** do not ask here. Default to **Path A** and use the `OPENROUTER_API_KEY` gathered during the YOLO one-time intake. Only use Path B in YOLO if a complete asset set is already on disk (the completeness check in 3.B2 still applies). If Path A is required but the key is missing, that is the one input YOLO must request before continuing.
 
 ### Path A — AI generation (Option 1)
 
 **3.A1 Pre-generation gates** (both must pass; if either fails, do NOT generate):
 1. **`gen_prompt` coverage.** Load `plans/<game>_assets.json` and confirm **every sprite** has a non-empty `gen_prompt`. (Sounds do NOT need one.) A blank `gen_prompt` makes `gen_sprites.py` fail with `ValueError`. If any sprite is missing it, **return to Stage 2 (`technical_prompter`)** — do not patch the manifest yourself.
-2. **Image-model key present.** Generation calls OpenRouter; without the key `genimg.py` raises `ImageGenError`. If `OPENROUTER_API_KEY` is not set in the sandbox where `build_pipeline.py` runs, **this is the "add a key" step** — ask the user to export it (`export OPENROUTER_API_KEY=sk-or-...`) now, before proceeding. Never hardcode it; never commit it.
+2. **Image provider resolved.** AI generation needs a configured provider: `resolve_provider()` in `scripts/image_providers.py` walks the chain `OPENROUTER_API_KEY` env → `IMAGE_API` env → `~/.wowcube/image_api.json` (any supported provider: OpenRouter, OpenAI, xAI, Gemini, or a local Stable Diffusion URL). In autonomous mode this was settled at intake — `None` here means the intake already chose placeholder art, so run the placeholder flow instead of blocking. In stepwise mode, if nothing resolves, ask the user for a key/URL now (persist with `save_provider`, check with `validate`) before proceeding. Never hardcode a key; never commit one.
 
-**3.A2 Generate.** Invoke `cube_asset-builder` (Skill tool). It runs `build_pipeline.py generate` → `gen_sprites.generate()` → `genimg.generate_image(gen_prompt, size)` per sprite (OpenRouter image model) → PNGs in `assets/art/`; sounds synthesised as placeholders into `assets/wav/`. Output is non-deterministic across runs.
+**3.A2 Generate.** Invoke `cube_asset-builder` (Skill tool). With a provider it runs `build_pipeline.py generate` → `gen_sprites.generate()` → `genimg.generate_image(gen_prompt, size)` per sprite (via the resolved provider) → PNGs in `assets/art/`; without one, it authors placeholder PNGs itself per its placeholder-art section. Sounds are synthesised as placeholders into `assets/wav/` either way. AI output is non-deterministic across runs.
 
-**3.A3 Consistency review** (automated, BEFORE the user review). Dispatch one **read-only** asset-consistency reviewer via the Agent tool. It inspects `assets/art/*.png` against the GDD's global art style and each `gen_prompt`, reporting which **groups** (derived per `manifest_schema`) drift — wrong palette/mood, inconsistent line weight or scale, broken animation continuity, leaked text/watermark/background, off-spec dimensions. Pass it the Asset Consistency Task JSON; it returns the Asset Consistency Response JSON (both below).
-- **`status: "pass"`** → go to Step 3.4 (user review).
-- **`status: "fail"`** → for each flagged group, re-run `cube_asset-builder`'s `regen <group>` (→ `build_pipeline.py generate --group <name>`), then re-run this review. **Max 3 review→regen cycles**, then hand the remaining issues to the user at Step 3.4.
+**3.A3 Consistency review** (automated, BEFORE Step 3.4). Dispatch one **read-only** asset-consistency reviewer via the Agent tool. It inspects `assets/art/*.png` against the GDD's global art style and each `gen_prompt`, reporting which **groups** (derived per `manifest_schema`) drift — wrong palette/mood, inconsistent line weight or scale, broken animation continuity, leaked text/watermark/background, off-spec dimensions. Pass it the Asset Consistency Task JSON; it returns the Asset Consistency Response JSON (both below).
+- **`status: "pass"`** → go to Step 3.4.
+- **`status: "fail"`** → for each flagged group, re-run `cube_asset-builder`'s `regen <group>` (→ `build_pipeline.py generate --group <name>`), then re-run this review. **Max 3 review→regen cycles**; remaining issues go to Step 3.4 (stepwise: handed to the user; autonomous: recorded for the final report, and the run continues).
 
-This is a quality gate, not a replacement for the human checkpoint. Path A then continues at **Step 3.4**.
+Placeholder-art sets skip this review — they are not judged for AI art cohesion; they are checked for manifest compliance instead (every sprite present, exact size, correct alpha). Path A then continues at **Step 3.4**.
 
 ### Path B — Self-supplied assets (Option 2)
 
 The user makes the art by hand (or with their own tools) from the GDD. The orchestrator's job is to make the spec unambiguous, then refuse to pack an incomplete set.
 
 **3.B1 Hand the user the exact asset spec** (derive entirely from `plans/<game>_assets.json` + GDD §1 art style):
-- **Sprites** → drop into `assets/art/`. For each: filename **`<name>.png`** (verbatim, lowercase), exact size **`[w, h]`** in pixels, RGBA, transparent background (unless `flags.bg` is set, or the sprite is `color: "full"` — full-color art is always opaque), plus the `description` (and `gen_prompt` if present) as the visual brief. Animation frames must be the full contiguous `_00.._NN` set.
+- **Sprites** → drop into `assets/art/`. For each: filename **`<name>.png`** (verbatim, lowercase), exact size **`[w, h]`** in pixels, RGBA, transparent background (unless `flags.bg` is set, or the sprite is `color: "full"` — full-color art is always opaque), plus the `description` (and `gen_prompt` if present) as the visual brief. Animation frames must be the full contiguous set as named in the manifest (zero- or one-based, 2- or 3-digit, e.g. `_00.._NN` or `_001.._NNN`).
 - **Sounds** → drop into `assets/wav/`. For each: **`<name>.wav`**, ≤ `duration_ms`. (Packing encodes it to `sound/assets/<name>.mp3` automatically — the user supplies only the source `.wav`.)
 - The reserved **`0.png` is auto-created by the packer** — the user must NOT make it.
 - Stress that the **GDD's global art style applies to every file** so the set stays cohesive.
@@ -446,19 +470,18 @@ The user makes the art by hand (or with their own tools) from the GDD. The orche
 Validate the files actually present against the manifest:
 - For every sprite in the manifest, confirm `assets/art/<name>.png` exists (optionally verify pixel dimensions match `size`).
 - For every sound, confirm `assets/wav/<name>.wav` exists.
-- **List EVERY missing file explicitly** (by `<name>` and expected size/duration). If anything is missing, **STOP**: tell the user exactly which sprites/sounds are absent and that the build will not be playable — every `BMP_<name>`/`SND_getAssetId("<name>.mp3")` referenced in the prompts must exist or the code fails to compile. Wait for the user to add the missing files, then re-run this check. **Never pack a partial set.** (This check holds even in YOLO — a partial set cannot compile.)
+- **List EVERY missing file explicitly** (by `<name>` and expected size/duration). If anything is missing: in **stepwise mode**, **STOP** — tell the user exactly which sprites/sounds are absent and that the build will not be playable (every `BMP_<name>`/`SND_getAssetId("<name>.mp3")` referenced in the prompts must exist or the code fails to compile), wait for the user to add them, then re-run this check. In **autonomous mode** there is no one to wait for — fill the gaps via Path A (the resolved provider, or agent-drawn placeholders) and note the substitution in the final report. **Never pack a partial set.** (This check holds in every run mode — a partial set cannot compile.)
 
 **3.B3 When complete → pack.** Skip generation and the AI consistency review (the user authored and approved their own art). Go straight to **Step 3.5**.
 
-### Step 3.4: User review checkpoint (Path A only; MANDATORY — never skip)
+### Step 3.4: Review the generated set (Path A only; user checkpoint in stepwise mode)
 
-This is `cube_asset-builder`'s own mandatory review of the AI-generated set. Present the generated set and the consistency reviewer's verdict, then STOP and wait for the user. Offer the verbatim options the asset-builder supports: `ok`/`continue`, `regen <group>`, `swap <name>`, `edit <name> size <WxH>`. Never auto-continue to pack.
+- **Autonomous mode (default):** no user review. Auto-accept any set the consistency reviewer (3.A3) passed — the review→regen loop already enforced cohesion — and auto-accept placeholder sets that pass manifest compliance. Proceed directly to Step 3.5.
+- **Stepwise mode (MANDATORY — never skip):** this is `cube_asset-builder`'s own review of the generated set. Present the set and the consistency reviewer's verdict, then STOP and wait for the user. Offer the verbatim options the asset-builder supports: `ok`/`continue`, `regen <group>`, `swap <name>`, `edit <name> size <WxH>`. Never auto-continue to pack in stepwise mode.
 
-> **YOLO mode:** skip this user review. Auto-accept any set the consistency reviewer (3.A3) passed; the review→regen loop already enforced cohesion. Proceed directly to Step 3.5.
+### Step 3.5: Pack & boundary transition (both paths)
 
-### Step 3.5: Pack & boundary checkpoint (both paths)
-
-After approval (Path A: user replies `ok`; Path B: the completeness check passed), invoke `cube_asset-builder`'s pack stage → `build_pipeline.py pack`. It **assembles `assets/assets.psd`, fills `assets/exported/` and `assets/packed/` (+ `pal.png`), and writes `src/app_<game>_ids.h`** with the `BMP_*` enum. Then run the normal **Stage 3→4 boundary checkpoint** (summarize asset counts + `BMP_*` constant count, wait for approval) before any Stage 4 work. (In YOLO, the boundary checkpoint is auto-advanced — see `## YOLO Mode`.)
+After acceptance (Path A stepwise: the user replies `ok`; Path A autonomous: the set was auto-accepted in 3.4; Path B: the completeness check passed), invoke `cube_asset-builder`'s pack stage → `build_pipeline.py pack`. It **assembles `assets/assets.psd`, fills `assets/exported/` and `assets/packed/` (+ `pal.png`), and writes `src/app_<game>_ids.h`** with the `BMP_*` enum. Then run the normal **Stage 3→4 boundary transition** before any Stage 4 work: autonomous — one progress line and continue; stepwise — summarize asset counts + `BMP_*` constant count and wait for approval.
 
 ### Asset Consistency Task JSON (orchestrator → reviewer agent)
 
@@ -517,20 +540,20 @@ You are a WowCube asset-consistency reviewer. You do NOT generate or edit images
 
 ## Stage 4: Implementation Workflow
 
-This is the implementation stage — reached only after Stages 1–3 are complete and their boundary checkpoints approved. Here the orchestrator dispatches coder/verifier/fixer **subagents via the Agent tool** to implement the prompts one at a time.
+This is the implementation stage — reached only after Stages 1–3 are complete and their boundary transitions passed (in stepwise mode: approved by the user). Here the orchestrator dispatches coder/verifier/fixer **subagents via the Agent tool** to implement the prompts one at a time.
 
 ### Step 1: Initialize
 
 1. Verify all Stage 4 prerequisites exist
 2. Read `plans/<game>_prompts.md` — parse all prompts (delimited by `## Prompt N:`)
 3. Read `plans/<game>_gdd.md` for game understanding
-4. Check if `context/<game>_context.json` exists — if yes, offer to resume
+4. Check if `context/<game>_context.json` exists — if yes, resume from it (in stepwise mode, offer first)
 5. If new game, reset the game source to a clean skeleton: copy
    `OCT_wowcube-agent-skills/src/app_structure_example.h` → `app_<game>/src/app_<game>.h`.
    (`wowcube-boilerplate` left a working demo there to prove the build; overwriting
    it with the skeleton is expected — the verified folder, marker, packed assets,
    and toolchain are what carry forward.)
-6. Count total prompts, present execution plan to user. **In YOLO**, also build the prompt dependency graph now (foundational vs. cosmetic/isolated) so parallel batches can be planned, and do not wait for approval of the plan.
+6. Count total prompts. **Stepwise mode:** present the execution plan to the user and wait for the go. **Autonomous mode:** build the prompt dependency graph now (foundational vs. cosmetic/isolated) so parallel batches can be planned, and continue without presenting or waiting.
 
 ### Step 2: Validate Prompts
 
@@ -571,7 +594,7 @@ For each prompt, repeat this cycle:
 | teleport, set, OCT_TM_set | `"OCT_TM_set overwrites position, angle, and plane directly (teleport) — no animation."` |
 | XSIGN, YSIGN, quad coords | `"XSIGN/YSIGN are already declared in oct_shared.h — do NOT redeclare."` |
 
-**Always include these reminders in EVERY coding task (mandatory for all prompts, including YOLO):**
+**Always include these reminders in EVERY coding task (mandatory for all prompts, in every run mode):**
 - `"Use explicit type casts — never rely on implicit conversions between numeric types, pointers, or enums."`
 - `"Use only fixed-width types from <stdint.h> (int8_t, int16_t, int32_t, uint8_t, uint16_t, uint32_t, size_t). Never use plain int, short, long."`
 - `"All 7 handler functions must be present: on_init(), on_tick(), on_tap(int32_t tapid, int32_t count), on_twisted(int32_t twid, uint32_t disconnected_ms), on_pretwisted(int32_t twid), on_shake(int32_t shakeid), on_proc_draw (stub). on_shake and on_proc_draw are mandatory stubs: on_shake is link-required — the ARM module fails to link without it; on_proc_draw is bound unconditionally by the simulator, so the SIM build fails without the stub, while the ARM module only references it under #define APP_HAS_PROC_DRAW. Never build gameplay on shake input (the engine currently always runs the system default go-home). If a handler has no game logic, reference every parameter to suppress warnings (e.g., twid; disconnected_ms;)."`
@@ -616,11 +639,11 @@ After coder completes, deploy two verifier agents **sequentially** using the `cu
 
 **Evaluate:** Each agent scores out of 100 independently. Both must score >= 90 to pass. If either fails, pass its issues to the fix agent.
 
-**Pipeline rule:** If the orchestrator is confident that prompt N+1 does NOT depend on N's verification outcome (see Pipeline Model table), it MAY begin preparing N+1's task JSON while the verifiers run. But it MUST NOT dispatch N+1's coder until verification passes. **In YOLO**, this fan-out is the norm: verifiers and fixers for independent prompts run in parallel batches and the next coder is dispatched as soon as the file is free — coding still serialized, no user checkpoint between prompts.
+**Pipeline rule:** If the orchestrator is confident that prompt N+1 does NOT depend on N's verification outcome (see Pipeline Model table), it MAY begin preparing N+1's task JSON while the verifiers run. But it MUST NOT dispatch N+1's coder until verification passes. **In autonomous mode**, this fan-out is the norm: verifiers and fixers for independent prompts run in parallel batches and the next coder is dispatched as soon as the file is free — coding still serialized, no user checkpoint between prompts.
 
 #### 3d. Handle Verification Result
 
-- **Score >= 90:** Save context (Step 4), proceed to checkpoint (Step 5)
+- **Score >= 90:** Save context (Step 4), then run the per-prompt transition — Step 5 checkpoint in stepwise mode; straight to the next prompt cycle in autonomous mode
 - **Score < 90:** Deploy fix agent. Max **5 attempts** per prompt.
 
 ##### Fix Agent Prompt Template
@@ -647,14 +670,14 @@ You are a WowCube code fixer. Fix the issues found by the verifier.
 
 After fix agent completes → re-deploy verifier. Repeat until pass or 5 attempts exhausted.
 
-**After 5 failures (checkpointed mode):**
+**After 5 failures (stepwise mode):**
 1. Save current state to context
 2. Present issues to user
 3. Ask: "Verification failed after 5 attempts (best score: X). Continue / retry / stop?"
 
-**After 5 failures (YOLO mode) — auto-decide, do not ask:**
-- **Foundational prompt** (scaffold, data structures, core init): save context and **abort the run**, surfacing the failure immediately.
-- **Non-foundational prompt**: keep the best-scoring version, record it as a known issue for the end-of-run report, and **continue** to the next prompt.
+**After 5 failures (autonomous mode) — degrade, never abort (see `## Run Modes` → Failure policy):**
+- **Non-foundational prompt**: keep the best-scoring version, cut or simplify the failed feature, record the cut for the final report, and **continue** to the next prompt.
+- **Foundational prompt** (scaffold, data structures, core init): keep the best-scoring version, then run **ONE re-scope pass** over the remaining prompts — simplify or drop those that build on the missing piece — and **continue**. The floor is the simplest playable loop that passes the verifier; the run still ends with a verified `.oct`, and every cut appears in the final report.
 
 ### Step 4: Save Context
 
@@ -681,11 +704,11 @@ After verification passes (score >= 90), update `context/<game>_context.json`:
 }
 ```
 
-### Step 5: Checkpoint with User (MANDATORY in checkpointed mode — SKIPPED in YOLO)
+### Step 5: Checkpoint with User (stepwise mode only)
 
-> **YOLO mode:** skip this entire step. Do not summarize, do not stop, do not ask. Save context (Step 4) and immediately proceed to the next prompt cycle. The only report is the single end-of-run report at completion (see `## YOLO Mode` → YOLO completion).
+> **Autonomous mode (default):** skip this entire step. Do not summarize, do not stop, do not ask. Save context (Step 4) and immediately proceed to the next prompt cycle. The only user-facing output is the progress line at each stage transition and the final report at completion (see `## Run Modes` → Telemetry & final report).
 
-**In checkpointed mode, after EVERY prompt completes (verified), you MUST checkpoint and STOP.**
+**In stepwise mode, after EVERY prompt completes (verified), you MUST checkpoint and STOP.**
 
 Do NOT proceed to the next prompt. Do NOT dispatch any more agents. WAIT for the user.
 
@@ -731,8 +754,8 @@ If actual source diverges from context JSON:
 
 ### Step 7: Complete
 
-After all prompts executed and final checkpoint passes:
-1. Summary: total prompts, fix cycles, average verification score
+After all prompts are executed (stepwise: and the final checkpoint passes):
+1. Summary: total prompts, fix cycles, average verification score (stepwise mode; in autonomous mode this data feeds the final report's cuts list instead — no jargon-laden interim summary)
 2. **Run Stage 5 — Package & Verify (mandatory, not optional).** A passing
    simulator build is **not** a shippable result. The simulator runs its own
    PC-compiled code, so a game can look perfect in the sim while the `.oct`
@@ -752,14 +775,15 @@ After all prompts executed and final checkpoint passes:
    scripts/build_device.sh --app-dir <workspace>/app_<game>
    ```
 
-   That compiles the ARM target (`out/app_<game>.bin`), has the simulator pack
-   assets + sounds + ARM code into `app_<game>/app_<game>.oct`, and **verifies the
-   ARM code is actually embedded** (it fails loudly on an asset-only pack). The
-   task is not complete until this exits 0. If the ARM toolchain is missing, that
-   is a `wowcube-boilerplate` toolchain problem (`check_env.ps1` / `check_env.sh`)
-   to resolve — not a reason to ship the sim-only `.oct`. (This Stage 5
-   verification is a hard invariant even in YOLO — a sim-only `.oct` is never
-   delivered.)
+   That compiles the ARM target (`out/app_<game>.bin`), then packs assets +
+   sounds + the ARM binary into `app_<game>/app_<game>.oct` via the pure-Python
+   builder (`python scripts/pack_beta.py --build-oct`) — no simulator, no MSVC
+   involved — and **verifies the ARM code is actually embedded** (it fails
+   loudly on an asset-only pack). The task is not complete until this exits 0.
+   If the ARM toolchain is missing, that is a `wowcube-boilerplate` toolchain
+   problem (`check_env.ps1` / `check_env.sh`) to resolve — not a reason to ship
+   the sim-only `.oct`. (This Stage 5 verification is a hard invariant in every
+   run mode — a sim-only `.oct` is never delivered.)
 
    **Critical ordering:** the simulator rewrites `app_<game>.oct` as an
    asset-only pack on *every* launch, so all per-prompt sim testing (Stage 4)
@@ -768,15 +792,17 @@ After all prompts executed and final checkpoint passes:
    would just be clobbered by the next sim run. Never hand the user a `.oct` that
    was last touched by a plain sim run.
 
-   Then **checkpoint with the user (Stage 5 boundary):** report the absolute path
-   to the verified package and confirm it is ready to flash onto the cube:
+   Then **report to the user (Stage 5 boundary):** the absolute path to the
+   verified package, confirmed ready to flash onto the cube:
 
    ```
    app_<game>/app_<game>.oct
    ```
 
-   (In YOLO this final report is delivered automatically without waiting — it is
-   the single end-of-run report.)
+   In autonomous mode this is delivered as the final report — path, load
+   instruction, cuts, placeholder note, playtime hints, no waiting (see
+   `## Run Modes` → Telemetry & final report). In stepwise mode it is the
+   Stage 5 boundary checkpoint.
 3. Suggest next steps (testing on the physical cube, polish, features)
 
 ## Mod Mode Workflow
@@ -802,17 +828,18 @@ Map the change to the smallest applicable type. Pick the **cheapest type that fu
 | Type | What it is | Minimal path |
 |------|-----------|--------------|
 | **T1 — Logic / parameters** | speed, balance, timing, small behavior tweaks | one scoped coder task on `app_<game>/src/app_<game>.h` → verify → fix |
-| **T2 — Sprite** | replace/add an image (e.g. a friend's photo) | **user supplied the image** → asset-builder Path B (fit it to the manifest spec, resize, repack); **needs generating** → asset-builder Path A (OpenRouter key, `regen`/add for *that sprite only*) → repack → if a new `BMP_*` appears, one scoped coder edit to reference it |
+| **T2 — Sprite** | replace/add an image (e.g. a friend's photo) | **user supplied the image** → asset-builder Path B (fit it to the manifest spec, resize, repack); **needs generating** → asset-builder Path A (the resolved image provider, or a placeholder if none — `regen`/add for *that sprite only*) → repack → if a new `BMP_*` appears, one scoped coder edit to reference it |
 | **T3 — Sound** | replace/add a sound (source `.wav`; packing re-encodes it to `sound/assets/<name>.mp3`) | asset-builder for that one sound → repack |
 | **T4 — Structural** | new mechanic, refactor, architecture/design change | **only if the user explicitly asked.** Otherwise propose the smallest alternative that meets the intent and ask before doing it. |
 
 Asset work (T2/T3) needs a manifest entry for the affected asset. If `plans/<game>_assets.json` exists, edit just that one entry; if there is none, add a single minimal entry for the changed asset rather than regenerating the whole manifest.
 
-### M3 — Mini-plan + checkpoint (MANDATORY before any change)
+### M3 — Mini-plan (checkpoint in stepwise mode)
 
-Present a short plan: the chosen type, exactly which files/assets change, and why this is the minimal path. If the optimal path needs a resource (e.g. an OpenRouter image key for T2 generation), request it here. **STOP and wait for explicit user approval before touching anything.** Never start editing or generating before the plan is approved.
+Compose a short plan: the chosen type, exactly which files/assets change, and why this is the minimal path.
 
-> **YOLO mode:** the mini-plan is still composed but auto-approved — do not stop. Gather any required resource (e.g. the OpenRouter key) during the YOLO intake; if it is genuinely missing, that single input may be requested, otherwise proceed.
+- **Autonomous mode (default):** the mini-plan is composed and auto-approved — do not stop, do not present it for review. Resources are already settled by the intake (image provider resolved, or placeholder art decided) — never a mid-run request.
+- **Stepwise mode:** present the plan; if the optimal path needs a resource (e.g. an image-provider key for T2 generation), request it here. **STOP and wait for explicit user approval before touching anything.** Never start editing or generating before the plan is approved.
 
 ### M4 — Execute at minimal scope
 
@@ -820,17 +847,16 @@ Run the chosen path through the existing components, scoped to the change:
 - **Code (T1, or the wiring step of T2):** dispatch one coder subagent (Stage 4 mechanism) whose task is *only* the requested edit. `files_to_write` stays `app_<game>/src/app_<game>.h`; `prior_context` describes the existing structures so the agent extends, never rewrites.
 - **Assets (T2, T3):** drive `cube_asset-builder` for the specific sprite/sound (Path A `regen`/add, or Path B user-supplied), then its pack stage to refresh `assets/packed/*`, `app_<game>/art/packed/*.raw`, `app_<game>/index.bin`, and `src/app_<game>_ids.h`.
 
-### M5 — Verify, then sim checkpoint
+### M5 — Verify, then per-change transition
 
-Run the same verifier (threshold 90/90), but frame the criteria for a mod: **(a)** the requested change is implemented, and **(b)** nothing else regressed versus the M1 baseline. `no_regressions` carries the most weight here; `gdd_alignment` is checked only if a GDD exists. On failure, deploy the fixer (max 5 attempts), exactly as in Stage 4.
+Run the same verifier (threshold 90/90) in every run mode — that gate is never dropped — but frame the criteria for a mod: **(a)** the requested change is implemented, and **(b)** nothing else regressed versus the M1 baseline. `no_regressions` carries the most weight here; `gdd_alignment` is checked only if a GDD exists. On failure, deploy the fixer (max 5 attempts), exactly as in Stage 4; after 5 failures apply the Stage 4 failure handling for the current run mode (stepwise: ask; autonomous: degrade per `## Run Modes` → Failure policy).
 
-Then run the per-change checkpoint just like the Stage 4 per-prompt checkpoint: summarize what changed, give sim test instructions, **STOP**, and wait for the user. Several independent mods are handled one at a time, each with its own checkpoint — never batch.
-
-> **YOLO mode:** the verifier (90/90) and fixer still run — that gate is never dropped. The per-change user checkpoint is skipped; independent mods are processed back-to-back and reported once at the end alongside the repackaged `.oct`.
+- **Autonomous mode (default):** no per-change stop — independent mods are processed back-to-back and reported once at the end alongside the repackaged `.oct`.
+- **Stepwise mode:** run the per-change checkpoint just like the Stage 4 per-prompt checkpoint: summarize what changed, give sim test instructions, **STOP**, and wait for the user. Several independent mods are handled one at a time, each with its own checkpoint — never batch.
 
 ### M6 — Repackage for the device
 
-A mod isn't done until the cube package is rebuilt. Run **Stage 5** (`wowcube-boilerplate` → `build_device.ps1` / `build_device.sh`) so `app_<game>/app_<game>.oct` re-embeds the ARM code — mandatory for the same reason as in Build mode: the simulator rewrites the `.oct` as asset-only on every launch, so the device build must be the last action. Then checkpoint with the absolute `.oct` path. (In YOLO, the device build + ARM-embed verification still run; the final path is reported automatically.)
+A mod isn't done until the cube package is rebuilt. Run **Stage 5** (`wowcube-boilerplate` → `build_device.ps1` / `build_device.sh`) so `app_<game>/app_<game>.oct` re-embeds the ARM code — mandatory in every run mode, for the same reason as in Build mode: the simulator rewrites the `.oct` as asset-only on every launch, so the device build must be the last action. Then report the absolute `.oct` path (autonomous: as the final report, delivered without waiting; stepwise: as a checkpoint).
 
 ## Configuration
 
@@ -839,6 +865,6 @@ A mod isn't done until the cube package is rebuilt. Run **Stage 5** (`wowcube-bo
 | Verification threshold | 90 | Minimum score to pass (per agent, each scores out of 100) |
 | Max retry attempts | 5 | Max fix+re-verify cycles per prompt |
 | Start from | 1 | First prompt to execute (for resumption) |
-| Run mode | checkpointed | `checkpointed` (default — stop at every stage boundary and after every prompt) or `yolo` (autonomous — no checkpoints until the final device `.oct`). YOLO is opt-in only; see `## YOLO Mode`. |
-| YOLO foundational-failure | abort | On 5-attempt failure of a foundational prompt in YOLO, abort the run; non-foundational failures keep best effort and continue. |
-| YOLO asset path | A (AI gen) | YOLO defaults to AI generation (Path A) and gathers the OpenRouter key up front; Path B only if a complete set is already on disk. |
+| Run mode | autonomous | `autonomous` (default — no approval stops, one-way progress lines, final report at the verified device `.oct`) or `stepwise` (opt-in via "по шагам" / "с чекпоинтами" / "review mode" / mid-run "стоп" — stop at every stage boundary and after every prompt). See `## Run Modes`. |
+| Autonomous failure policy | degrade | On 5-attempt failure: cut or simplify and continue; a foundational failure additionally triggers one re-scope pass of the remaining prompts. Floor: the simplest playable loop that passes the verifier. Never abort; all cuts in the final report. |
+| Autonomous asset path | provider, else placeholders | A resolved image provider (`resolve_provider()` chain) → AI generation (Path A); none → agent-drawn placeholder art. Path B only when a complete asset set is already on disk. |

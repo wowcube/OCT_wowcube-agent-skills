@@ -2,22 +2,26 @@
 # Linux mirror of build_device.ps1.
 #
 # Produce the cube-loadable .oct for an existing app_<game> folder. The .oct is
-# assembled by the SIMULATOR at launch, which packs: art .raw assets + sounds +
-# (if present) the ARM device code from out/<app>.bin. So a *loadable* .oct is:
+# assembled by the pure-Python builder (scripts/pack_beta.py --build-oct),
+# which packs: art .raw assets + sounds + the ARM device code from
+# out/<app>.bin. So a *loadable* .oct is:
 #
 #   1. ARM device build  -> app_<game>/out/app_<game>.bin
 #      (cmake -G Ninja -S <octavios>/apps -B out ; cmake --build out)
-#   2. Launch the sim once -> it writes app_<game>/app_<game>.oct
-#      (assets + sounds + ARM code)
+#   2. python scripts/pack_beta.py --build-oct -> app_<game>/app_<game>.oct
+#      (assets + sounds + ARM code, deterministic bytes)
 #   3. Verify the ARM code is actually embedded (asset-only packs are DEAD on cube)
 #
-# Requires the device toolchain (arm-none-eabi-gcc, cmake, ninja) -- run
-# check_env.sh first. Without the ARM .bin the sim still writes a .oct, but it
-# contains assets only and will NOT run on the cube; this script treats a
-# missing .bin as a failure.
+# This no longer launches the simulator or needs MSVC -- only the ARM device
+# toolchain (arm-none-eabi-gcc, cmake, ninja) and python. Run check_env.sh
+# first if any of those are missing. Without the ARM .bin there is no code to
+# embed; this script treats a missing/empty .bin as a failure.
 #
 # Usage: build_device.sh --app-dir <workspace>/app_<game> [--octavios <path>]
 set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PACK_PY="$SCRIPT_DIR/pack_beta.py"
 
 APP_DIR=''; OCTAVIOS=''
 fail() { printf 'ERROR: %s\n' "$1" >&2; exit 1; }
@@ -43,9 +47,10 @@ app=$(basename "$target" .target)
 OCTAVIOS="$(cd "$OCTAVIOS" && pwd)"
 APPS_DIR="$OCTAVIOS/apps"
 
-for t in arm-none-eabi-gcc cmake ninja; do
+for t in arm-none-eabi-gcc cmake ninja python; do
     command -v "$t" >/dev/null 2>&1 || fail "$t not on PATH -- run check_env.sh to install the device toolchain"
 done
+[ -f "$PACK_PY" ] || fail "python builder not found: $PACK_PY"
 
 # --- 1. ARM device build --------------------------------------------------
 step "ARM device build (cmake + ninja) for $app"
@@ -58,28 +63,27 @@ bin_len=$(stat -c %s "$bin")
 [ "$bin_len" -gt 0 ] || fail "$bin is empty -- ARM build produced no code"
 echo "    built $bin ($bin_len bytes ARM code)"
 
-# --- 2. Pack the .oct by launching the sim once ---------------------------
-# The sim embeds out/<app>.bin ONLY if it exists (sim.h treats ARM code as
-# optional -- a sim-only launch writes an asset-only .oct, dead on the cube).
-# We just built the .bin, so this launch must embed it -- and we verify it.
-sim="$APP_DIR/build-sim/octavios_sim"
-[ -x "$sim" ] || fail "simulator missing ($sim) -- run new_app.sh first"
+# --- 2. Pack the .oct with the pure-Python builder -------------------------
+# scripts/pack_beta.py --build-oct assembles the pack directly from
+# index.bin + art/packed + sound/assets + the ARM code, byte-identical to
+# what the simulator used to write (minus its wall-clock BuildDateTime stamp,
+# which the python builder pins to 0 for determinism). No simulator launch,
+# no MSVC needed.
 oct="$APP_DIR/$app.oct"
 rm -f "$oct"
 
-step "Packing .oct (launching simulator to assemble the package)"
-"$sim" &
-sim_pid=$!
-sleep 5
-kill "$sim_pid" 2>/dev/null || true
-wait "$sim_pid" 2>/dev/null || true
-[ -f "$oct" ] || fail "simulator did not produce $oct"
+step "Packing .oct (python scripts/pack_beta.py --build-oct)"
+python "$PACK_PY" --build-oct --app-dir "$APP_DIR" --code "$bin" --out "$oct" \
+    || fail "python .oct builder failed"
+[ -f "$oct" ] || fail "python builder did not produce $oct"
 
 # --- 3. Verify the ARM code is actually embedded --------------------------
-# The sim appends the ARM code as the LAST chunk (sim.h: assets -> sounds ->
+# The builder appends the ARM code as the LAST chunk (assets -> sounds ->
 # code), so the final <bin_len> bytes of the .oct must equal the .bin
-# byte-for-byte. If not, the sim packed an asset-only .oct and it would silently
-# fail on the cube -- so we refuse to ship it.
+# byte-for-byte. If not, something upstream produced an asset-only .oct and it
+# would silently fail on the cube -- so we refuse to ship it. This check is
+# unchanged from when the simulator wrote the .oct; it now verifies our own
+# python builder instead, which is still valuable.
 oct_len=$(stat -c %s "$oct")
 embedded=0
 if [ "$oct_len" -ge "$bin_len" ]; then
@@ -111,7 +115,8 @@ echo "  $oct"
 echo "  ($oct_len bytes -- assets + sounds + $bin_len bytes ARM code)"
 echo "Load this .oct onto the WowCube."
 echo ''
-echo "NOTE: launching the simulator again will OVERWRITE this .oct with an"
-echo "asset-only pack (no ARM code). Re-run this script after any sim testing"
-echo "to regenerate the cube-loadable .oct as the LAST step before shipping."
+echo "NOTE: launching the simulator manually will still OVERWRITE this .oct with"
+echo "an asset-only pack (no ARM code) -- but device delivery no longer depends"
+echo "on the sim. Re-run this script after any sim play-testing session to"
+echo "regenerate the cube-loadable .oct as the LAST step before shipping."
 exit 0

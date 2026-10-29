@@ -8,6 +8,7 @@ AI output is NOT deterministic across runs.
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -15,6 +16,20 @@ from PIL import Image
 
 from manifest_schema import Manifest, Sprite, load_manifest
 import genimg
+
+# Frame-sequence suffix: mirrors pack_beta._seq_frame_groups' _RE_SEQ_FRAME
+# (2 or more digits) so a sprite derives the same group here as it chains
+# into at pack time. A single digit ("_5") is not a sequence suffix to the
+# packer either, so it is left attached to the base name here too.
+_RE_FRAME_SUFFIX = re.compile(r"^(.+)_(\d{2,})$")
+
+
+def _derived_group(s: Sprite) -> str:
+    """Explicit group wins; otherwise strip a trailing 2+ digit _NN.. suffix."""
+    if s.group:
+        return s.group
+    m = _RE_FRAME_SUFFIX.match(s.name)
+    return m.group(1) if m else s.name
 
 
 def _derived_group(s: Sprite) -> str:

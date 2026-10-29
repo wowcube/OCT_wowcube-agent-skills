@@ -157,13 +157,18 @@ Reads `app_ai_template.h` and verifies the game code against **everything** docu
 6. **For struct organization and sprite references:**
    - `appvars_t` must not be a flat bag of fields. Related state must be grouped into dedicated sub-structs with `_t` suffix. Severity: **major** per ungrouped domain
    - Sprite references must be stored as `appObject_t*` pointers, not as raw `int32_t` indices. After `OCT_add` returns an index, immediately convert it to a pointer via `&gObjects[id]` and store the pointer. Use `NULL` for "no sprite". Severity: **major** per field that stores an index instead of a pointer
+7. **For animation placement (one animated picture per physical module):**
+   - Geometry: a face's four screens sit on four *different* physical modules; two adjacent faces share exactly two of those modules (the ones along their common edge); opposite faces share none.
+   - Find every animated sprite in the code (any sprite added/placed with a multi-frame `BMP_<anim>` .. `BMP_<anim>_end` range) and the face+screen it's assigned to.
+   - Flag any two animated sprites whose assigned screens land on the same physical module. Severity: **major** per colliding pair
+   - Also flag any `color: "full"` (tier-3) animation that the GDD/manifest does not mark as explicitly user-requested with a "handle VERY carefully" warning. Severity: **minor** per unflagged tier-3 animation
 
 ### Categories
 
 | Category | Max | What to check |
 |----------|-----|---------------|
 | **api_correctness** | 40 | Every API call matches the template's Declaration, Comment, Critical Comment, and Warn annotations |
-| **platform_constraints** | 30 | All rules from the template's INSTRUCTIONS block and platform-specific comments: TL macro, gObjects[0] reserved, SPRITES_CAP, explicit casts, fixed-width types, all 7 handlers (incl. the `on_shake`/`on_proc_draw` stubs), no GAP in OCT_add. **Upscale-aware coordinates:** regular sprites are authored at HALF resolution and the engine upscales them x2 at draw time, so all layout/collision math (positioning, centering, edge/screen-fit, movement bounds, hitboxes, spacing, grid steps) MUST use each sprite's on-screen extent = 2x its authored size in the 240x240 space. Flag any code that uses the authored (half) sprite size for coordinates or collision — that makes objects half the drawn size and breaks gameplay. **Exception:** ANY FULLSIZE sprite (manifest `flags.fullsize` — palette fullsize or full-color fullsize alike; the engine draws every FULLSIZE sprite at zoom 1) renders 1:1 with no x2 upscale, so for those sprites the native authored size IS the on-screen extent — do not flag native-size coordinate math for FULLSIZE sprites of either color |
+| **platform_constraints** | 30 | All rules from the template's INSTRUCTIONS block and platform-specific comments: TL macro, gObjects[0] reserved, SPRITES_CAP, explicit casts, fixed-width types, all 7 handlers (incl. the `on_shake`/`on_proc_draw` stubs), no GAP in OCT_add. **Upscale-aware coordinates:** regular sprites are authored at HALF resolution and the engine upscales them x2 at draw time, so all layout/collision math (positioning, centering, edge/screen-fit, movement bounds, hitboxes, spacing, grid steps) MUST use each sprite's on-screen extent = 2x its authored size in the 240x240 space. Flag any code that uses the authored (half) sprite size for coordinates or collision — that makes objects half the drawn size and breaks gameplay. **Exception:** ANY FULLSIZE sprite (manifest `flags.fullsize` — palette fullsize or full-color fullsize alike; the engine draws every FULLSIZE sprite at zoom 1) renders 1:1 with no x2 upscale, so for those sprites the native authored size IS the on-screen extent — do not flag native-size coordinate math for FULLSIZE sprites of either color. **One animation per module:** no two animated sprites are placed on screens that share a physical module — a face's four screens are four different modules, adjacent faces share two, opposite faces share none |
 | **code_quality** | 30 | No copied demo code or internal comments; modular struct organization (related state grouped into sub-structs, not flat); sprite references as `appObject_t*` pointers not raw indices; small focused functions; named constants |
 
 ### Prompt Template
@@ -195,9 +200,16 @@ and comment in it.
    is a major (-5) code_quality violation
 8. Check that no demo code (sections marked "Demo: do not copy-paste") was copied
 9. Check that no internal template comments appear in the game code
-10. Score ONLY these categories: api_correctness (max 40),
+10. Check animation placement: a face's four screens sit on four different
+    physical modules; adjacent faces share exactly two of them (their common
+    edge); opposite faces share none. Flag any two animated sprites whose
+    screens land on the same module (major, -5 platform_constraints per
+    collision), and any tier-3 (full-color) animation not explicitly
+    requested by the user and warned "handle VERY carefully" in the
+    GDD/manifest (minor, -2 platform_constraints)
+11. Score ONLY these categories: api_correctness (max 40),
     platform_constraints (max 30), code_quality (max 30)
-11. Cite the specific template annotation for every issue
+12. Cite the specific template annotation for every issue
 
 ## Deduction Rules
 - critical (-10): won't compile, breaks engine contract, data loss

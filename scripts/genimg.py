@@ -1,120 +1,35 @@
 #!/usr/bin/env python3
-"""OpenRouter image-generation client for cube_asset-builder.
+"""Image-generation client for cube_asset-builder.
 
-Exposes `generate_image(prompt, out_path, size=..., reference=...)` so the
-pipeline can turn each sprite's `gen_prompt` into a PNG, and keeps a small CLI
-for one-off generation.
+Exposes `generate_image(prompt, out_path, size=..., reference=..., cutout=...)`
+so the pipeline can turn each sprite's `gen_prompt` into a PNG, and keeps a
+small CLI for one-off generation.
 
-The API key is read from the OPENROUTER_API_KEY environment variable — it is
-never hardcoded. Set it before running:
+The actual HTTP work lives in `image_providers.py` (multi-provider adapter:
+OpenRouter, OpenAI, xAI, Gemini, local Stable Diffusion). Which provider is
+used is resolved per call from, in order: the `OPENROUTER_API_KEY` env var,
+the `IMAGE_API` env var, or `~/.wowcube/image_api.json`. No key is ever
+hardcoded. Backward-compatible quick start:
 
     export OPENROUTER_API_KEY=sk-or-...
 """
 
-import os
-import json
-import time
-import base64
 import argparse
 import datetime
 
-from io import BytesIO
 from pathlib import Path
 
-import requests
 import numpy as np
 from collections import deque
 from PIL import Image
 
-API_URL = 'https://openrouter.ai/api/v1/chat/completions'
-MODEL = 'openai/gpt-5.4-image-2'
-API_KEY_ENV = 'OPENROUTER_API_KEY'
-
-
-class ImageGenError(RuntimeError):
-    """Raised when the API call fails or returns no image."""
-
-
-def _api_key() -> str:
-    key = os.environ.get(API_KEY_ENV)
-    if not key:
-        raise ImageGenError(
-            f'{API_KEY_ENV} is not set. Export your OpenRouter key first: '
-            f'`export {API_KEY_ENV}=sk-or-...`'
-        )
-    return key
-
-
-def base64_to_image(base64_string):
-    '''Decodes a base64 encoded PNG/JPEG string into a PIL Image object.'''
-    try:
-        for prefix in ('data:image/png;base64,', 'data:image/jpeg;base64,'):
-            if base64_string.startswith(prefix):
-                base64_string = base64_string[len(prefix):]
-                break
-
-        image_data = base64.b64decode(base64_string)
-        return Image.open(BytesIO(image_data))
-    except Exception as e:
-        print(f'Error decoding base64: {e}')
-        return None
-
-
-def png_image_to_base64(filename):
-    '''Encodes an image file into a base64 encoded PNG string.'''
-    try:
-        image = Image.open(filename)
-        buffered = BytesIO()
-        image.save(buffered, format='PNG')
-        img_str = base64.b64encode(buffered.getvalue()).decode('utf-8')
-        return f'data:image/png;base64,{img_str}'
-    except Exception as e:
-        print(f'Error encoding image to base64: {e}')
-        return None
-
-
-def _request_image(prompt, reference=None):
-    '''Call the model and return the first PIL Image it emits, or None.'''
-    content = [{'type': 'text', 'text': prompt}]
-    if reference:
-        content.append({
-            'type': 'image_url',
-            'image_url': {'url': png_image_to_base64(str(reference))},
-        })
-
-    payload = {
-        'model': MODEL,
-        'messages': [{'role': 'user', 'content': content}],
-        'stream': False,
-    }
-
-    # (connect timeout, read timeout) — without this a stalled socket hangs
-    # forever and the retry logic in generate_image never triggers.
-    response = requests.post(
-        url=API_URL,
-        headers={
-            'Authorization': f'Bearer {_api_key()}',
-            'Content-Type': 'application/json',
-        },
-        data=json.dumps(payload),
-        timeout=(15, 180),
-    )
-    response.raise_for_status()
-
-    # This model returns the generated image in the final assistant message
-    # (choices[0].message.images), not in streaming deltas. Read it directly.
-    data = response.json()
-    choices = data.get('choices') or []
-    if not choices:
-        return None
-
-    message = choices[0].get('message') or {}
-    images = message.get('images') or []
-    if images:
-        base64_url = images[0]['image_url']['url']
-        return base64_to_image(base64_url)
-
-    return None
+import image_providers
+from image_providers import (  # noqa: F401 — re-exported for callers
+    API_KEY_ENV,
+    ImageGenError,
+    base64_to_image,
+    png_image_to_base64,
+)
 
 
 def remove_background(image, tol=48):
@@ -177,7 +92,8 @@ def remove_background(image, tol=48):
     return Image.fromarray(arr, 'RGBA')
 
 
-def generate_image(prompt, out_path, *, size=None, reference=None, cutout=False):
+def generate_image(prompt, out_path, *, size=None, reference=None, cutout=False,
+                   provider=None):
     '''Generate one image from `prompt` and save it as a PNG at `out_path`.
 
     If `cutout` is True, the solid backdrop is removed (made transparent) at
@@ -189,25 +105,26 @@ def generate_image(prompt, out_path, *, size=None, reference=None, cutout=False)
     dimensions (the model rarely returns the requested pixel size). Alpha is
     preserved so transparent-background sprites stay transparent.
 
-    Raises ImageGenError if the API returns no image.
-    '''
-    # Transient network failures (premature close, chunked-encoding error,
-    # timeouts) are common on the slow image endpoint. Retry a few times with
-    # backoff before giving up. A None result (e.g. a content refusal) is NOT a
-    # transient error, so it is not retried here.
-    image = None
-    last_err = None
-    for attempt in range(4):
-        try:
-            image = _request_image(prompt, reference=reference)
-            break
-        except requests.exceptions.RequestException as e:
-            last_err = e
-            if attempt < 3:
-                time.sleep(2.0 * (attempt + 1))
-    else:
-        raise ImageGenError(f'OpenRouter request failed after retries: {last_err}') from last_err
+    `provider` is an optional `image_providers.ProviderConfig`; when omitted
+    the provider is resolved from the environment / config file chain
+    (`image_providers.resolve_provider`).
 
+    Raises ImageGenError if no provider is configured, the API call fails
+    after retries, or the API returns no image.
+    '''
+    config = provider or image_providers.resolve_provider()
+    if config is None:
+        raise ImageGenError(
+            f'no image provider configured. Set {API_KEY_ENV} (OpenRouter), '
+            f'or IMAGE_API (any supported key/URL), or create '
+            f'{image_providers.CONFIG_PATH}.'
+        )
+
+    # Retries/backoff for transient network failures live inside the provider
+    # (`ImageProvider.generate`). A None result (e.g. a content refusal) is
+    # NOT a transient error, so it is not retried there either.
+    image = image_providers.get_provider(config).generate(prompt,
+                                                          reference=reference)
     if image is None:
         raise ImageGenError(f'no image returned for prompt: {prompt!r}')
 
@@ -225,10 +142,11 @@ def generate_image(prompt, out_path, *, size=None, reference=None, cutout=False)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(
-        description='Generate an image using OpenRouter AI from a text prompt.')
+        description='Generate an image from a text prompt via the configured '
+                    'image provider.')
     parser.add_argument('prompt', type=str, help='The text prompt to generate the image from.')
     parser.add_argument('-i', '--image', type=str, default=None,
-                        help='Reference image file (optional).')
+                        help='Reference image file (optional; OpenRouter only).')
     parser.add_argument('-o', '--output', type=str, default=None,
                         help='Output PNG path (default: <timestamp>.png).')
     parser.add_argument('-s', '--size', type=str, default=None,

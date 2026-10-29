@@ -113,11 +113,14 @@ is Python-only on both OSes; the two build targets need:
 
 - **Simulator build** — Windows: **MSVC** (Visual Studio C++ tools). Linux:
   **CMake ≥ 3.13, gcc/g++ ≥ 12, SDL3** (and `bluez`/`libsystemd` for the BT
-  upload path).
-- **Cube `.oct` deliverable** additionally needs the **ARM device toolchain** on
-  both OSes: the ARM GNU embedded compiler (`arm-none-eabi-gcc`), CMake, and
-  Ninja — because the loadable `.oct` embeds ARM machine code (see "Producing
-  the cube `.oct`").
+  upload path). This toolchain is for **PC play-testing only** — it is no
+  longer needed to produce the cube `.oct` (see below).
+- **Cube `.oct` deliverable** needs the **ARM device toolchain** on both OSes:
+  the ARM GNU embedded compiler (`arm-none-eabi-gcc`), CMake, and Ninja —
+  because the loadable `.oct` embeds ARM machine code — plus Python. Packaging
+  itself is pure Python (`scripts/pack_beta.py --build-oct`, driven by
+  `build_device.ps1`/`.sh`); **no MSVC and no simulator launch are required**
+  (see "Producing the cube `.oct`").
 - **Packer deps** (both OSes): `pip install Pillow numpy pytoshop psd-tools`.
 
 Run the bundled check, which installs missing tools where it can:
@@ -228,24 +231,32 @@ assets, toolchain) works, not to preserve the demo game.
 
 ## Producing the cube `.oct` (Stage 5)
 
-The simulator binary is for PC testing. The file you actually load onto the
-physical WowCube is **`app_<game>/app_<game>.oct`**. It is assembled by the
-**simulator at launch**, which packs the art `.raw` assets + the sounds +
-(if present) the ARM device code from `app_<game>/out/app_<game>.bin`.
+The simulator binary is for PC play-testing only. The file you actually load
+onto the physical WowCube is **`app_<game>/app_<game>.oct`**, and it is
+assembled by a **pure-Python builder** — `scripts/pack_beta.py --build-oct`
+— not by the simulator: it packs the art `.raw` assets + the sounds + the ARM
+device code from `app_<game>/out/app_<game>.bin` into the same 232-byte
+header / 84-byte descriptor table / CRC32 layout the simulator used to write,
+deterministically (its `BuildDateTime` field is pinned to `0` instead of a
+wall-clock stamp, so two builds from identical inputs are byte-identical).
+`build_device.ps1` (Windows) / `build_device.sh` (Linux) drive both the ARM
+build and this python pack step; **neither launches the simulator, and MSVC
+is not required**.
 
-> **The footgun:** the engine treats the ARM `.bin` as *optional* when packing
-> (see `octavios/sim/src/sim.h`: *"it's optional because app running in
-> simulator has own code"*). So if you just build and run the simulator, the
-> sim still writes an `app_<game>.oct` — but it contains **assets only, no ARM
-> code**. That package runs fine on the PC (the sim executes its own compiled
-> code) and is **completely dead on the cube**. Worse, the sim **rewrites the
-> `.oct` as asset-only on every launch**, so a good package gets clobbered if
-> you run the sim again afterward. This is why "it works in the sim" is never
-> proof the cube build is done.
+> **The gotcha still exists — it just no longer sits on the delivery path.**
+> The engine still treats the ARM `.bin` as *optional* when the simulator
+> itself assembles a pack (see `octavios/sim/src/sim.h`: *"it's optional
+> because app running in simulator has own code"*), so **manually launching
+> the simulator** (e.g. for play-testing) still **overwrites**
+> `app_<game>.oct` with an asset-only pack that has no ARM code and is dead on
+> the cube. The difference from before: shipping the `.oct` no longer depends
+> on the sim writing it at all, so this is now a play-testing footgun, not a
+> packaging requirement. Rule of thumb: re-run `build_device.ps1`/`.sh` (or
+> `repack_app.py`, below) as the **last step**, after any manual sim session,
+> right before handing off the `.oct`.
 
-The cube `.oct` therefore **must** be produced by the ARM build, and the device
-build **must be the last step** — after any simulator testing. Both steps are
-bundled in `build_device.ps1` (Windows) / `build_device.sh` (Linux):
+Both steps (ARM build, then python pack) are bundled in `build_device.ps1`
+(Windows) / `build_device.sh` (Linux):
 
 ```powershell
 # Windows
@@ -260,8 +271,10 @@ bash OCT_wowcube-agent-skills/scripts/build_device.sh --app-dir <workspace>/app_
    (`cmake -G Ninja -S octavios/apps -B out` then `cmake --build out`, run from
    the app folder — this is the ARM target from `octavios/apps/CMakeLists.txt`,
    needing the Step 0 device toolchain). Fails if the `.bin` is missing or empty.
-2. **Pack** → launches the sim once, which writes `app_<game>/app_<game>.oct`
-   (assets + sounds + ARM code).
+2. **Pack** → `python scripts/pack_beta.py --build-oct --app-dir <AppDir>
+   --code <out/app_<game>.bin> --out <app_<game>.oct>` assembles
+   `app_<game>/app_<game>.oct` (assets + sounds + ARM code) directly from
+   disk — no simulator launch, no MSVC needed.
 3. **Verify** → confirms the ARM code is actually embedded in the `.oct` (the
    final `.bin`-sized bytes of the pack must match the `.bin` byte-for-byte). It
    fails loudly on an asset-only pack, so you can never ship a `.oct` that would
@@ -272,11 +285,53 @@ bash OCT_wowcube-agent-skills/scripts/build_device.sh --app-dir <workspace>/app_
    `app_<game>_20250101.oct` can silently vanish the next time anyone runs the
    sim (Linux or Windows dev machine, doesn't matter where it was created) —
    this is a warning only, not a failure, but keep deliverables named
-   `app_<game>.oct` (no timestamp suffix) to avoid losing them.
+   `app_<game>.oct` (no timestamp suffix) to avoid losing them. The scripts
+   also remind you that a manual sim launch afterward will re-trigger the
+   gotcha above — re-run the script again if that happens.
 
 This is the final deliverable the orchestrator runs (mandatorily) as **Stage 5**
 on completion. After it exits 0, return control to `cube_orchestrator`, which
 checkpoints with the user and reports the absolute path to the verified `.oct`.
+
+### Repacking after asset/code changes — `repack_app.py`
+
+Once an app has shipped once, "I changed the assets/code — repack it" is one
+command instead of four manual steps (pack, bump the version, rebuild, verify):
+
+```bash
+python OCT_wowcube-agent-skills/scripts/repack_app.py --app-dir <workspace>/app_<game>
+```
+
+It auto-detects the app's canonical pack invocation from what already exists
+on disk — a `plans/*_assets.json` manifest → adds `--manifest`; `art/icon.png`
+→ adds `--icon` — so the caller never has to remember pack flags. Apps whose
+art came through the asset-builder pipeline (`assets/art/*.png` present —
+AI-generated or agent-drawn placeholders) are repacked with the same
+`build_pipeline.py pack` invocation that built them (re-atlasing the
+workspace PNGs), so swapping a PNG in `assets/art/` and re-running this
+command is the whole art-replacement cycle; scaffold/PSD and PNG-only
+(`art/exported`) apps keep the direct `pack.py` invocation. It then:
+repacks the beta container via `pack.py`; **auto-bumps `APP_VERSION`'s patch
+digit by +1** in `src/app.h` (see "Automatic version bump" below); and,
+unless `--skip-device` is passed, runs the full device build (ARM cmake+ninja,
+the python `--build-oct` pack, ARM-embed tail verification) and prints the new
+`.oct` path and version. `--skip-device` stops after the repack + version bump
+(no ARM build, no new `.oct`) — useful when only the version needs bumping or
+device tools aren't available. Exits non-zero on any stage failure. This is
+the command to reach for on any mod/repack request, in place of chaining
+`pack.py` + a manual `src/app.h` edit + `build_device.*` by hand.
+
+### Automatic version bump (spec §9)
+
+`APP_VERSION` (`src/app.h`) encodes `v<major>.<minor><patch>` as one integer
+(`100` = v1.00). **Every rebuild that produces a new device `.oct` bumps the
+patch digit by +1, automatically** — this happens inside `repack_app.py`, and
+the same rule applies to a Stage 5 rebuild of an already-shipped app. Minor and
+major digits are **never** changed without an explicit user instruction to
+change them (they're just higher digits of the same int — `+1` only ever moves
+the patch digit). Rationale: the cube's catalog compares versions on install,
+so shipping an un-bumped rebuild may fail to install over the already-installed
+app.
 
 ## Gotchas (why the script exists)
 
@@ -340,6 +395,15 @@ RAW565-encoded instead of run through the palette codec) or carries flags
 like `fullsize` (so they reach the packed palette-sprite header). Identical on Windows
 and Linux — Python only, no `.exe`/`.bat`/Wine.
 
+The launcher icon defaults to full-color RAW565 at 160×160; the manifest's
+optional top-level `icon` object (`{"color": "palette"|"full", "side": N,
+"dither": true}`) or the `pack.py` overrides `--icon-color`, `--icon-side`,
+and `--icon-dither` select the icon's art tier instead — palette icons
+(side 120 drawn ×2, or 240 fullsize; the only two valid palette sides) are
+quantized into their own dedicated `.pal` record and keep the PNG's
+transparency; `--icon-dither` applies Floyd–Steinberg on the full-color
+tier. See the icon tier table in `cube_asset-builder`.
+
 **Packing plain-PNG palette sprites by hand (no PSD): drop `--export`, keep
 `--build-palette`.** `--export` exists solely to regenerate the exported dir
 from PSD/FNT *sources* in `--art-dir` — as its first act it DELETES every
@@ -363,3 +427,86 @@ python <workspace>/OCT_wowcube-agent-skills/scripts/pack.py \
 `build_pipeline.py pack`, which takes the PNGs from `<workspace>/art/`,
 atlases them into a throwaway PSD internally, and runs `pack.py` itself; see
 `cube_asset-builder` Step 4.)
+
+**Legacy apps with an `art/!pack.txt`.** Hand-authored apps ported from the
+`psd.exe`+`utils.exe` toolchain ship a `!pack.txt` that declares one palette
+per block — the entry count, filename globs, and per-block tags
+(`<FULLSIZE> <ALPHA> <OPAQUE> <ADD> <BG> <BUMP> <DUDV> <REFL>`). `pack.py`
+auto-detects `<art-dir>/!pack.txt` and packs to it: one palette per block at
+exactly the declared size, symbol bitness `ceil(log2(size))`, and the block's
+tags OR'd into every member sprite's header flags. Point it elsewhere with
+`--pack-config <path>`, or opt out with `--no-pack-config` to fall back to the
+auto median-cut grouping.
+
+`<ALPHA>` is the one tag that is not a plain OR: it does not force the bit on,
+it lowers `utils.exe`'s anti-aliasing threshold from 15 % to a strict zero, so
+a block whose alpha channel is purely binary still packs OPAQUE. `<OPAQUE>` is
+the only unconditional override. See `packtxt.py` and §12.3 of
+`docs/part3-parity-report.md`.
+
+**Legacy apps with an `art/!pack.bat` — that file wins over every filename
+heuristic.** The artist's batch file is not documentation, it is the exact
+`psd.exe`/`utils.exe` command line the shipped container was built from, and
+`pack.py` reads it (`packbat.py`) for four things a filename cannot tell you:
+
+- **which PSDs are exported at all** — `OCT_get_started` keeps an unreferenced
+  `art/map_18_18.psd`, `OCT_ladybug` keeps `ladybug-assets.psd` (the pre-split
+  original of `ladybug-assets_1/_2`); neither is part of the pack;
+- **which of them are `-map` placement documents** — ladybug runs eight PSDs
+  through `psd.exe -map` and not one carries the `map_` prefix or a reserved
+  launcher name;
+- **which palette config `utils.exe` consumes** — ladybug's `!pack.bat`
+  generates `!pack_pal.txt` (32 buckets) from `!pack.txt` (16, the `--lock`
+  seed) and feeds the generated one. We never run the app's own script; if its
+  output was not committed, `pack.py` says so and falls back;
+- **what the ids header is called** — `!pack.bat` sets `app=app` in ladybug, so
+  the header is `src/app_ids.h`, not `src/<target>_ids.h`.
+
+Opt out with `--no-pack-bat`, or point elsewhere with `--pack-bat <path>`. An
+app with no `!pack.bat` (every scaffolded/AI-generated app) is unaffected.
+
+**`$name` layers are NAME_ declarations, not sprites.** A PSD layer whose name
+*starts with* `$` (`$score!font2`) is a placement anchor the app looks up by
+`octObject_t.Name == NAME_score`. It emits no PNG and no asset record — only a
+`NAME_` constant and a place with `BmpIdx = 0`. A `$` *after* a base name
+(`hero$player`) still annotates a real sprite.
+
+**`!marker` suffixes and the layer colour swatch both carry data.** A PSD
+layer name may end in one or more `!token`s; `psd.exe` copies them verbatim
+into the PSL and `utils.exe` interprets them. `!rateN` sets `octBmp_t.Rate`,
+the frame-duration multiplier. `!font`/`!fontN` (and its `!label` synonym)
+makes a map place a text label. `!pingpong`, `!loop`, `!once`, `!hide`,
+`!pause`, `!twistable`, `!fliph`, `!flipv`, `!ccw`, `!cwcw`, `!cw` set
+`octPlace_t` flag bits. Anything else — `!full_size`, for instance — is inert.
+
+The bigger source of `Rate` is not a marker at all: a layer's **Photoshop
+colour swatch** becomes `Rate = colour + 1` for both sprites and places. In
+`OCT_ladybug` that is 66 of the 70 non-default rates. An artist recolouring a
+layer group in the Layers panel is therefore changing the animation speed.
+Full table with measurements: §12 of `docs/part3-parity-report.md`.
+
+**Precedence: `--manifest` wins.** When a manifest is given, any auto-detected
+`!pack.txt` next to it is ignored (with a printed note) — the manifest is the
+newer, richer spec and manifest-driven apps must not change behaviour because
+a legacy config file happens to sit in `art/`. An explicit `--pack-config` is
+still honoured alongside a manifest, for the deliberate mixed case.
+
+**Palette builder is population-weighted — a size increase alone is not a
+regression.** The median-cut palette builder weighs each colour by how many
+pixels use it, not by unique-colour count, so a mostly-flat sprite with a
+small accent (e.g. a black field with a tiny white eye) keeps both colours
+instead of the rare one being averaged away. This is a correctness fix: it
+can make packed `.raw` output noticeably larger than an older build of the
+same app (a real corpus measured +12.9%), because a better-fitting palette
+maps smooth gradients onto more distinct indices, which compresses worse.
+If a repack grows, check decoded-pixel fidelity against the source art before
+assuming something broke.
+
+**`.pal` files now use the alpha-spread word format for alpha-flagged
+groups.** A palette group whose sprites carry `OCT_FLAG_ALPHA` now serialises
+its `.pal` in the spread form the engine's `OCT_BLEND_alpha` path actually
+reads (5-bit alpha + RGB spread over `0x07E0F81F`), instead of the plain
+RGB565 form meant for `OCT_BLEND_opaque`. This changes the bytes of every
+alpha-flagged `.pal` file versus older builds — expected, and it fixes
+previously-broken antialiased rendering (wrong backdrop colours, hard rims
+instead of feathered edges). Do not treat the byte diff as a bug to revert.

@@ -12,7 +12,6 @@ file). `find_script()` checks the scripts dir then walks up the ancestors.
 from __future__ import annotations
 
 import argparse
-import os
 import shutil
 import subprocess
 import sys
@@ -21,7 +20,7 @@ from pathlib import Path
 from manifest_schema import ValidationError, load_manifest, validate
 import gen_sprites
 import gen_sounds
-from genimg import API_KEY_ENV
+import image_providers
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -54,8 +53,10 @@ PACK_PY_DEPS = ("PIL", "numpy", "pytoshop", "psd_tools")
 def _check_deps(stage: str) -> list[str]:
     """Return list of missing dependency messages. Empty = everything installed.
 
-    `stage` is 'generate' or 'pack'. Generate needs PIL+numpy+requests and the
-    OPENROUTER_API_KEY env var (AI sprites); pack needs PIL+numpy+pytoshop+psd_tools.
+    `stage` is 'generate' or 'pack'. Generate needs PIL+numpy+requests and an
+    image provider resolvable from ANY config source (image_providers chain:
+    OPENROUTER_API_KEY env -> IMAGE_API env -> ~/.wowcube/image_api.json);
+    pack needs PIL+numpy+pytoshop+psd_tools.
     """
     required = PACK_PY_DEPS if stage == "pack" else GENERATE_PY_DEPS
     missing: list[str] = []
@@ -65,11 +66,21 @@ def _check_deps(stage: str) -> list[str]:
         except ImportError:
             pip_name = {"PIL": "Pillow", "psd_tools": "psd-tools"}.get(mod, mod)
             missing.append(f"python module {mod!r} - install with: pip install {pip_name}")
-    if stage == "generate" and not os.environ.get(API_KEY_ENV):
-        missing.append(
-            f"environment variable {API_KEY_ENV} - AI sprite generation needs "
-            f"an OpenRouter key: `export {API_KEY_ENV}=sk-or-...`"
-        )
+    if stage == "generate":
+        try:
+            provider = image_providers.resolve_provider()
+        except image_providers.ImageGenError as e:
+            missing.append(f"image provider config is invalid: {e}")
+        else:
+            if provider is None:
+                missing.append(
+                    "image provider - AI sprite generation needs one configured "
+                    "via any of: the OPENROUTER_API_KEY env var, the IMAGE_API "
+                    "env var (bare key/URL or JSON), or "
+                    f"{image_providers.CONFIG_PATH}. With none configured the "
+                    "orchestrator falls back to agent-drawn placeholder art "
+                    "instead of AI generation."
+                )
     return missing
 
 
@@ -120,9 +131,10 @@ def do_generate(args: argparse.Namespace) -> int:
     try:
         wav_paths = gen_sounds.generate(manifest, wav_dir, group=args.group,
                                         encode_mp3=want_mp3)
-    except (RuntimeError, subprocess.CalledProcessError) as e:
+    except (RuntimeError, ValueError, subprocess.CalledProcessError) as e:
         # RuntimeError = ffmpeg missing; CalledProcessError = ffmpeg present
-        # but the mp3 encode itself failed. Same exit either way.
+        # but the mp3 encode itself failed; ValueError = two manifest sound
+        # names collide once normalised to SND_ ids. Same exit either way.
         print(f"ERROR: sound encoding failed: {e}", file=sys.stderr)
         return 7
 
@@ -212,6 +224,8 @@ def do_pack(args: argparse.Namespace) -> int:
         ]
         if args.manifest:
             pack_cmd += ["--manifest", str(args.manifest)]
+        if args.icon:
+            pack_cmd += ["--icon", str(args.icon)]
     rc = _run(pack_cmd)
     if rc != 0:
         return rc
@@ -292,6 +306,9 @@ def build_parser() -> argparse.ArgumentParser:
     k.add_argument("--manifest", default=None,
                    help="Path to plans/<game>_assets.json, so color=='full' "
                         "sprites are RAW565-encoded in the beta container")
+    k.add_argument("--icon", default=None,
+                   help="Launcher icon PNG forwarded to pack.py's beta emit "
+                        "(default: pack.py auto-detects <app-dir>/art/icon.png)")
     k.set_defaults(func=do_pack)
 
     return p

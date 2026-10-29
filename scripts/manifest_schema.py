@@ -50,6 +50,17 @@ SPRITE_MAX_SIDE = 120
 # art is authored at native resolution, up to 240.
 SPRITE_MAX_SIDE_FULLSIZE = 240
 ALLOWED_SPRITE_COLORS = frozenset({"palette", "full"})
+# Launcher icon (optional top-level `icon` object). Same three tiers as
+# sprites, but the icon is standalone: a palette icon gets its OWN dedicated
+# .pal record instead of joining the shared sprite palette groups.
+#   - palette + side 120: cheap; engine upscales x2 -> 240 on screen
+#   - palette + side 240: FULLSIZE, draws 1:1
+#   - full (default) + side 1..240: RAW565, FULLSIZE, optional dither
+# Palette icons only ship in the two device-proven shapes (120 / 240).
+ALLOWED_ICON_COLORS = frozenset({"palette", "full"})
+ICON_DEFAULT_SIDE = 160
+ICON_MAX_SIDE = 240
+ICON_PALETTE_SIDES = (120, 240)
 SOUND_MAX_DURATION_MS = 2000
 SOUND_DEFAULT_DURATION_MS = 500
 ALLOWED_EVENT_TYPES = frozenset({
@@ -94,11 +105,21 @@ class Sound:
 
 
 @dataclass(frozen=True)
+class Icon:
+    """Launcher-icon art tier. Defaults preserve the pre-tier behaviour
+    exactly: full-color RAW565 at 160x160, no dither."""
+    color: str = "full"
+    side: int = ICON_DEFAULT_SIDE
+    dither: bool = False
+
+
+@dataclass(frozen=True)
 class Manifest:
     game: str
     schema_version: int
     sprites: tuple[Sprite, ...]
     sounds: tuple[Sound, ...]
+    icon: Icon | None = None
 
 
 def _parse_flags(raw: dict | None) -> Flags:
@@ -131,6 +152,16 @@ def _parse_sprite(raw: dict) -> Sprite:
     )
 
 
+def _parse_icon(raw: dict | None) -> Icon | None:
+    if raw is None:
+        return None
+    return Icon(
+        color=raw.get("color", "full"),
+        side=int(raw.get("side", ICON_DEFAULT_SIDE)),
+        dither=bool(raw.get("dither", False)),
+    )
+
+
 def _parse_sound(raw: dict) -> Sound:
     return Sound(
         name=raw["name"],
@@ -152,6 +183,7 @@ def load_manifest(path: str | Path, strict: bool = False) -> Manifest:
         schema_version=int(data["schema_version"]),
         sprites=tuple(_parse_sprite(s) for s in data.get("sprites", [])),
         sounds=tuple(_parse_sound(s) for s in data.get("sounds", [])),
+        icon=_parse_icon(data.get("icon")),
     )
     if strict:
         errors = validate(m)
@@ -160,9 +192,54 @@ def load_manifest(path: str | Path, strict: bool = False) -> Manifest:
     return m
 
 
+def validate_icon(icon: Icon) -> list[str]:
+    """Validate one launcher-icon config. Empty list = valid.
+
+    Shared by validate() (manifest `icon` object) and pack.py (the icon
+    config after --icon-color/--icon-side/--icon-dither overrides, which can
+    produce combinations no manifest ever held).
+    """
+    errors: list[str] = []
+
+    if icon.color not in ALLOWED_ICON_COLORS:
+        errors.append(
+            f"icon: color {icon.color!r} invalid "
+            f"(allowed: {sorted(ALLOWED_ICON_COLORS)})"
+        )
+        return errors   # the remaining checks are per-color
+
+    if icon.color == "palette":
+        if icon.dither:
+            errors.append(
+                "icon: dither is only for color 'full' icons (Floyd-Steinberg "
+                "dithering to the RGB565 lattice) -- a palette icon is "
+                "quantized by the palette codec instead, so drop dither or "
+                "set color 'full'"
+            )
+        if icon.side not in ICON_PALETTE_SIDES:
+            errors.append(
+                f"icon: palette icons must be side 120 (engine upscales x2 -> "
+                f"240 on screen) or 240 (fullsize, draws 1:1) -- side "
+                f"{icon.side} is not one of the proven shapes; use 120 or "
+                f"240, or color 'full' for arbitrary sides up to "
+                f"{ICON_MAX_SIDE}"
+            )
+    else:  # full
+        if not (1 <= icon.side <= ICON_MAX_SIDE):
+            errors.append(
+                f"icon: side {icon.side} out of range "
+                f"(full-color icons allow 1..{ICON_MAX_SIDE})"
+            )
+
+    return errors
+
+
 def validate(m: Manifest) -> list[str]:
     """Return a list of human-readable error messages. Empty list = valid."""
     errors: list[str] = []
+
+    if m.icon is not None:
+        errors.extend(validate_icon(m.icon))
 
     if m.schema_version != 1:
         errors.append(f"schema_version: unsupported value {m.schema_version!r} (expected 1)")
@@ -242,21 +319,41 @@ def validate(m: Manifest) -> list[str]:
 
     for anim, members in anim_frames.items():
         frames = sorted(f for f, _ in members)
-        if frames[0] != 0:
+        if frames[0] not in (0, 1):
             errors.append(
-                f"anim {anim!r}: sequence must start at frame 0 "
-                f"(named _00 in file) — found first frame {frames[0]}"
+                f"anim {anim!r}: sequence must start at frame 0 or 1 "
+                f"(named _00../_01.. in file) — found first frame {frames[0]}"
             )
         if frames != list(range(frames[0], frames[-1] + 1)):
             errors.append(
                 f"anim {anim!r}: frames must be contiguous, found {frames}"
             )
+
+        # Name must be "<anim>_<digits>" with the digits parsing back to the
+        # declared frame number, using 2 or more digits — the packer's
+        # _seq_frame_groups (pack_beta.py) only recognizes a 2+ digit _NN..
+        # suffix as an animation frame, so a shorter or malformed suffix
+        # would silently fail to chain at pack time even though it validates
+        # here otherwise. Width (2-digit vs 3-digit) must stay consistent
+        # across the whole sequence.
+        name_re = re.compile(rf"^{re.escape(anim)}_(\d{{2,}})$")
+        widths: set[int] = set()
         for f, n in members:
-            expected = f"{anim}_{f:02d}"
-            if n != expected:
+            name_match = name_re.match(n)
+            if not name_match or int(name_match.group(1)) != f:
                 errors.append(
-                    f"anim {anim!r} frame {f}: expected name {expected!r}, got {n!r}"
+                    f"anim {anim!r} frame {f}: name {n!r} must be "
+                    f"'{anim}_' followed by the frame number zero-padded "
+                    f"to 2 or more digits (e.g. {anim}_{f:02d}) — the "
+                    f"packer only chains frame suffixes of 2+ digits"
                 )
+                continue
+            widths.add(len(name_match.group(1)))
+        if len(widths) > 1:
+            errors.append(
+                f"anim {anim!r}: frame suffix digit width must be "
+                f"consistent across the sequence, found widths {sorted(widths)}"
+            )
 
     sound_names: list[str] = []
     for snd in m.sounds:

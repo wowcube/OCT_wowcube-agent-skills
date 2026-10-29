@@ -1,8 +1,11 @@
 # WowCube Game Pipeline — User Flow
 
 End-to-end flow driven by `cube_orchestrator`, from a user request to a
-device-ready `.oct`. `⏸` marks a mandatory checkpoint where the orchestrator
-stops and waits for explicit user approval — it never auto-advances.
+device-ready `.oct`. The orchestrator runs **autonomously by default** — the
+diagram and checkpoints below (`⏸`) describe the opt-in **stepwise** mode; in
+the default mode each checkpoint collapses to a one-way progress line and the
+run continues without waiting (see `skills/cube_orchestrator/SKILL.md` →
+`## Run Modes`).
 
 ```mermaid
 flowchart TD
@@ -85,6 +88,7 @@ flowchart TD
 ## Key points
 
 - **Single entry point:** the user always talks to `cube_orchestrator`; it routes.
-- **Two asset sources (Stage 3.0):** AI generation via the configured OpenRouter image model (needs `OPENROUTER_API_KEY`), or self-supplied assets validated for completeness before packing. Both converge on `pack`.
-- **`wowcube-boilerplate` runs twice:** first to bring up the **simulator** before coding (so each prompt is testable), then at the end for the authoritative **device `.oct`** (built once because the simulator clobbers the `.oct` on every run).
+- **Autonomous by default:** the orchestrator runs the whole pipeline above with no approval stops unless the user opts into stepwise/checkpoint mode; see `skills/cube_orchestrator/SKILL.md`.
+- **Two asset sources (Stage 3.0):** AI generation via a resolved image provider — OpenRouter, OpenAI, xAI/Grok, Gemini, or a local Stable Diffusion endpoint, auto-detected from whichever key/URL is configured (`scripts/image_providers.py`) — or self-supplied assets validated for completeness before packing. No provider configured falls back to agent-drawn placeholder art. Both converge on `pack`.
+- **`wowcube-boilerplate` runs twice:** first to bring up the **simulator** before coding (so each prompt is testable), then at the end to produce the authoritative **device `.oct`** via the pure-Python builder (`scripts/pack_beta.py --build-oct`, driven by `build_device.ps1`/`.sh`) — packaging no longer depends on the simulator. Re-run the device build (or `scripts/repack_app.py`, which also auto-bumps `APP_VERSION`'s patch digit) after any manual sim session, since a manually launched sim still overwrites the `.oct` with an asset-only pack.
 - **Resume-safe:** on any re-entry, stage detection reads the filesystem/context and continues from the first incomplete stage.
