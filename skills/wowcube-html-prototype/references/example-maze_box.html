@@ -1,0 +1,857 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Maze Box — WowCube</title>
+<link rel="stylesheet" href="../assets/cube.css">
+<style>
+  .cv-host3d { position: relative; }
+  .mb-hud { position: absolute; left: 8px; right: 8px; top: 6px; display: flex; flex-wrap: wrap; gap: 6px 8px; z-index: 5; pointer-events: none; font-weight: 700; }
+  .mb-hud span { white-space: nowrap; background: rgba(5, 8, 20, .76); border: 1px solid rgba(255, 255, 255, .14); padding: 2px 10px; border-radius: 999px; }
+  .mb-hud .is-hot { color: #ffd23e; border-color: rgba(255, 210, 62, .55); }
+  .mb-cap {
+    position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); width: max-content; max-width: 94%;
+    text-align: center; background: rgba(6, 8, 20, .86); border: 1px solid rgba(62, 242, 255, .4); border-radius: 12px;
+    padding: 8px 16px; font-size: 17px; font-weight: 700; z-index: 5; pointer-events: none; opacity: 0; transition: opacity .25s;
+  }
+  .mb-cap small { display: block; font-size: 13px; font-weight: 500; color: #a9bdd4; }
+  .mb-cap.is-on { opacity: 1; }
+  .mb-big {
+    position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 6; pointer-events: none; opacity: 0; transition: opacity .3s;
+  }
+  .mb-big.is-on { opacity: 1; }
+  .mb-big-box { text-align: center; background: rgba(6, 8, 20, .84); border: 1px solid rgba(62, 242, 255, .5); border-radius: 16px; padding: 14px 26px; box-shadow: 0 10px 40px rgba(0, 0, 0, .5); }
+  .mb-big h2 {
+    margin: 0; font-size: 46px; letter-spacing: .06em; font-weight: 900;
+    background: linear-gradient(90deg, #3ef2ff, #ffffff 45%, #ffd23e); -webkit-background-clip: text; background-clip: text; color: transparent;
+    filter: drop-shadow(0 4px 18px rgba(62, 242, 255, .45));
+  }
+  .mb-big p { margin: 8px 0 0; font-size: 18px; background: rgba(6, 8, 20, .78); padding: 4px 14px; border-radius: 8px; }
+  .mb-legend { display: grid; gap: 8px; margin-top: 10px; }
+  .mb-legend h3 { margin: 0; font-size: 22px; letter-spacing: .05em; }
+  .mb-legend h3 b { color: #3ef2ff; }
+  .mb-legend .mb-sub { color: var(--muted); margin: -4px 0 4px; }
+  .mb-goals { display: flex; gap: 8px; flex-wrap: wrap; }
+  .mb-goals span { padding: 2px 10px; border-radius: 999px; border: 1px solid var(--line); background: var(--card-2); font-size: 13px; }
+  .mb-goals span.is-done { border-color: #3ddc84; color: #3ddc84; }
+  .mb-row { display: grid; grid-template-columns: 34px 1fr; gap: 10px; align-items: center; padding: 6px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--card-2); transition: all .2s; }
+  .mb-row i { font-style: normal; font-size: 22px; text-align: center; }
+  .mb-row b { display: block; }
+  .mb-row span { color: var(--muted); font-size: 13px; }
+  .mb-row.is-on { border-color: #3ef2ff; background: #10263a; box-shadow: 0 0 0 2px rgba(62, 242, 255, .25); }
+  .mb-pad { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin: 6px 0; }
+  .mb-pad button { padding: 3px 0; font-size: 12px; }
+
+  /* Video layout (?cinema): big cube on the left, net and legend on the right, 1280 x 720. */
+  body.is-cinema .cv-top, body.is-cinema .cv-side, body.is-cinema .cv-views, body.is-cinema .cv-hint-line { display: none; }
+  body.is-cinema .cv-main { grid-template-columns: minmax(0, 1fr); max-width: none; padding: 10px; gap: 10px; }
+  body.is-cinema .cv-stage { grid-template-columns: 770px minmax(0, 1fr); gap: 10px; }
+  body.is-cinema .cv-host3d { zoom: 1.24; }
+  body.is-cinema .cv-scene { height: 528px !important; }
+  body.is-cinema .mb-cap { font-size: 13px; padding: 6px 12px; }
+  body.is-cinema .mb-cap small { font-size: 10px; }
+  body.is-cinema .mb-hud { font-size: 11px; }
+  body.is-cinema .mb-big h2 { font-size: 32px; }
+  body.is-cinema .mb-big p { font-size: 13px; }
+  body.is-video * { transition: none !important; }
+</style>
+<script src="../assets/cube.js"></script>
+</head>
+<body>
+<script>
+(function () {
+  'use strict';
+  const { MODE, FACES, FACE_IDS, V, MOVES } = CubeDemo;
+
+  /* ============================== Tuning ============================== */
+  const SCREEN = 240;
+  const N = 4;                                       // rooms per cube edge: 4 floors x 4 x 4 rooms
+  const ROOM = 2 / N;                                // room edge in cube units
+  const MID = (N - 1) / 2;
+  const WALL_T = 0.04;                               // thickness of a wall or floor between two rooms
+  const PANEL = Object.freeze({ SOLID: 0, DOOR: 1, OPEN: 2 });
+  const BALL = Object.freeze({ R: 0.08, G: 2.6, FRICTION: 1.1, REST: 0.2, MAX_V: 1.6, SUBSTEPS: 8, KNOCK_V: 1.9, NUDGE_V: 0.6 });
+  const PICK_R = 0.13;
+  const EXIT_R = 0.12;
+  const STARS = 3;
+  const SINK_S = 1.2;
+  const VIEW = Object.freeze({ ELEV: 30, EYE: 2.8, UP_TAU_S: 0.22, LOOK_TAU_S: 0.5, FLIP_TAU_S: 0.12, FACE_PX: 320, LOOK: [0.55, 0, 1] });
+  const PILOT = Object.freeze({ V_MAX: 0.45, K_P: 1.8, K_V: 3.0, TILT_MAX: 0.4, REACH: 0.05 });
+  const GLASS = Object.freeze({ FILL: 0.07, EDGE: 0.3, HERE_FILL: 0.16, HERE_EDGE: 0.9, DOOR: 0.55, FOG: 0.4 });
+  /* One hue per apartment (= module): 2 x 2 x 2 rooms. */
+  const APT_HUES = Object.freeze([268, 18, 140, 48, 190, 318, 222, 96]);
+  const STAR_COLOR = '#ffd23e';
+  const DIRS = Object.freeze([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]);
+  const DIR = Object.freeze({ XP: 0, XN: 1, YP: 2, YN: 3, ZP: 4, ZN: 5 });
+
+  /* ============================== State ============================== */
+  let api = null;
+  let ui = null;
+  const st = {};
+  const ball = { p: [0, 0, 0], v: [0, 0, 0], contact: null, airT: 0 };
+
+  const norm = (v) => { const l = V.len(v) || 1; return V.scale(v, 1 / l); };
+  const faceOfN = (n) => FACE_IDS.find((id) => V.eq(FACES[id].n, n));
+  const dirId = (v) => DIRS.findIndex((d) => V.eq(d, v));
+  const opposite = (d) => d ^ 1;
+  const hash = (a) => { const v = Math.sin(a * 127.1 + 311.7) * 43758.5453; return v - Math.floor(v); };
+  const rIdx = (i, j, k) => (j * N + k) * N + i;
+  const inGrid = (c) => c.every((v) => v >= 0 && v < N);
+  const roomLo = (c) => c.map((v) => -1 + v * ROOM);
+  const roomCenter = (c) => c.map((v) => -1 + (v + 0.5) * ROOM);
+  const apartmentOf = (c) => (c[0] >= N / 2 ? 1 : 0) + (c[1] >= N / 2 ? 2 : 0) + (c[2] >= N / 2 ? 4 : 0);
+  const roomAt = (p) => p.map((v) => Math.max(0, Math.min(N - 1, Math.floor((v + 1) / ROOM))));
+  const sameCell = (a, b) => a[0] === b[0] && a[1] === b[1] && a[2] === b[2];
+
+  /* ============================== Level ============================== */
+  /* Rooms are listed by their home position. Every room owns its 6 panels; a passage exists only where both facing panels are open,
+     so after a twist the doors of neighbouring apartments may line up or not. */
+  const PATH = Object.freeze([[0, 3, 3], [1, 3, 3], [1, 2, 3], [3, 2, 3], [3, 3, 3], [3, 1, 3], [3, 1, 2], [3, 1, 1], [3, 1, 0], [2, 1, 0], [1, 1, 3]]);
+  const LINKS = Object.freeze([
+    /* [room, direction, state]: panels the route needs; both sides are given where the rooms are neighbours from the start. */
+    [[0, 3, 3], DIR.XP, PANEL.DOOR], [[1, 3, 3], DIR.XN, PANEL.DOOR],
+    [[1, 3, 3], DIR.YN, PANEL.OPEN], [[1, 2, 3], DIR.YP, PANEL.OPEN],
+    [[1, 2, 3], DIR.YN, PANEL.DOOR],                                   // hatch; the room below has no hatch here
+    [[3, 2, 3], DIR.YN, PANEL.DOOR], [[3, 2, 3], DIR.YP, PANEL.OPEN], [[3, 3, 3], DIR.YN, PANEL.OPEN],
+    [[3, 1, 2], DIR.YP, PANEL.DOOR],
+    [[3, 1, 2], DIR.ZN, PANEL.DOOR], [[3, 1, 1], DIR.ZP, PANEL.DOOR],
+    [[3, 1, 1], DIR.ZN, PANEL.OPEN], [[3, 1, 0], DIR.ZP, PANEL.OPEN],
+    [[3, 1, 0], DIR.YP, PANEL.DOOR],
+    [[3, 1, 0], DIR.XN, PANEL.DOOR], [[2, 1, 0], DIR.XP, PANEL.DOOR],
+  ]);
+  const START = Object.freeze({ room: [0, 3, 3], off: [0, -ROOM / 2 + WALL_T / 2 + BALL.R, 0] });
+  const ITEMS = Object.freeze([
+    { kind: 'star', id: 0, room: [1, 2, 3], off: [0, -ROOM / 2 + WALL_T / 2 + BALL.R, 0] },
+    { kind: 'star', id: 1, room: [3, 1, 2], off: [0, -ROOM / 2 + WALL_T / 2 + BALL.R, 0] },
+    { kind: 'star', id: 2, room: [3, 3, 3], off: [0, ROOM / 2 - BALL.R, 0] },
+    { kind: 'exit', room: [2, 1, 0], off: [0, -ROOM / 2 + WALL_T / 2 + 0.004, 0], dir: DIR.YN },
+  ]);
+
+  function buildRooms() {
+    const rooms = [];
+    for (let j = 0; j < N; j++) {
+      for (let k = 0; k < N; k++) {
+        for (let i = 0; i < N; i++) {
+          const pos = [i, j, k];
+          rooms.push({ id: rooms.length, home: apartmentOf(pos), pos, panel: [0, 0, 0, 0, 0, 0], items: [] });
+        }
+      }
+    }
+    const at = (c) => rooms[rIdx(c[0], c[1], c[2])];
+    const onPath = (c) => PATH.some((p) => sameCell(p, c));
+    /* Decor: rooms off the route get doors, hatches and corridors; never a passage into a route room. */
+    for (const r of rooms) {
+      for (let d = 0; d < 6; d += 2) {
+        const nb = V.add(r.pos, DIRS[d]);
+        if (!inGrid(nb)) continue;
+        const o = at(nb);
+        if (onPath(r.pos) || onPath(nb)) continue;
+        const h1 = hash(r.id * 7.1 + d * 13.3), h2 = hash(o.id * 5.7 + d * 3.1 + 2);
+        const vertical = d === DIR.YP;
+        if (r.home === o.home) {
+          const s = vertical ? (h1 < 0.32 ? PANEL.DOOR : PANEL.SOLID) : h1 < 0.3 ? PANEL.SOLID : h1 < 0.68 ? PANEL.DOOR : PANEL.OPEN;
+          r.panel[d] = s;
+          o.panel[opposite(d)] = s;
+        } else {
+          const p = vertical ? 0.3 : 0.4;
+          r.panel[d] = h1 < p ? PANEL.DOOR : PANEL.SOLID;
+          o.panel[opposite(d)] = h2 < p ? PANEL.DOOR : PANEL.SOLID;
+        }
+      }
+    }
+    for (const [c, d, s] of LINKS) at(c).panel[d] = s;
+    for (const it of ITEMS) at(it.room).items.push({ kind: it.kind, id: it.id, off: it.off.slice(), dir: it.dir });
+    return rooms;
+  }
+
+  /* World from the rooms: the room grid, wall slabs for physics, star and exit points. */
+  function rebuildWorld() {
+    const grid = new Array(N * N * N);
+    for (const r of st.rooms) grid[rIdx(r.pos[0], r.pos[1], r.pos[2])] = r;
+    st.grid = grid;
+    const boxes = [];
+    for (const r of st.rooms) {
+      for (let d = 0; d < 6; d += 2) {
+        const nb = V.add(r.pos, DIRS[d]);
+        if (!inGrid(nb)) continue;
+        const o = grid[rIdx(nb[0], nb[1], nb[2])];
+        if (passable(r, d, o)) continue;
+        const a = d >> 1;
+        const lo = roomLo(r.pos), hi = lo.map((v) => v + ROOM);
+        const min = lo.slice(), max = hi.slice();
+        min[a] = hi[a] - WALL_T / 2;
+        max[a] = hi[a] + WALL_T / 2;
+        boxes.push({ min, max });
+      }
+    }
+    st.boxes = boxes;
+    st.stars = [];
+    st.exit = null;
+    for (const r of st.rooms) {
+      const c = roomCenter(r.pos);
+      for (const it of r.items) {
+        if (it.kind === 'star') st.stars.push({ id: it.id, p: V.add(c, it.off) });
+        else st.exit = { p: V.add(c, it.off), c: V.add(V.add(c, it.off), V.scale(DIRS[it.dir], -(BALL.R - 0.004))), n: DIRS[it.dir].slice() };
+      }
+    }
+  }
+  const passable = (r, d, o) => r.panel[d] !== PANEL.SOLID && o.panel[opposite(d)] !== PANEL.SOLID;
+
+  /* ============================== Physics ============================== */
+  function collideBox(bx) {
+    const p = ball.p;
+    const q = [0, 1, 2].map((i) => Math.max(bx.min[i], Math.min(bx.max[i], p[i])));
+    const d = V.sub(p, q);
+    const dist = V.len(d);
+    if (dist >= BALL.R) return null;
+    let n;
+    if (dist < 1e-6) {
+      let best = Infinity;
+      for (let i = 0; i < 3; i++) {
+        for (const sg of [-1, 1]) {
+          const pen = sg > 0 ? bx.max[i] - p[i] : p[i] - bx.min[i];
+          if (pen < best) { best = pen; n = [0, 0, 0]; n[i] = sg; }
+        }
+      }
+      ball.p = V.add(p, V.scale(n, best + BALL.R));
+    } else {
+      n = V.scale(d, 1 / dist);
+      ball.p = V.add(q, V.scale(n, BALL.R));
+    }
+    const vn = V.dot(ball.v, n);
+    if (vn < 0) ball.v = V.sub(ball.v, V.scale(n, vn * (1 + BALL.REST)));
+    return n;
+  }
+  const isFar = (bx) => {
+    const p = ball.p, r = BALL.R;
+    return p[0] < bx.min[0] - r || p[0] > bx.max[0] + r || p[1] < bx.min[1] - r || p[1] > bx.max[1] + r || p[2] < bx.min[2] - r || p[2] > bx.max[2] + r;
+  };
+
+  function physics(dt, g) {
+    const h = dt / BALL.SUBSTEPS;
+    const lim = 1 - BALL.R;
+    let touched = null;
+    for (let k = 0; k < BALL.SUBSTEPS; k++) {
+      ball.v = V.add(ball.v, V.scale(g, BALL.G * h));
+      ball.p = V.add(ball.p, V.scale(ball.v, h));
+      let contact = false;
+      for (let i = 0; i < 3; i++) {
+        if (Math.abs(ball.p[i]) <= lim) continue;
+        const sg = Math.sign(ball.p[i]);
+        ball.p[i] = sg * lim;
+        if (ball.v[i] * sg > 0) ball.v[i] = -ball.v[i] * BALL.REST;
+        contact = true;
+        const n = [0, 0, 0];
+        n[i] = sg;
+        if (V.dot(n, g) > 0.3) touched = n;
+      }
+      for (const bx of st.boxes) {
+        if (isFar(bx)) continue;
+        const n = collideBox(bx);
+        if (n) { contact = true; if (V.dot(n, g) < -0.3) touched = touched || V.neg(n); }
+      }
+      if (contact) ball.v = V.scale(ball.v, Math.exp(-BALL.FRICTION * h));
+      const sp = V.len(ball.v);
+      if (sp > BALL.MAX_V) ball.v = V.scale(ball.v, BALL.MAX_V / sp);
+    }
+    ball.contact = touched ? touched.map((x) => Math.round(x)) : null;
+    ball.airT = touched ? 0 : ball.airT + dt;
+  }
+  const floorFace = () => (ball.contact ? faceOfN(ball.contact) : null);
+
+  /* Tap: knock the box, the ball bounces away from the floor it rests on. */
+  function knock() {
+    if (!ball.contact || st.won) return false;
+    ball.v = V.sub(ball.v, V.scale(ball.contact, BALL.KNOCK_V));
+    sfx([520, 780], 70, 'triangle');
+    return true;
+  }
+
+  /* Half twist: the layer jolts; a ball inside that half is dragged along the layer motion. */
+  function halfTwist(token) {
+    const move = MOVES[token[0]];
+    const q = token.endsWith("'") ? -move.quarter : move.quarter;
+    api.wiggle(token);
+    if (Math.sign(ball.p[move.axis]) !== move.layer || st.won) return false;
+    let d = V.scale(V.cross(V.unit(move.axis), ball.p), q);
+    if (ball.contact) d = V.sub(d, V.scale(ball.contact, V.dot(d, ball.contact)));
+    if (V.len(d) < 1e-3) return false;
+    ball.v = V.add(ball.v, V.scale(norm(d), BALL.NUDGE_V));
+    sfx([300], 60, 'square');
+    return true;
+  }
+
+  /* Full twist: the rooms of that half (4 apartments) turn by 90° with their panels, stars and the ball. */
+  function turnRooms(token) {
+    const move = MOVES[token[0]];
+    const q = token.endsWith("'") ? -move.quarter : move.quarter;
+    const a = move.axis;
+    for (const r of st.rooms) {
+      if (Math.sign(r.pos[a] - MID) !== move.layer) continue;
+      const v = V.rotQ(r.pos.map((x) => x - MID), a, q);
+      r.pos = v.map((x) => Math.round(x + MID));
+      const np = [0, 0, 0, 0, 0, 0];
+      for (let d = 0; d < 6; d++) np[dirId(V.rotQ(DIRS[d], a, q))] = r.panel[d];
+      r.panel = np;
+      for (const it of r.items) {
+        it.off = V.rotQ(it.off, a, q);
+        if (it.dir != null) it.dir = dirId(V.rotQ(DIRS[it.dir], a, q));
+      }
+    }
+    if (Math.sign(ball.p[a]) === move.layer && !st.won) {
+      ball.p = V.rotQ(ball.p, a, q);
+      ball.v = V.rotQ(ball.v, a, q);
+    }
+    rebuildWorld();
+  }
+
+  function pickups(dt) {
+    for (const sr of st.stars) {
+      if (st.got.has(sr.id)) continue;
+      if (V.len(V.sub(sr.p, ball.p)) < PICK_R) {
+        st.got.add(sr.id);
+        sfx([660, 880, 1320], 90, 'triangle');
+        st.flashText = { text: `★ ${st.got.size}/${STARS}`, t: 0 };
+      }
+    }
+    if (st.exit && st.got.size >= STARS && !st.won && V.len(V.sub(st.exit.c, ball.p)) < EXIT_R) {
+      st.won = true;
+      st.wonAt = st.t;
+      st.sinkT = 0;
+      sfx([523, 659, 784, 1047], 160, 'triangle');
+    }
+    if (st.won) st.sinkT = Math.min(SINK_S, st.sinkT + dt);
+  }
+
+  /* ============================== Drawing ============================== */
+  /* Each face is a window into the whole house: an eye outside the face looks inward through glass walls; the picture is cut into 4 screens. */
+  const faceCanvas = {};
+  for (const face of FACE_IDS) {
+    const cv = document.createElement('canvas');
+    cv.width = cv.height = VIEW.FACE_PX;
+    faceCanvas[face] = { cv, g: cv.getContext('2d'), frame: -1 };
+  }
+  const hsl = (h, s, l, a = 1) => `hsla(${h}, ${s}%, ${l}%, ${a})`;
+
+  function renderFace(face) {
+    const fc = faceCanvas[face];
+    const g = fc.g;
+    const f = FACES[face];
+    const E = VIEW.EYE;
+    const eye = V.scale(f.n, 1 + E);
+    const P = (p) => {
+      const d = 1 - V.dot(p, f.n);
+      const s = E / (E + d);
+      return [240 + 240 * V.dot(p, f.r) * s, 240 - 240 * V.dot(p, f.u) * s, s];
+    };
+    const poly = (pts, close = true) => {
+      pts.forEach((p, i) => { const q = P(p); if (i) g.lineTo(q[0], q[1]); else g.moveTo(q[0], q[1]); });
+      if (close) g.closePath();
+    };
+    const k = VIEW.FACE_PX / 480;
+    g.setTransform(k, 0, 0, k, 0, 0);
+    g.fillStyle = '#03040b';
+    g.fillRect(0, 0, 480, 480);
+
+    /* The glass box: far wall and side walls with the room grid. */
+    const others = FACE_IDS.filter((id) => id !== face).sort((a, b) => V.dot(FACES[a].n, f.n) - V.dot(FACES[b].n, f.n));
+    const gdir = api.gravity();
+    for (const id of others) {
+      const o = FACES[id];
+      const corners = [[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([a, b]) => V.add(V.add(o.n, V.scale(o.r, a)), V.scale(o.u, b)));
+      g.beginPath();
+      poly(corners);
+      g.fillStyle = hsl(230, 35, 7 + 5 * Math.max(0, V.dot(o.n, gdir)));
+      g.fill();
+      g.beginPath();
+      for (let t = 1; t < N; t++) {
+        const s = -1 + t * ROOM;
+        for (const [p0, p1] of [[V.add(V.add(o.n, V.scale(o.r, s)), o.u), V.sub(V.add(o.n, V.scale(o.r, s)), o.u)],
+          [V.add(V.add(o.n, V.scale(o.u, s)), o.r), V.sub(V.add(o.n, V.scale(o.u, s)), o.r)]]) poly([p0, p1], false);
+      }
+      g.strokeStyle = 'rgba(160, 190, 255, .12)';
+      g.lineWidth = 1.2;
+      g.stroke();
+    }
+
+    /* Panels, stars, exit, shadow and ball, far to near. */
+    const items = [];
+    const here = roomAt(ball.p);
+    const dist = (p) => V.len(V.sub(eye, p));
+    for (const r of st.rooms) {
+      const lo = roomLo(r.pos), hi = lo.map((v) => v + ROOM);
+      const isHere = sameCell(r.pos, here);
+      for (let d = 0; d < 6; d++) {
+        const nb = V.add(r.pos, DIRS[d]);
+        if (!inGrid(nb)) continue;
+        const o = st.grid[rIdx(nb[0], nb[1], nb[2])];
+        const s = r.panel[d];
+        if (s === PANEL.OPEN && o.panel[opposite(d)] !== PANEL.SOLID) continue;
+        const a = d >> 1, b = (a + 1) % 3, c = (a + 2) % 3;
+        const plane = (d & 1 ? lo[a] : hi[a]) + (d & 1 ? 1 : -1) * WALL_T / 2;
+        const pts = [[lo[b], lo[c]], [hi[b], lo[c]], [hi[b], hi[c]], [lo[b], hi[c]]].map(([u, w]) => {
+          const p = [0, 0, 0];
+          p[a] = plane; p[b] = u; p[c] = w;
+          return p;
+        });
+        const cen = V.scale(V.add(pts[0], pts[2]), 0.5);
+        const depth = 1 - V.dot(cen, f.n);
+        items.push({ d: dist(cen), draw: () => drawPanel(g, poly, pts, r, s, passable(r, d, o), isHere, 1 - GLASS.FOG * depth / 2) });
+      }
+    }
+    for (const sr of st.stars) if (!st.got.has(sr.id)) items.push({ d: dist(sr.p) - 0.01, draw: () => drawStar(g, P(sr.p)) });
+    if (st.exit) items.push({ d: dist(st.exit.p), draw: () => drawExit(g, P, st.exit) });
+    const sink = st.won ? st.sinkT / SINK_S : 0;
+    if (sink < 1) {
+      const sh = shadowSpot(gdir);
+      if (sh) items.push({ d: dist(sh.p) + 0.005, draw: () => drawShadow(g, poly, sh) });
+      items.push({ d: dist(ball.p), draw: () => drawBall(g, P(ball.p), 1 - sink) });
+    }
+    items.sort((x, y) => y.d - x.d);
+    for (const it of items) it.draw();
+    const sheen = g.createLinearGradient(0, 0, 480, 480);
+    sheen.addColorStop(0, 'rgba(255,255,255,.06)');
+    sheen.addColorStop(0.35, 'rgba(255,255,255,0)');
+    sheen.addColorStop(0.62, 'rgba(255,255,255,.035)');
+    sheen.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = sheen;
+    g.fillRect(0, 0, 480, 480);
+    fc.frame = st.frame;
+  }
+
+  /* A wall panel of one room: tinted glass when solid, a glowing frame when it is a door (green if the other side is open too). */
+  function drawPanel(g, poly, pts, r, s, open, isHere, fog) {
+    const hue = APT_HUES[r.home];
+    g.beginPath();
+    poly(pts);
+    if (s === PANEL.SOLID) {
+      g.fillStyle = hsl(hue, 70, 55, (isHere ? GLASS.HERE_FILL : GLASS.FILL) * fog);
+      g.fill();
+      g.strokeStyle = isHere ? `rgba(255, 255, 255, ${GLASS.HERE_EDGE})` : hsl(hue, 90, 70, GLASS.EDGE * fog);
+      g.lineWidth = isHere ? 2 : 1.2;
+      g.stroke();
+      return;
+    }
+    const a = (isHere ? 1 : GLASS.DOOR) * fog;
+    g.strokeStyle = open ? `rgba(61, 255, 138, ${a.toFixed(3)})` : `rgba(255, 120, 80, ${a.toFixed(3)})`;
+    g.lineWidth = isHere ? 3 : 1.6;
+    g.stroke();
+    if (!open) {
+      g.fillStyle = `rgba(255, 120, 80, ${(0.06 * fog).toFixed(3)})`;
+      g.fill();
+    }
+  }
+
+  function shadowSpot(gdir) {
+    let a = 0;
+    for (let i = 1; i < 3; i++) if (Math.abs(gdir[i]) > Math.abs(gdir[a])) a = i;
+    if (Math.abs(gdir[a]) < 0.5) return null;
+    const sg = Math.sign(gdir[a]);
+    /* Walk down along gravity to the first closed floor. */
+    let cell = roomAt(ball.p);
+    for (;;) {
+      const r = st.grid[rIdx(cell[0], cell[1], cell[2])];
+      const d = dirId(DIRS[a * 2].map((x) => x * sg));
+      const nb = V.add(cell, DIRS[d]);
+      if (!inGrid(nb)) { const p = ball.p.slice(); p[a] = sg * 0.997; return { p, a, h: Math.abs(p[a] - ball.p[a]) }; }
+      const o = st.grid[rIdx(nb[0], nb[1], nb[2])];
+      if (!passable(r, d, o)) {
+        const p = ball.p.slice();
+        const lo = roomLo(cell);
+        p[a] = (sg > 0 ? lo[a] + ROOM : lo[a]) - sg * (WALL_T / 2 + 0.003);
+        return { p, a, h: Math.abs(p[a] - ball.p[a]) };
+      }
+      cell = nb;
+    }
+  }
+
+  function drawShadow(g, poly, sh) {
+    const k = Math.max(0, 1 - sh.h / 1.2);
+    if (k <= 0) return;
+    const b = (sh.a + 1) % 3, c = (sh.a + 2) % 3;
+    const rad = BALL.R * (0.9 + sh.h * 0.4);
+    const pts = [];
+    for (let i = 0; i < 14; i++) {
+      const t = (i / 14) * Math.PI * 2;
+      const p = sh.p.slice();
+      p[b] += Math.cos(t) * rad;
+      p[c] += Math.sin(t) * rad;
+      pts.push(p);
+    }
+    g.beginPath();
+    poly(pts);
+    g.fillStyle = `rgba(0, 0, 0, ${(0.55 * k).toFixed(3)})`;
+    g.fill();
+  }
+
+  function drawBall(g, q, scale) {
+    const [x, y, s] = q;
+    const r = BALL.R * 240 * s * scale;
+    if (r < 0.5) return;
+    const halo = g.createRadialGradient(x, y, r * 0.7, x, y, r * 2.4);
+    halo.addColorStop(0, 'rgba(160, 240, 255, .6)');
+    halo.addColorStop(1, 'rgba(160, 240, 255, 0)');
+    g.fillStyle = halo;
+    g.beginPath(); g.arc(x, y, r * 2.4, 0, Math.PI * 2); g.fill();
+    const grd = g.createRadialGradient(x - r * 0.35, y - r * 0.4, r * 0.08, x, y, r);
+    grd.addColorStop(0, '#ffffff');
+    grd.addColorStop(0.3, '#dbe7f5');
+    grd.addColorStop(0.75, '#6d7f9c');
+    grd.addColorStop(1, '#1d2536');
+    g.fillStyle = grd;
+    g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = 'rgba(160, 240, 255, .8)';
+    g.lineWidth = 1.5;
+    g.stroke();
+  }
+
+  function drawStar(g, q) {
+    const [x, y, s] = q;
+    const R = 22 * s, r = 9 * s, rot = st.t * 1.6;
+    const halo = g.createRadialGradient(x, y, 2, x, y, R * 1.9);
+    halo.addColorStop(0, 'rgba(255, 210, 62, .6)');
+    halo.addColorStop(1, 'rgba(255, 210, 62, 0)');
+    g.fillStyle = halo;
+    g.beginPath(); g.arc(x, y, R * 1.9, 0, Math.PI * 2); g.fill();
+    g.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const a = rot + (i * Math.PI) / 5 - Math.PI / 2;
+      const rr = i % 2 ? r : R;
+      if (i) g.lineTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr); else g.moveTo(x + Math.cos(a) * rr, y + Math.sin(a) * rr);
+    }
+    g.closePath();
+    g.fillStyle = STAR_COLOR;
+    g.fill();
+    g.strokeStyle = '#fff6c8';
+    g.lineWidth = 1.5;
+    g.stroke();
+  }
+
+  function drawExit(g, P, ex) {
+    const a = ex.n.findIndex((x) => x !== 0), b = (a + 1) % 3, c = (a + 2) % 3;
+    const open = st.got.size >= STARS;
+    const ring = (rad) => {
+      g.beginPath();
+      for (let i = 0; i <= 20; i++) {
+        const t = (i / 20) * Math.PI * 2;
+        const p = ex.p.slice();
+        p[b] += Math.cos(t) * rad;
+        p[c] += Math.sin(t) * rad;
+        const q = P(p);
+        if (i) g.lineTo(q[0], q[1]); else g.moveTo(q[0], q[1]);
+      }
+      g.closePath();
+    };
+    ring(EXIT_R);
+    g.fillStyle = '#000';
+    g.fill();
+    for (let n = 0; n < 3; n++) {
+      ring(EXIT_R * (1.1 + n * 0.22 + (open ? 0.06 * Math.sin(st.t * 5 + n) : 0)));
+      g.strokeStyle = open ? ['#3dff8a', '#a6ffcf', '#3ef2ff'][n] : 'rgba(140, 150, 180, .55)';
+      g.lineWidth = open ? 3 : 2;
+      g.stroke();
+    }
+  }
+
+  function paint(g, ctx) {
+    const fc = faceCanvas[ctx.face];
+    if (fc.frame !== st.frame) renderFace(ctx.face);
+    const half = VIEW.FACE_PX / 2;
+    g.drawImage(fc.cv, ctx.col * half, ctx.row * half, half, half, 0, 0, SCREEN, SCREEN);
+  }
+
+  /* ============================== Camera ============================== */
+  function orientFrom(up, look) {
+    let w = V.sub(look, V.scale(up, V.dot(look, up)));
+    if (V.len(w) < 1e-3) w = Math.abs(up[1]) < 0.9 ? [0, 1, 0] : [0, 0, 1];
+    w = norm(w);
+    return [V.cross(up, w), up.slice(), w];
+  }
+  function updateCamera(dt, gWanted) {
+    const c = st.cam;
+    const ku = 1 - Math.exp(-dt / (c.fast ? VIEW.FLIP_TAU_S : VIEW.UP_TAU_S));
+    const kl = 1 - Math.exp(-dt / VIEW.LOOK_TAU_S);
+    c.up = norm(V.add(c.up, V.scale(V.sub(V.neg(gWanted), c.up), ku)));
+    if (c.spin) c.look = norm(V.rotA(c.look, 1, c.spin * dt));
+    else if (c.lookT) c.look = norm(V.add(c.look, V.scale(V.sub(c.lookT, c.look), kl)));
+    api.setOrientation(orientFrom(c.up, c.look));
+  }
+
+  /* ============================== Demo autopilot ============================== */
+  /* Gravity that drives the ball toward a point, on the floor given by the face toward which gravity points. */
+  function steerGravity(floor, target, vmax) {
+    const n = FACES[floor].n;
+    let e = V.sub(target, ball.p);
+    e = V.sub(e, V.scale(n, V.dot(e, n)));
+    const dist = V.len(e);
+    const vt = V.sub(ball.v, V.scale(n, V.dot(ball.v, n)));
+    const vdes = V.scale(e, Math.min(vmax, dist * PILOT.K_P) / (dist || 1));
+    let a = V.scale(V.sub(vdes, vt), PILOT.K_V);
+    const amax = BALL.G * PILOT.TILT_MAX;
+    if (V.len(a) > amax) a = V.scale(a, amax / V.len(a));
+    const gt = V.scale(a, 1 / BALL.G);
+    const gn = Math.sqrt(Math.max(0, 1 - V.dot(gt, gt)));
+    return { g: norm(V.add(V.scale(n, gn), gt)), dist };
+  }
+
+  const room = (i, j, k) => () => roomCenter([i, j, k]);
+  const inRoom = (c) => () => sameCell(roomAt(ball.p), c) && ball.contact && V.len(ball.v) < 0.35;
+
+  const SCRIPT = () => [
+    { big: 'MAZE BOX', sub: 'A glass house inside the WowCube', floor: 'D', still: true, hold: 3.0 },
+    { cap: 'A house inside the glass cube', sub: '4 floors × 16 rooms · 8 apartments = the 8 modules', floor: 'D', still: true, orbit: 1.15, hold: 5.5 },
+    { cap: 'Tilt: the ball rolls through a door…', sub: 'Gravity is real: the floor is whatever face is down', act: 'tilt', floor: 'D', go: [room(1, 3, 3)], until: inRoom([1, 2, 3]), hold: 0.2 },
+    { cap: '…and drops through an open floor', sub: 'Green frame = both rooms are open · red = the other side is a wall', act: 'tilt', floor: 'D', go: [room(1, 2, 3)], hold: 1.6 },
+    { cap: 'This hatch is closed from below', sub: 'The apartment under you has no hatch here', act: 'tilt', floor: 'D', still: true, hold: 2.2 },
+    { cap: 'Twist the upper floors: the apartments turn like a carousel', sub: 'Twist U′ → your room comes over an open hatch', act: 'twist', floor: 'D', twist: "U'", still: true, hold: 0.2 },
+    { cap: 'Twist the upper floors: the apartments turn like a carousel', sub: 'Twist U′ → your room comes over an open hatch', act: 'twist', floor: 'D', still: true, until: inRoom([3, 1, 2]), hold: 1.6 },
+    { cap: 'Roll through the apartment doors', sub: '', act: 'tilt', floor: 'D', go: [room(3, 1, 1), room(3, 1, 0)], vmax: 0.4, hold: 1.0 },
+    { cap: 'Flip the cube over', sub: 'The ball falls up the shaft, three floors through the house', act: 'turn', floor: 'R', still: true, fast: true, hold: 0.45 },
+    { cap: 'Flip the cube over', sub: 'The ball falls up the shaft, three floors through the house', act: 'turn', floor: 'U', fast: true, go: [room(3, 3, 0)], until: inRoom([3, 3, 0]), hold: 1.4 },
+    { cap: 'Flip back: down the shaft', sub: '', act: 'turn', floor: 'R', still: true, fast: true, hold: 0.45 },
+    { cap: 'Flip back: down the shaft', sub: '', act: 'turn', floor: 'D', fast: true, go: [room(3, 1, 0)], until: inRoom([3, 1, 0]), hold: 0.8 },
+    { cap: 'The exit is open: roll into it', sub: '', act: 'tilt', floor: 'D', go: [room(2, 1, 0)], vmax: 0.35, until: () => st.won },
+    { big: 'LEVEL COMPLETE', act: '', floor: 'D', still: true, spin: 0.6, hold: 4.5 },
+  ];
+
+  class Pilot {
+    constructor(script) { this.script = script; this.i = -1; this.done = false; this.next(); }
+
+    next() {
+      this.i++;
+      Object.assign(this, { wp: 0, sent: false, tw: 0, holdT: 0, holdAt: null });
+      const s = this.script[this.i];
+      st.cam.spin = 0;
+      st.cam.lookT = norm(VIEW.LOOK);
+      if (!s) { this.done = true; setCaption(null); setAct(''); window.__demoDone = true; return; }
+      if (s.big) { setCaption(null); showBig(s.big, s.big === 'LEVEL COMPLETE' ? `${fmtTime(st.wonAt)} · ${st.got.size}/${STARS} stars` : s.sub); }
+      else { showBig(null); setCaption(s.cap, s.sub); }
+      if (s.orbit) st.cam.lookT = null;
+      if (s.spin) st.cam.spin = s.spin;
+      st.cam.fast = !!s.fast;
+      setAct(s.act || '');
+    }
+
+    /* Returns the gravity the pilot wants this frame. */
+    update(dt) {
+      const s = this.script[this.i];
+      if (!s) return null;
+      if (s.orbit) st.cam.look = norm(V.rotA(st.cam.look, 1, s.orbit * dt));
+      let g = FACES[s.floor].n.slice();
+      if (s.twist) {
+        if (!this.sent) { api.twist(s.twist); this.sent = true; }
+        if (!api.twisting()) this.tw += dt;
+        if (this.tw > 0.3) this.finish(s, dt);
+        return g;
+      }
+      if (s.go && this.wp < s.go.length) {
+        const r = steerGravity(s.floor, s.go[this.wp](), s.vmax || PILOT.V_MAX);
+        g = r.g;
+        if (r.dist < PILOT.REACH) this.wp++;
+        if (this.wp < s.go.length && !(s.until && s.until())) return g;
+      } else if (!s.still) g = this.holdG(s);
+      if (s.until && !s.until()) return g;
+      this.finish(s, dt);
+      return g;
+    }
+
+    finish(s, dt) {
+      this.holdT += dt;
+      if (this.holdT >= (s.hold || 0)) this.next();
+    }
+
+    holdG(s) {
+      if (!this.holdAt) this.holdAt = ball.p.slice();
+      return steerGravity(s.floor, this.holdAt, PILOT.V_MAX).g;
+    }
+  }
+
+  function startDemo() {
+    if (api.twisting()) return;
+    window.__demoDone = false;
+    api.reset();
+    showBig(null);
+    st.demo = new Pilot(SCRIPT());
+  }
+
+  /* ============================== UI ============================== */
+  const fmtTime = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+  function setCaption(text, sub) {
+    if (!ui) return;
+    if (!text) { ui.cap.classList.remove('is-on'); return; }
+    ui.cap.innerHTML = `${text}${sub ? `<small>${sub}</small>` : ''}`;
+    ui.cap.classList.add('is-on');
+  }
+  function showBig(title, sub) {
+    if (!ui) return;
+    if (!title) { ui.big.classList.remove('is-on'); return; }
+    ui.big.innerHTML = `<div class="mb-big-box"><h2>${title}</h2>${sub ? `<p>${sub}</p>` : ''}</div>`;
+    ui.big.classList.add('is-on');
+  }
+  function setAct(act) {
+    if (!ui || !ui.legend) return;
+    ui.legend.querySelectorAll('.mb-row').forEach((r) => r.classList.toggle('is-on', r.dataset.act === act));
+  }
+  /* Taps are reported per face on the hardware: the whole face lights up. */
+  function flashFace(face) {
+    for (let k = 0; k < 4; k++) api.flashSlot(FACE_IDS.indexOf(face) * 4 + k, 'pat');
+  }
+  function sfx(freqs, ms, wave) {
+    if (document.body.classList.contains('is-video')) return;
+    freqs.forEach((f, i) => api.tone(f, ms, i * ms * 0.6, wave));
+  }
+
+  function renderHud() {
+    if (!ui) return;
+    const c = roomAt(ball.p);
+    const flash = st.flashText && st.flashText.t < 1.4 ? `<span class="is-hot">${st.flashText.text}</span>` : '';
+    const html = `<span>★ ${st.got.size}/${STARS}</span><span>⏱ ${fmtTime(st.won ? st.wonAt : st.t)}</span>`
+      + `<span>floor ${c[1] + 1} · room ${c[0] + 1}-${c[2] + 1}</span><span>${ball.contact ? 'rolling' : 'falling'}</span>${flash}`;
+    if (html !== ui.hudHtml) { ui.hudHtml = html; ui.hud.innerHTML = html; }
+    const goals = [0, 1, 2].map((i) => `<span class="${st.got.has(i) ? 'is-done' : ''}">★ star ${i + 1}</span>`).join('')
+      + `<span class="${st.won ? 'is-done' : ''}">◎ exit</span>`;
+    if (goals !== ui.goalsHtml) { ui.goalsHtml = goals; ui.goals.innerHTML = goals; }
+  }
+
+  function buildUi() {
+    const host = document.querySelector('.cv-host3d');
+    const mk = (cls) => { const e = document.createElement('div'); e.className = cls; host.appendChild(e); return e; };
+    ui = { hud: mk('mb-hud'), cap: mk('mb-cap'), big: mk('mb-big') };
+    const netCard = document.querySelector('.cv-hostnet').parentElement;
+    const legend = document.createElement('div');
+    legend.className = 'mb-legend';
+    legend.innerHTML = '<h3>MAZE <b>BOX</b></h3><div class="mb-sub">WowCube game concept · a glass house of 64 rooms inside the cube</div>'
+      + '<div class="mb-goals"></div>'
+      + '<div class="mb-row" data-act="tilt"><i>🫳</i><div><b>Tilt</b><span>the ball rolls on the face that is down, through doors, and drops through open floors</span></div></div>'
+      + '<div class="mb-row" data-act="turn"><i>🧊</i><div><b>Turn / flip</b><span>a wall becomes the floor; upside down the ball falls up a shaft</span></div></div>'
+      + '<div class="mb-row" data-act="twist"><i>🔄</i><div><b>Twist</b><span>4 apartments turn with their rooms; line up the doors between apartments</span></div></div>'
+      + '<div class="mb-row" data-act="tap"><i>👆</i><div><b>Tap</b><span>knock the box: the ball bounces off its floor</span></div></div>';
+    netCard.appendChild(legend);
+    ui.legend = legend;
+    ui.goals = legend.querySelector('.mb-goals');
+  }
+
+  /* ============================== Mount ============================== */
+  const params = new URLSearchParams(location.search);
+  if (params.has('cinema')) document.body.classList.add('is-cinema');
+  if (params.has('video')) document.body.classList.add('is-video');
+
+  api = CubeDemo.mount({
+    mode: MODE.INTERACTIVE,
+    orientView: true,
+    viewElev: VIEW.ELEV,
+    viewPresets: [],
+    backHref: '../index.html',
+    docKind: 'game concept',
+    icon: '🏢',
+    title: 'Maze Box',
+    tagline: 'A steel ball in a glass house of 64 rooms inside the cube: tilt it through doors, flip the cube to drop it through the floors, twist to line up the apartments',
+    idea: 'Like the classic 3D maze toy, but the maze is a house: 4 floors of 4 × 4 rooms inside the cube. Every module is an apartment of 2 × 2 × 2 rooms. '
+      + 'Every face is a window that shows the whole house through glass walls. Gravity is real, so the floor is whatever face is down: roll through doors, '
+      + 'drop through open floors, flip the cube and the ball falls the other way. Every room owns its walls, so a passage between two apartments exists only '
+      + 'where both walls are open; a twist turns 4 apartments and lines their doors up in a new way. Collect 3 stars, then roll into the exit.',
+    howto: [
+      ['Tilt', 'gravity from the accelerometer rolls the ball on the face that is down (drag or arrow keys in the demo)'],
+      ['Turn / flip', 'by 90° a wall becomes the floor, by 180° the ball falls the other way through open floors'],
+      ['Twist', 'turns 4 apartments with their rooms, stars and the ball; doors between apartments line up differently'],
+      ['Tap', 'knock the box: the ball bounces off its floor (Space in the demo)'],
+      ['Half twist', 'jolts the layer: a ball in that half gets a push along the layer motion'],
+    ],
+    notes: [
+      'House: 4 × 4 × 4 rooms of 0.5 units (120 px) in the box −1…1, walls 0.04 thick, ball radius 0.08.',
+      'Each room has 6 panels: wall, door or open. A passage needs both facing panels open; a green frame shows a passage, a red frame a door into a wall.',
+      'Each face picture is a perspective view from an eye 2.8 units outside the face, cut into its 4 screens; panels are drawn far to near as tinted glass.',
+      'Twists rotate room positions, panels, stars and the exit by 90°; the ball turns with them if it is in that half.',
+    ],
+    twistHelp: {
+      U: '↻ / ↺ top 2 floors', D: '↻ / ↺ bottom 2 floors', R: '↻ / ↺ right half', L: '↻ / ↺ left half', F: '↻ / ↺ front half', B: '↻ / ↺ back half',
+    },
+    twistMs: 520,
+
+    onReset(a) {
+      api = a;
+      Object.assign(st, { t: 0, frame: 0, got: new Set(), won: false, wonAt: 0, sinkT: 0, demo: null, flashText: null, rooms: buildRooms() });
+      rebuildWorld();
+      ball.p = V.add(roomCenter(START.room), START.off);
+      ball.v = [0, 0, 0];
+      ball.contact = FACES.D.n.slice();
+      ball.airT = 0;
+      st.cam = { up: [0, 1, 0], look: norm(VIEW.LOOK), lookT: norm(VIEW.LOOK), spin: 0, fast: false };
+      api.setOrientation(orientFrom(st.cam.up, st.cam.look));
+      if (ui) { ui.hudHtml = null; ui.goalsHtml = null; }
+      showBig(null);
+      setCaption(null);
+      setAct('');
+    },
+
+    onTwist(token) {
+      turnRooms(token);
+      sfx([300, 400], 90, 'square');
+    },
+
+    tick(dt) {
+      if (api.twisting()) return false;
+      st.frame++;
+      const demoG = st.demo && !st.demo.done ? st.demo.update(dt) : null;
+      if (st.demo && st.demo.done) st.demo = null;
+      if (demoG) updateCamera(dt, demoG);
+      if (!st.won) st.t += dt;
+      if (st.knockReq) { st.knockReq = false; knock(); }
+      if (!st.won) physics(dt, api.gravity());
+      pickups(dt);
+      if (st.flashText) st.flashText.t += dt;
+      if (st.won && !st.demo && ui && !ui.big.classList.contains('is-on')) showBig('LEVEL COMPLETE', `${fmtTime(st.wonAt)} · ${st.got.size}/${STARS} stars`);
+      renderHud();
+      return true;
+    },
+
+    paint,
+
+    onPat({ face }) {
+      if (knock()) flashFace(face);
+      return true;
+    },
+
+    evaluate() {
+      const c = roomAt(ball.p);
+      return {
+        badge: st.won ? 'Level complete' : `Stars ${st.got.size}/${STARS}`,
+        solved: st.won,
+        html: `Time <b>${fmtTime(st.won ? st.wonAt : st.t)}</b> · the ball is on floor <b>${c[1] + 1}</b>, room <b>${c[0] + 1}-${c[2] + 1}</b> (${ball.contact ? `resting on ${floorFace()}` : 'falling'})`
+          + `<br>${st.won ? 'Out through the exit!' : st.got.size >= STARS ? 'The exit is open: roll into it.' : 'Collect the stars to open the exit.'}`,
+      };
+    },
+
+    panel(root, a) {
+      api = a;
+      root.innerHTML = '<div class="cv-card-h"><span>Play</span></div>'
+        + '<div class="cv-row"><button class="is-primary" data-a="demo">▶ Watch the demo run</button><button data-a="knock">Tap · knock</button></div>'
+        + '<div class="cv-hint-line">Half twists (a ball in that half gets a push):</div>'
+        + '<div class="mb-pad">' + ['U', 'D', 'R', 'L', 'F', 'B'].map((id) => `<button data-t="${id}">${id}½↻</button>`).join('')
+        + ['U', 'D', 'R', 'L', 'F', 'B'].map((id) => `<button data-t="${id}'">${id}½↺</button>`).join('') + '</div>'
+        + '<ol class="cv-list"><li>Tilt (drag the cube or arrow keys): the ball rolls on the face that is down.</li>'
+        + '<li>Green door frames are passages; red ones lead into a wall of the next apartment.</li>'
+        + '<li>Twist <b>U′</b> (Shift+U) to turn the upper floors over an open hatch.</li>'
+        + '<li>Turn the cube upside down to send the ball up a shaft.</li>'
+        + '<li>Collect 3 stars, then roll into the exit.</li></ol>'
+        + '<div class="cv-hint-line">Shift+drag spins the cube without tilting.</div>';
+      root.querySelector('[data-a="demo"]').onclick = () => startDemo();
+      root.querySelector('[data-a="knock"]').onclick = () => { if (knock()) flashFace('U'); };
+      root.querySelectorAll('[data-t]').forEach((b) => { b.onclick = () => halfTwist(b.dataset.t); });
+      buildUi();
+    },
+  });
+
+  document.addEventListener('keydown', (ev) => {
+    if (ev.target.closest && ev.target.closest('input, textarea, select')) return;
+    if (ev.code === 'Space' || ev.code === 'KeyJ') { ev.preventDefault(); st.knockReq = true; }
+  });
+
+  window.__mb = { st, ball, startDemo, api, halfTwist, floorFace, roomAt };
+  if (params.has('autoplay')) setTimeout(startDemo, 600);
+})();
+</script>
+</body>
+</html>

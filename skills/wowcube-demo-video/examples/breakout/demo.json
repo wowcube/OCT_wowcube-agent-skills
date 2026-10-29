@@ -1,0 +1,19 @@
+{
+  "title": ["BREAK", "OUT"],
+  "tagline": "WowCube game · a brick breaker on a growing field",
+  "head3d": "3D · TILT ROLLS THE PADDLE · PAT · TWIST",
+  "font": "art/fonts/ttf/Oswald.ttf",
+  "labelFonts": {"1": [18, "SemiBold"], "2": [24, "SemiBold"], "3": [44, "Bold"]},
+  "ids": "src/app_<game>_ids.h",
+  "sprites": "docs/demo/sprites",
+  "frames": "docs/demo/frames.jsonl",
+  "out": "docs/demo/breakout_demo.mp4",
+  "fps": 20,
+  "legend": [
+    {"icon": "icon_tilt_00", "title": "Tilt", "text": "the paddle rolls downhill along the bottom line"},
+    {"icon": "icon_pat", "title": "Pat", "text": "names the front face, launches, fires the lasers"},
+    {"icon": "icon_twist_00", "title": "Twist", "text": "start, pause, next round, try again"},
+    {"icon": "icon_pat", "title": "Double pat", "text": "the level selector: a face per stage"},
+    {"icon": "pill_l_00", "title": "Capsules", "text": "S C L E D B P, the classic seven"}
+  ]
+}

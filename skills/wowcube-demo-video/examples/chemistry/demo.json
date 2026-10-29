@@ -1,0 +1,16 @@
+{
+  "title": ["CHEM", "ISTRY"],
+  "tagline": "WowCube game · twist the atoms into a molecule",
+  "head3d": "3D · TWIST · PAT",
+  "font": "art/fonts/ttf/Nunito.ttf",
+  "frames": "docs/demo/frames.jsonl",
+  "out": "docs/demo/chemistry_demo.mp4",
+  "fps": 20,
+  "colors": {"accent": "#5AA9FF"},
+  "legend": [
+    {"icon": "art/src/icon_twist_00.png", "title": "Full twist", "text": "turns half the cube: atoms ride with their screens"},
+    {"icon": "art/src/icon_twist_00.png", "title": "Bond", "text": "neighbouring screens, on a face or across an edge"},
+    {"icon": "art/src/icon_twist_00.png", "title": "Fragments", "text": "blue bonds: parts of the formula standing right"},
+    {"icon": "art/src/icon_pat.png", "title": "Double pat", "text": "restart the level, replay it, start over"}
+  ]
+}
