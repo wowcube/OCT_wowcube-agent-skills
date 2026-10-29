@@ -1,10 +1,14 @@
 #pragma once
+
+// generate it, do not copy!
+#define APP_GUID1 0xFF75F948FBD176A8ULL
 #include "app_ai_template.h"
-#define APP_VERSION 100 //v1.00
-#define APP_TITLE "app_ai_template"
+
+// Current application version: OCT_APP_SEMVER(Major, Minor, Patch), engine macro from oct_pack.h
+#define APP_VERSION OCT_APP_SEMVER(0, 1, 1) // Version 0.1.1
+#define APP_TITLE "AI DEMO"
+
 #define APP_DIR "..\\..\\app_ai_template"
-#define APP_GUID1 0x0000000000000000ULL
-//APP_CATEGORY_GAME     - plain app/game (default)
-//APP_CATEGORY_LAUNCHER - autoruns as the cube's HOME screen (see octavios/app_template/src/app.h)
 #define APP_CATEGORIES (APP_CATEGORY_GAME)
+
 #define APP_COLORS 0x00000000

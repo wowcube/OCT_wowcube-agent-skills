@@ -4,8 +4,7 @@
 
 #include "app_ai_template_ids.h"
 
-//When defined, binds the per-pixel procedural callback (on_proc_draw) in both
-//the simulator and the ARM module
+//When defined, binds the per-pixel procedural callback (on_proc_draw) in both the simulator and the ARM module
 ///#define APP_HAS_PROC_DRAW
 
 #define OCT_PLANES_MAX 6 // max planes on the cube
@@ -18,10 +17,9 @@
 // Print a float through OCT_text/OCT_trace without %f (double is poisoned on ARM).
 // Split into integer and 3-digit fractional parts, format as "%d.%03d":
 //   OCT_text(-1, "x=%d.%03d\n", OCT_F_INT(x), OCT_F_FRAC(x));
-// Note: for values in (-1, 0) the sign lives in the fractional part only,
-// so e.g. -0.5 prints as "0.500".
-#define OCT_F_INT(x)   ((int32_t)(x))
-#define OCT_F_FRAC(x)  ((int32_t)(((x) < 0.0f ? -(x) : (x)) * 1000.0f) % 1000)
+// Note: for values in (-1, 0) the sign lives in the fractional part only, so e.g. -0.5 prints as "0.500".
+#define OCT_F_INT(x) ((int32_t)(x))
+#define OCT_F_FRAC(x) ((int32_t)(((x) < 0.0f ? -(x) : (x)) * 1000.0f) % 1000)
 
 
 // --- INSTRUCTIONS FOR AI AGENT -----------------------
@@ -29,23 +27,14 @@
 // * DO NOT copy code 1:1.
 // * DO NOT copy internal comments from demos/apis.
 // * Use this as a guide to implement specific logic.
-// * ALWAYS use explicit type casts \u2014 never rely on
-//   implicit conversions between numeric types, pointers,
-//   or enums. Every narrowing, widening, or cross-type
-//   assignment must have a visible cast.
-// * Use only fixed-width types from <stdint.h>
-//   (int8_t, int16_t, int32_t, uint8_t, uint16_t,
-//   uint32_t, size_t, etc.). Never use plain int, short, long.
+// * ALWAYS use explicit type casts - never rely on implicit conversions between numeric types, pointers, or enums.
+//   Every narrowing, widening, or cross-type assignment must have a visible cast.
+// * Use only fixed-width types from <stdint.h> (int8_t, int16_t, int32_t, uint8_t, uint16_t, uint32_t, size_t, etc.).
+//   Never use plain int, short, long.
 // * ALWAYS copy the project header structure.
-// * ALWAYS copy all handler functions (on_init, on_tick, on_tap,
-//   on_twisted, on_pretwisted, on_shake, on_proc_draw) into the output.
-//   All seven are mandatory: on_shake must exist or the ARM module fails
-//   to link; on_proc_draw must exist as a stub even when unused (the
-//   simulator binds it unconditionally, so the SIM build fails without
-//   it -- the ARM module only references it under APP_HAS_PROC_DRAW).
-// * Write modular, readable code: extract game state into
-//   structs, split logic into small focused functions,
-//   use named constants instead of magic numbers.
+// * ALWAYS copy all handler functions (on_init, on_tick, on_tap, on_twisted, on_pretwisted, on_shake, on_proc_draw) into the output.
+//   All seven are mandatory: on_shake must exist or the ARM module fails to link; on_proc_draw must exist as a stub even when unused (the simulator binds it unconditionally, so the SIM build fails without it - the ARM module only references it under APP_HAS_PROC_DRAW).
+// * Write modular, readable code: extract game state into structs, split logic into small focused functions, use named constants instead of magic numbers.
 // -----------------------------------------------------
 
 
@@ -66,6 +55,13 @@ typedef enum {
     DEMO_7,
     DEMO_8,
     DEMO_9,
+    DEMO_10,
+    DEMO_11,
+    DEMO_12,
+    DEMO_13,
+    DEMO_14,
+    DEMO_15,
+    DEMO_16,
     DEMO_COUNT
 } demoId_t;
 
@@ -89,12 +85,60 @@ typedef struct {
     int32_t step; // current step [0..(OCT_PLANES_MAX-2)*OCT_QUADS_AT_PLANE/2)
 } demo6State_t;
 
+// Demo 10: engine tween state
+typedef struct {
+    appObject_t* obj; // sprite driven by OCT_ANIM_tm
+    appObject_t* chaser; // sprite that follows obj through a referenced target
+    int32_t anim; // active tween index for obj, 0 = none
+    int32_t chaserAnim; // active tween index for chaser, 0 = none
+    int32_t funcIdx; // index into DEMO10_FUNCS
+    bool halfLogged; // OCT_ANIM_on_half stays set for the whole second half - log once
+} demo10State_t;
+
+// Demo 11: orientation state
+typedef struct {
+    appObject_t* label; // label that always faces "up" on the top plane
+} demo11State_t;
+
+// Demo 12: twist-aware transform state
+typedef struct {
+    appObject_t* obj; // non-twistable sprite moved by hand
+    octTm_t velocity; // X/Y = pixels per tick in obj's plane space, do not copy this field name
+} demo12State_t;
+
+// Demo 13: procedural sprites state
+typedef struct {
+    appObject_t* circle;
+    appObject_t* text;
+    appObject_t* custom;
+} demo13State_t;
+
+// Demo 14: system info state
+typedef struct {
+    appObject_t* clock;
+    uint8_t savedBrightness;
+    bool dimmed;
+} demo14State_t;
+
+// Demo 15: catalog state
+typedef struct {
+    int32_t entries; // catalog entries seen at init
+    uint64_t launchGuid1; // first foreign pack found, 0 = none
+    uint64_t launchGuid2;
+} demo15State_t;
+
 // Game-specific variables (global)
 typedef struct {
     demoId_t currentDemo;
     appObject_t* demoObj; // shared primary object for active demo
     demo2State_t demo2;
     demo6State_t demo6;
+    demo10State_t demo10;
+    demo11State_t demo11;
+    demo12State_t demo12;
+    demo13State_t demo13;
+    demo14State_t demo14;
+    demo15State_t demo15;
     uint32_t tick;
 } appvars_t;
 
@@ -145,6 +189,33 @@ void twistDemo8(int32_t twid);
 void initDemo9(void);
 void processDemo9(void);
 
+void initDemo10(void);
+void startTweenDemo10(void);
+void startChaserDemo10(void);
+void processDemo10(void);
+
+void initDemo11(void);
+void processDemo11(void);
+
+void initDemo12(void);
+void processDemo12(void);
+void pretwistDemo12(int8_t plane);
+void twistDemo12(int32_t twid);
+
+void initDemo13(void);
+void processDemo13(void);
+void drawCustomDemo13(uint16_t* back, int32_t idx, int32_t px, int32_t py);
+
+void initDemo14(void);
+void processDemo14(void);
+void restoreBrightnessDemo14(void);
+void tapDemo14(size_t plane, int32_t count);
+
+void initDemo15(void);
+void tapDemo15(size_t plane);
+
+void initDemo16(void);
+
 
 ////////////////////////////////
 //            MAPS            //
@@ -174,6 +245,19 @@ static const int32_t RING_ANGLES[OCT_PLANES_MAX][(OCT_PLANES_MAX - 2) * OCT_QUAD
     {180, 180, 270, 270, 0, 0, 90, 90}, // FRONT axis - upper
     {0, 0, 270, 270, 180, 180, 90, 90}, // FRONT axis - lower
 };
+
+// Demo10: easing functions cycled by the tween demo (see oct_shared.h, enum ANIM_FUNC)
+static const ANIM_FUNC DEMO10_FUNCS[] = {FUNC_LINEAR, FUNC_ACC, FUNC_DEC, FUNC_BOUNCEOUT, FUNC_FALL, FUNC_QUAD, FUNC_JELLY, FUNC_SPAWN};
+static const int32_t DEMO10_FUNC_COUNT = (int32_t)(sizeof(DEMO10_FUNCS) / sizeof(DEMO10_FUNCS[0]));
+
+// Demo15: octEntryInfo_t.Type of an installed app pack (the engine's OCT_ENTRY_PACK enum is not visible to a module build)
+static const uint32_t APP_ENTRY_PACK = 1;
+
+// Demo13: RGB565 colors used by the procedural sprites
+static const uint16_t DEMO13_COLOR_GREEN = 0x07E0;
+static const uint16_t DEMO13_COLOR_YELLOW = 0xFFE0;
+static const uint16_t DEMO13_COLOR_CYAN = 0x07FF;
+static const int16_t DEMO13_CUSTOM_HALF = 30; // half-extent of the custom-drawn square in display pixels
 
 
 ////////////////////////////////
@@ -226,7 +310,7 @@ void showLabel(appObject_t* label, bool show) {
     // API + util
     // Short: Toggles visibility of a label and all its child glyphs (letters).
     // Comment: A label created by OCT_add_label has child sprites (one per glyph) linked via Parent.
-    // Comment: Setting Hidden on the label alone is not enough \u2014 each child glyph must also be toggled.
+    // Comment: Setting Hidden on the label alone is not enough - each child glyph must also be toggled.
     label->Hidden = !show;
 
     for (size_t i = 1; i < SPRITES_CAP; i++) {
@@ -313,6 +397,7 @@ void tapDemo0(size_t plane) {
 
         // Short: OCT_del delete a sprite from the scene.
         // Declaration: void OCT_del(octSprite_t* s).
+        // Comment: Also deletes child sprites (label glyphs) and cancels every engine tween (OCT_ANIM_tm) targeting the sprite.
         OCT_del(obj);
     }
 }
@@ -375,6 +460,7 @@ void processDemo2(void) {
 void processDemo2Lerp(void) {
     // API info + demo
     // Demo 2: sprite movement animation - uses OCT_TM_walk to compute the target, then lerps to animate
+    // Comment: For fire-and-forget movement prefer the engine tweens of Demo 10 (OCT_ANIM_tm) - no per-tick bookkeeping in the app.
 
     // start
     if (vars.demo2.lerpStartTick == 0) {
@@ -652,8 +738,7 @@ void initDemo9(void) {
     // API info + demo
     // Demo 9: parent-child sprite relationship.
     // Child sprite uses local coordinates relative to its parent.
-    // When parent moves or rotates, the child follows automatically
-    // (the engine composes transforms via OCT_TM_combine at render time).
+    // When parent moves or rotates, the child follows automatically (the engine composes transforms via OCT_TM_combine at render time).
 
     // create parent sprite at center of TOP plane, quad 0
     int32_t parentId = OCT_add(0, false, OCT_PLANE_TOP, 120.f, 120.f, 0, false, BMP_001, BMP_001, 0);
@@ -681,7 +766,7 @@ void processDemo9(void) {
     // Declaration: float OCT_TM_cos(int deg);
 
     float radius = 120.f;
-    int32_t angle = (int32_t)(vars.tick * 6) % 360; // 6 deg/tick → full circle in 3 seconds
+    int32_t angle = (int32_t)(vars.tick * 6) % 360; // 6 deg/tick -> full circle in 3 seconds
     float cx = 0.f; // plane center X
     float cy = 0.f; // plane center Y
 
@@ -691,12 +776,523 @@ void processDemo9(void) {
 }
 
 
+// Demo: do not copy-paste this code
+void initDemo10(void) {
+    // API info + demo
+    // Demo 10: engine tweens - the engine moves a transform for you over N ticks with an easing function.
+    // The main sprite hops between the two right-hand quads of the TOP plane cycling through every easing.
+    // A second "chaser" sprite is tweened towards a REFERENCED target, so it follows the main sprite while it moves.
+
+    int32_t id = OCT_add(1, false, OCT_PLANE_TOP, 120.f, 120.f, 0, false, BMP_001, BMP_001, 0);
+    vars.demo10.obj = &gObjects[id];
+
+    int32_t chaserId = OCT_add(0, false, OCT_PLANE_TOP, -120.f, -120.f, 0, false, BMP_002, BMP_002, 0);
+    vars.demo10.chaser = &gObjects[chaserId];
+
+    vars.demo10.anim = 0;
+    vars.demo10.chaserAnim = 0;
+    vars.demo10.funcIdx = 0;
+    vars.demo10.halfLogged = false;
+
+    startTweenDemo10();
+    startChaserDemo10();
+}
+
+// Demo: do not copy-paste this code
+void startTweenDemo10(void) {
+    // API info + demo
+    // Demo 10: start a tween from the sprite's current transform to the mirrored quad on the same plane.
+
+    appObject_t* obj = vars.demo10.obj;
+
+    octTm_t from;
+    octTm_t to;
+    OCT_TM_copy(&from, &obj->Tm);
+    OCT_TM_copy(&to, &obj->Tm);
+    to.X = -from.X; // mirrored quad, same plane (positions already include the engine's GAP offset)
+
+    ANIM_FUNC func = DEMO10_FUNCS[vars.demo10.funcIdx];
+    float arc = (func == FUNC_LINEAR) ? 0.f : 60.f;
+
+    // Short: OCT_ANIM_tm starts an engine-driven tween that writes X, Y and Plane into *target every tick; returns the tween index (0 = no free slot).
+    // Declaration: int OCT_ANIM_tm(float arc, int delay_ticks, int duration_ticks, void* context, int func, octTm_t* from, octTm_t* to, bool reffrom, bool refto, octTm_t* target);
+    // Comment: arc is an extra Y offset at mid-flight (0 = straight line, > 0 = ballistic hop); 'to' may be on another plane, the tween crosses the edge.
+    // Comment: func is an easing from enum ANIM_FUNC (never FUNC_NONE): FUNC_LINEAR, FUNC_ACC, FUNC_DEC, FUNC_BOUNCEOUT, FUNC_FALL move to 'to'; FUNC_QUAD, FUNC_JELLY, FUNC_SPAWN are effects that RETURN to 'from'.
+    // Comment: reffrom/refto = true stores the POINTER and re-reads it every tick (a moving target that must outlive the tween); false copies the transform now.
+    vars.demo10.anim = OCT_ANIM_tm(arc, 0, OCT_1SEC_TICKS, NULL, (int32_t)func, &from, &to, false, false, &obj->Tm);
+    vars.demo10.halfLogged = false;
+
+    OCT_text(-1, "Demo10 tween func=%d arc=%d anim=%d\n", (int32_t)func, (int32_t)arc, vars.demo10.anim);
+}
+
+// Demo: do not copy-paste this code
+void startChaserDemo10(void) {
+    // API info + demo
+    // Demo 10: tween the chaser towards the main sprite's LIVE transform (refto = true).
+
+    appObject_t* chaser = vars.demo10.chaser;
+
+    octTm_t from;
+    OCT_TM_copy(&from, &chaser->Tm);
+
+    // Short: OCT_ANIM_tm_tw is OCT_ANIM_tm for twistable content: the tween's endpoints are carried along by physical twists.
+    // Declaration: int OCT_ANIM_tm_tw(float arc, int delay_ticks, int duration_ticks, void* context, int func, octTm_t* from, octTm_t* to, bool reffrom, bool refto, octTm_t* target);
+    // Comment: Here 'to' is a pointer to the main sprite's Tm (refto = true), so the chaser re-aims every tick while its target moves.
+    vars.demo10.chaserAnim = OCT_ANIM_tm(0.f, 0, 2 * OCT_1SEC_TICKS, NULL, FUNC_DEC, &from, &vars.demo10.obj->Tm, false, true, &chaser->Tm);
+}
+
+// Demo: do not copy-paste this code
+void processDemo10(void) {
+    // API info + demo
+    // Demo 10: poll tween events and chain the next tween.
+
+    if (vars.demo10.anim != 0) {
+        // Short: OCT_ANIM_on_half returns 1 while a tween is past its half-way point (a level, not a one-tick pulse).
+        // Declaration: int OCT_ANIM_on_half(int aidx);
+        if (!vars.demo10.halfLogged && OCT_ANIM_on_half(vars.demo10.anim) != 0) {
+            vars.demo10.halfLogged = true;
+
+            // Short: OCT_ANIM_get_progress returns the tween's tick counter: negative while delayed, then 0..duration_ticks.
+            // Declaration: int OCT_ANIM_get_progress(int aidx);
+            OCT_text(-1, "Demo10 half-way at progress=%d\n", OCT_ANIM_get_progress(vars.demo10.anim));
+        }
+
+        // Short: OCT_ANIM_on_end returns 1 during the single tick a tween reaches its end; the tween auto-deletes on the next tick and its index may be reused.
+        // Declaration: int OCT_ANIM_on_end(int aidx);
+        if (OCT_ANIM_on_end(vars.demo10.anim) != 0) {
+            vars.demo10.anim = 0;
+            vars.demo10.funcIdx = (vars.demo10.funcIdx + 1) % DEMO10_FUNC_COUNT;
+            startTweenDemo10();
+        }
+    }
+
+    if (vars.demo10.chaserAnim != 0 && OCT_ANIM_on_end(vars.demo10.chaserAnim) != 0) {
+        vars.demo10.chaserAnim = 0;
+        startChaserDemo10();
+    }
+
+    // Short: OCT_ANIM_del cancels a running tween by index (a stale or zero index is ignored).
+    // Declaration: void OCT_ANIM_del(int aidx);
+    if (vars.tick == 30 * OCT_1SEC_TICKS && vars.demo10.chaserAnim != 0) {
+        OCT_ANIM_del(vars.demo10.chaserAnim);
+        vars.demo10.chaserAnim = 0;
+        OCT_text(-1, "Demo10 chaser stopped\n");
+    }
+}
+
+
+// Demo: do not copy-paste this code
+void initDemo11(void) {
+    // API info + demo
+    // Demo 11: orientation - keep content "up" on the top face the same way system toasts do, and read the IMU.
+
+    int32_t id = OCT_add_label(1, false, OCT_TM_top_side(), 120.f, 120.f, 0, FONT_2, ALIGN_CENTER);
+    vars.demo11.label = &gObjects[id];
+    OCT_label_set(vars.demo11.label, "UP");
+}
+
+// Demo: do not copy-paste this code
+void processDemo11(void) {
+    // API info + demo
+    // Demo 11: re-aim the label every tick; log the sensors twice a second.
+
+    int8_t top = (int8_t)OCT_TM_top_side();
+
+    // Short: OCT_TM_face_up returns the system "up" direction for a plane in degrees (0 = the plane's +Y).
+    // Declaration: int OCT_TM_face_up(int side);
+    // Comment: On a side plane it is gravity-up; for the top plane and its opposite it is LATCHED when that plane became top, so content does not spin while the cube is tilted - the same orientation system notifications use.
+    // Comment: Snap it to the nearest right angle before assigning to Tm.A.
+    int32_t up = OCT_TM_face_up(top);
+    int32_t snapped = ((up + 45) / 90) * 90;
+    // Short: OCT_TM_normalize_angle wraps any integer angle into [0; 360).
+    // Declaration: int OCT_TM_normalize_angle(int deg);
+    snapped = OCT_TM_normalize_angle(snapped);
+
+    OCT_TM_set(&vars.demo11.label->Tm, vars.demo11.label->Tm.X, vars.demo11.label->Tm.Y, snapped, top);
+
+    if (vars.tick % (OCT_1SEC_TICKS / 2) != 0) return;
+
+    // Short: OCT_TM_acc_x/y/n return the LINEAR acceleration projected on a plane (gravity removed) - bumps, knocks, shakes.
+    // Declaration: float OCT_TM_acc_x(int side); float OCT_TM_acc_y(int side); float OCT_TM_acc_n(int side);
+    // Comment: OCT_TM_mixed_acc_x/y/n is the same projection of the RAW accelerometer (gravity included).
+    float ax = OCT_TM_acc_x(top);
+    float ay = OCT_TM_acc_y(top);
+    float an = OCT_TM_acc_n(top);
+
+    // Short: OCT_TM_tap_x/y/n project the direction of the current tap series onto a plane - which way the cube was knocked.
+    // Declaration: float OCT_TM_tap_x(int side); float OCT_TM_tap_y(int side); float OCT_TM_tap_n(int side);
+    float tx = OCT_TM_tap_x(top);
+    float ty = OCT_TM_tap_y(top);
+
+    // Short: OCT_TM_arctan returns the angle of vector (x, y) in integer degrees; fast approximation (max error 0.25 degree).
+    // Declaration: int OCT_TM_arctan(int y, int x);
+    float gx = OCT_TM_gravity_x(OCT_PLANE_FRONT);
+    float gy = OCT_TM_gravity_y(OCT_PLANE_FRONT);
+    int32_t downhill = OCT_TM_normalize_angle(OCT_TM_arctan((int32_t)(gy * 1000.f), (int32_t)(gx * 1000.f)));
+
+    // Short: OCT_lerp blends two floats; NOTE the reversed weight: t = 1 returns 'from', t = 0 returns 'to'.
+    // Declaration: float OCT_lerp(float from, float to, float t);
+    float smoothed = OCT_lerp(ax, 0.f, 0.5f);
+
+
+    // Short: OCT_acc_visual_x/y/z return the latest raw IMU sample as integers (debug/telemetry only).
+    // Declaration: int OCT_acc_visual_x(); int OCT_acc_visual_y(); int OCT_acc_visual_z();
+    OCT_text(-1, "Demo11 top=%d up=%d acc=%d.%03d,%d.%03d,%d.%03d half=%d.%03d tap=%d.%03d,%d.%03d down=%d raw=%d,%d,%d\n",
+        (int32_t)top, up,
+        OCT_F_INT(ax), OCT_F_FRAC(ax), OCT_F_INT(ay), OCT_F_FRAC(ay), OCT_F_INT(an), OCT_F_FRAC(an),
+        OCT_F_INT(smoothed), OCT_F_FRAC(smoothed),
+        OCT_F_INT(tx), OCT_F_FRAC(tx), OCT_F_INT(ty), OCT_F_FRAC(ty),
+        downhill, OCT_acc_visual_x(), OCT_acc_visual_y(), OCT_acc_visual_z());
+}
+
+
+// Demo: do not copy-paste this code
+void initDemo12(void) {
+    // API info + demo
+    // Demo 12: twist-aware transforms - a NON-twistable sprite that the app moves by hand and carries through twists itself.
+    // Comment: twistable=true sprites are carried by the engine; twistable=false ones stay in scene space. Use OCT_TM_twist when only SOME sprites should follow a twist.
+
+    int32_t id = OCT_add(1, false, OCT_PLANE_TOP, 120.f, 120.f, 0, false, BMP_002, BMP_002, 0);
+    vars.demo12.obj = &gObjects[id];
+
+    // 4 px per tick along +Y in obj's plane space
+    OCT_TM_set(&vars.demo12.velocity, 0.f, 4.f, 0, OCT_PLANE_TOP);
+}
+
+// Demo: do not copy-paste this code
+void processDemo12(void) {
+    // API info + demo
+    // Demo 12: integrate velocity by hand, wrap across plane edges and keep the velocity vector consistent.
+
+    appObject_t* obj = vars.demo12.obj;
+    int8_t oldPlane = obj->Tm.Plane;
+
+    obj->Tm.X += vars.demo12.velocity.X;
+    obj->Tm.Y += vars.demo12.velocity.Y;
+
+    // Short: OCT_TM_wrap moves a transform whose X/Y went past the plane edge onto the adjacent plane (repeats until inside).
+    // Declaration: void OCT_TM_wrap(octTm_t* tm);
+    OCT_TM_wrap(&obj->Tm);
+
+    int8_t newPlane = obj->Tm.Plane;
+    if (newPlane != oldPlane) {
+        // Short: OCT_TM_adapt_dir rotates a direction vector (X, Y and A of a transform) from oldside's space into newside's space.
+        // Declaration: void OCT_TM_adapt_dir(octTm_t* tm, int oldside, int newside);
+        // Comment: Never call it with opposite planes, they are not adjacent.
+        OCT_TM_adapt_dir(&vars.demo12.velocity, oldPlane, newPlane);
+        vars.demo12.velocity.Plane = newPlane;
+
+        // Short: OCT_TM_adapt_angle returns the angle delta (degrees) that keeps a heading unchanged when moving from oldside to newside.
+        // Declaration: int OCT_TM_adapt_angle(int oldside, int newside);
+        OCT_text(-1, "Demo12 plane %d -> %d angleDelta=%d\n", (int32_t)oldPlane, (int32_t)newPlane, OCT_TM_adapt_angle(oldPlane, newPlane));
+    }
+}
+
+// Demo: do not copy-paste this code
+void pretwistDemo12(int8_t plane) {
+    // API info + demo
+    // Demo 12: a twist has started - which ring is physically disconnected?
+
+    // Short: OCT_disconnected_axis returns the axis whose ring is currently turning: AXIS_Y (TOP/BOTTOM), AXIS_Z (FRONT/BACK), AXIS_X (LEFT/RIGHT) or AXIS_NONE.
+    // Declaration: int OCT_disconnected_axis();
+    OCT_text(-1, "Demo12 pretwist plane=%d axis=%d\n", (int32_t)plane, OCT_disconnected_axis());
+}
+
+// Demo: do not copy-paste this code
+void twistDemo12(int32_t twid) {
+    // API info + demo
+    // Demo 12: carry the non-twistable sprite through the twist by hand and read the twist impulse.
+
+    if (twid >= OCT_TWIST_HALF) return; // full twists only
+
+    appObject_t* obj = vars.demo12.obj;
+    int32_t quad = OCT_TM_quad(&obj->Tm);
+
+    // Short: OCT_TM_twist_impulse returns the direction (degrees, in the quad's plane space) content on a quad is pushed by a twist; 360 = quad not affected.
+    // Declaration: int OCT_TM_twist_impulse(int quad, octTwistId_t twid);
+    int32_t impulse = OCT_TM_twist_impulse(quad, twid);
+
+    // Short: OCT_TM_twist applies a full twist (twid 0..11) to one transform: ring quads move along the ring, disk quads rotate in place.
+    // Declaration: void OCT_TM_twist(octTm_t* tm, octTwistId_t twid);
+    // Comment: Call it on selected non-twistable sprites to keep them in sync with the physical cube.
+    OCT_TM_twist(&obj->Tm, twid);
+
+    if (impulse != 360) {
+        vars.demo12.velocity.X = 4.f * OCT_TM_cos(impulse);
+        vars.demo12.velocity.Y = 4.f * OCT_TM_sin(impulse);
+    }
+    vars.demo12.velocity.Plane = obj->Tm.Plane;
+
+    OCT_text(-1, "Demo12 twist=%d quad=%d impulse=%d\n", twid, quad, impulse);
+}
+
+
+// Demo: do not copy-paste this code
+void initDemo13(void) {
+    // API info + demo
+    // Demo 13: procedural sprites - drawn by code instead of a bitmap. Three kinds: circle, OS-font text, app-drawn.
+    // Comment: A procedural sprite is a normal OCT_add with bmpfrom = bmpto = 0 plus the Procedural field; it keeps Tm, Layer, Transp, Parent, Twistable...
+
+    // filled circle
+    int32_t circleId = OCT_add(1, false, OCT_PLANE_TOP, 120.f, 120.f, 0, false, 0, 0, 0);
+    vars.demo13.circle = &gObjects[circleId];
+    // Short: PROCEDURAL_CIRCLE draws a soft-edged filled circle: Param3 = radius in pixels (int8_t, max 127), Data0 = RGB565 color, Transp = 0..OCT_TRANSP_MAX.
+    vars.demo13.circle->Procedural = PROCEDURAL_CIRCLE;
+    vars.demo13.circle->Param3 = (int8_t)40;
+    vars.demo13.circle->Data0 = DEMO13_COLOR_GREEN;
+    vars.demo13.circle->Transp = 0;
+
+    // text in the OS built-in font, no font bitmaps needed
+    int32_t textId = OCT_add_label(1, false, OCT_PLANE_FRONT, 120.f, 120.f, 0, FONT_1, ALIGN_CENTER);
+    vars.demo13.text = &gObjects[textId];
+    // Short: OCT_label_embed sets a label's text and switches it to the OS built-in font (PROCEDURAL_TEXT); returns 1, or 0 for a non-label sprite.
+    // Declaration: int OCT_label_embed(octSprite_t* label, const char* text);
+    // Comment: Data0 = RGB565 color (0 = white), alignment comes from OCT_add_label; do not mix with OCT_label_set on the same label.
+    OCT_label_embed(vars.demo13.text, "OS FONT");
+    vars.demo13.text->Data0 = DEMO13_COLOR_YELLOW;
+
+    // app-drawn sprite, see on_proc_draw
+    int32_t customId = OCT_add(1, false, OCT_PLANE_RIGHT, 120.f, 120.f, 0, false, 0, 0, 0);
+    vars.demo13.custom = &gObjects[customId];
+    // Short: PROCEDURAL_CUSTOM hands the sprite to on_proc_draw every frame it is visible; Zw/Zh = half-extents in pixels used for culling (0 = drawn only while the center is on a display).
+    // Comment: Requires APP_HAS_PROC_DRAW on the cube; a display showing such a sprite is redrawn every frame, keep the count low.
+    vars.demo13.custom->Procedural = PROCEDURAL_CUSTOM;
+    vars.demo13.custom->Zw = DEMO13_CUSTOM_HALF;
+    vars.demo13.custom->Zh = DEMO13_CUSTOM_HALF;
+    vars.demo13.custom->Data0 = DEMO13_COLOR_CYAN; // free field, on_proc_draw reads the color from here
+}
+
+// Demo: do not copy-paste this code
+void processDemo13(void) {
+    // Demo 13: pulse the circle radius between 10 and 100 pixels over 2 seconds.
+    uint32_t period = (uint32_t)(2U * OCT_1SEC_TICKS);
+    uint32_t phase = vars.tick % period;
+    uint32_t half = period / 2U;
+    uint32_t radius = (phase < half) ? (10U + phase * 90U / half) : (100U - (phase - half) * 90U / half);
+    vars.demo13.circle->Param3 = (int8_t)radius;
+}
+
+// Demo: do not copy-paste this code
+void drawCustomDemo13(uint16_t* back, int32_t idx, int32_t px, int32_t py) {
+    // API info + demo
+    // Demo 13: draw a checkered square centered at (px, py) into the half-resolution back buffer.
+    // Comment: back is HALFSIDE x HALFSIDE RGB565 pixels, back[row * HALFSIDE + col]; always clip, the sprite may be partially off this display.
+
+    uint16_t color = gObjects[idx].Data0;
+    int32_t halfExtent = (int32_t)DEMO13_CUSTOM_HALF >> 1; // half-res
+
+    for (int32_t dy = -halfExtent; dy < halfExtent; dy++) {
+        int32_t row = py + dy;
+        if (row < 0 || row >= HALFSIDE) continue;
+
+        for (int32_t dx = -halfExtent; dx < halfExtent; dx++) {
+            int32_t col = px + dx;
+            if (col < 0 || col >= HALFSIDE) continue;
+
+            bool checker = (((dx + halfExtent) >> 2) + ((dy + halfExtent) >> 2)) % 2 == 0;
+            if (checker) back[row * HALFSIDE + col] = color;
+        }
+    }
+}
+
+
+// Demo: do not copy-paste this code
+void initDemo14(void) {
+    // API info + demo
+    // Demo 14: host services - clock, battery, brightness, volume, link, asset cache, scratch memory, tracing.
+
+    int32_t id = OCT_add_label(1, false, OCT_PLANE_TOP, 120.f, 120.f, 0, FONT_2, ALIGN_CENTER);
+    vars.demo14.clock = &gObjects[id];
+
+    // Short: OCT_cache_assets forces the listed assets resident in the RAM cache right now; returns how many are resident.
+    // Declaration: int OCT_cache_assets(int* ids, int num);
+    // Comment: Assets stream from the SD card on first use - pre-warm the ones a level needs to avoid first-frame hitches.
+    int32_t ids[] = {(int32_t)BMP_001, (int32_t)BMP_002, (int32_t)BMP_003};
+    int32_t resident = OCT_cache_assets((int*)ids, (int32_t)(sizeof(ids) / sizeof(ids[0])));
+
+    // Short: OCT_get_brightness returns the user's saved backlight level 0..100.
+    // Declaration: int OCT_get_brightness(void);
+    vars.demo14.savedBrightness = (uint8_t)OCT_get_brightness();
+
+    // Short: OCT_set_brightness drives the backlight; OCT_BRIGHTNESS_TRANSIENT is reverted on app exit, OCT_BRIGHTNESS_PERSIST writes the user setting to flash.
+    // Declaration: OCT_set_brightness(level, persist) - macro, level is float for TRANSIENT and int for PERSIST.
+    // Warning: Games must ONLY use OCT_BRIGHTNESS_TRANSIENT. PERSIST is for the settings app.
+    OCT_set_brightness(30.f, OCT_BRIGHTNESS_TRANSIENT);
+    vars.demo14.dimmed = true;
+
+    // Short: OCT_scratch returns 32 KB (OCT_SCRATCH_BYTES) of fast scratch RAM for temporary work, not preserved between ticks.
+    // Declaration: void* OCT_scratch();
+    uint16_t* scratch = (uint16_t*)OCT_scratch();
+    scratch[0] = (uint16_t)resident;
+
+    // Short: OCT_trace writes a printf-style line to the host console (simulator output / UART), not to the screen.
+    // Declaration: void OCT_trace(int cubeid, const char* format, ...);
+    // Comment: cubeid >= 0 prints only from that cublet, -1 from any; compiled out on the cube.
+    OCT_trace(-1, "Demo14 cached=%d brightness=%d\n", (int32_t)scratch[0], (int32_t)vars.demo14.savedBrightness);
+
+    // Short: OCT_get_volume returns the user's saved volume 0..100.
+    // Declaration: OCT_get_volume() - macro.
+    // Comment: OCT_set_volume_transient(level) is reverted on app exit; OCT_set_volume(level) persists - settings app only.
+    OCT_text(-1, "Demo14 volume=%d cached=%d\n", OCT_get_volume(), resident);
+}
+
+// Demo: do not copy-paste this code
+void restoreBrightnessDemo14(void) {
+    if (!vars.demo14.dimmed) return;
+    OCT_set_brightness((float)vars.demo14.savedBrightness, OCT_BRIGHTNESS_TRANSIENT);
+    vars.demo14.dimmed = false;
+}
+
+// Demo: do not copy-paste this code
+void processDemo14(void) {
+    // API info + demo
+    // Demo 14: refresh the clock label once a second, log the host state, undim after 2 seconds.
+
+    if (vars.tick == 2 * OCT_1SEC_TICKS) restoreBrightnessDemo14();
+    if (vars.tick % OCT_1SEC_TICKS != 0) return;
+
+    // Short: OCT_calendar_time returns the cube's LOCAL wall-clock time as a UNIX epoch in seconds (zone offset already applied).
+    // Declaration: uint32_t OCT_calendar_time(void);
+    // Comment: Returns 1 while the RTC is unset; the simulator reports UTC.
+    uint32_t now = OCT_calendar_time();
+    uint32_t secondsInDay = now % 86400U;
+    uint32_t hour = secondsInDay / 3600U;
+    uint32_t minute = (secondsInDay / 60U) % 60U;
+
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%02lu:%02lu", hour, minute);
+    OCT_label_set(vars.demo14.clock, buf);
+
+    // Short: OCT_BAT_level returns the cube battery percent 0..100 (the most discharged cublet, settled); -1 = not measured yet.
+    // Declaration: int8_t OCT_BAT_level(void);
+    // Comment: OCT_BAT_level_local is this cublet's own reading - use OCT_BAT_level for anything the user sees.
+    int8_t battery = OCT_BAT_level();
+    int8_t batteryLocal = OCT_BAT_level_local();
+
+    // Short: OCT_first_run is true for the whole session in which the onboarding pack was autostarted; OCT_fw_up_to_date is the phone's verdict on the firmware.
+    // Declaration: OCT_first_run() / OCT_fw_up_to_date() - macros returning bool.
+    bool firstRun = OCT_first_run();
+
+    OCT_text(-1, "Demo14 %s bat=%d local=%d first=%d\n", buf, (int32_t)battery, (int32_t)batteryLocal, (int32_t)firstRun);
+
+#ifndef OCTSIM
+    // Short: OCT_screen_quad returns the scene quad (0..23) shown on this cublet's display 0..2, or -1 if unbound; cube-only, the simulator has no such call.
+    // Declaration: OCT_screen_quad(display) - macro.
+    OCT_text(-1, "Demo14 displays -> quads %d,%d,%d\n", OCT_screen_quad(0), OCT_screen_quad(1), OCT_screen_quad(2));
+#endif
+}
+
+// Demo: do not copy-paste this code
+void tapDemo14(size_t plane, int32_t count) {
+    // API info + demo
+    // Demo 14: leave the app on a double tap.
+    (void)plane;
+    if (count != 2) return;
+
+    restoreBrightnessDemo14();
+
+    // Short: OCT_app_exit returns the cube to its home screen (installed launcher or the built-in shell) - an in-app "Exit" item.
+    // Declaration: void OCT_app_exit(void);
+    // Comment: OCT_sleep_now() instead puts the whole cube to sleep at once.
+    OCT_app_exit();
+}
+
+
+// Demo: do not copy-paste this code
+void initDemo15(void) {
+    // API info + demo
+    // Demo 15: the app catalog - enumerate installed packs and launch one. This is the API a launcher-category app (APP_CATEGORY_LAUNCHER) is built on.
+
+    vars.demo15.entries = 0;
+    vars.demo15.launchGuid1 = 0;
+    vars.demo15.launchGuid2 = 0;
+
+    // Short: OCT_CATALOG_scan_entries returns the number of catalog entries the engine holds in RAM (no SD re-scan); < 0 on failure.
+    // Declaration: int OCT_CATALOG_scan_entries();
+    if (OCT_CATALOG_scan_entries() < 0) {
+        OCT_text(-1, "Demo15 catalog unavailable\n");
+        return;
+    }
+
+    // Short: OCT_CATALOG_count returns the number of entries; OCT_CATALOG_entry fills octEntryInfo_t for index i and returns 0 on success.
+    // Declaration: int OCT_CATALOG_count(); int OCT_CATALOG_entry(int index, octEntryInfo_t* out);
+    // Comment: octEntryInfo_t fields: Guid1, Guid2 (the app id), Type (APP_ENTRY_PACK = an app, other values = non-app entries such as logs), Name[OCT_SOFTWARE_NAME_MAXLEN].
+    int32_t count = OCT_CATALOG_count();
+    for (int32_t i = 0; i < count; i++) {
+        octEntryInfo_t info;
+        if (OCT_CATALOG_entry(i, &info) != 0 || info.Type != APP_ENTRY_PACK) continue;
+
+        // Short: OCT_CATALOG_version returns the installed pack's AppVersion (0 on an invalid index or non-pack entry).
+        // Declaration: uint32_t OCT_CATALOG_version(int index);
+        // Comment: Byte 3 is the scheme: 1 = semver (bytes 2..0 = major.minor.patch, as produced by OCT_APP_SEMVER in app.h), 0 = legacy opaque counter.
+        uint32_t version = OCT_CATALOG_version(i);
+        uint32_t scheme = (version >> 24) & 0xFFU;
+        uint32_t major = (version >> 16) & 0xFFU;
+        uint32_t minor = (version >> 8) & 0xFFU;
+        uint32_t patch = version & 0xFFU;
+
+        OCT_text(-1, "Demo15 [%d] %s v%lu.%lu.%lu (scheme %lu)\n", i, (const char*)info.Name, major, minor, patch, scheme);
+        vars.demo15.entries++;
+
+        // remember the first pack that is not this app
+        if (vars.demo15.launchGuid1 == 0 && info.Guid1 != (uint64_t)APP_GUID1) {
+            vars.demo15.launchGuid1 = info.Guid1;
+            vars.demo15.launchGuid2 = info.Guid2;
+        }
+    }
+
+    OCT_text(-1, "Demo15 packs=%d\n", vars.demo15.entries);
+}
+
+// Demo: do not copy-paste this code
+void tapDemo15(size_t plane) {
+    // API info + demo
+    // Demo 15: launch the remembered pack from the tapped face.
+
+    if (vars.demo15.launchGuid1 == 0) return;
+
+    // Short: OCT_launch_from starts another installed app; the app-switch transition wave starts at (plane, x, y) - pass the tapped icon's Tm.
+    // Declaration: void OCT_launch_from(uint64_t guid1, uint64_t guid2, int action, int plane, float x, float y);
+    // Comment: OCT_launch(guid1, guid2, action) is the same without an origin; both are leader-only under the hood, just call them on every cublet.
+    OCT_launch_from(vars.demo15.launchGuid1, vars.demo15.launchGuid2, CMD_APP_ACTION_DEFAULT, (int8_t)plane, 120.f, 120.f);
+}
+
+
+// Demo: do not copy-paste this code
+void initDemo16(void) {
+    // API info + demo
+    // Demo 16: viewports - each of the 24 displays is a camera looking at a quad of the scene; re-aim them for mirrors and split views.
+
+    for (int16_t y = -120; y <= 120; y += 240) {
+        for (int16_t x = -120; x <= 120; x += 240) {
+            OCT_add(1, false, OCT_PLANE_TOP, (float)x, (float)y, 0, false, BMP_001, BMP_001, 0);
+        }
+    }
+
+    // Short: OCT_modify_viewport re-aims display vid (0..23 = plane * 4 + sector) at a plane of the scene with the given camera transform.
+    // Declaration: void OCT_modify_viewport(int vid, int plane, int angle, float x, float y, int xflip, int yflip, int mode);
+    // Comment: The camera transform is INVERTED: the default layout for sector s of plane p is (plane = p, angle = -90 * s, x = y = -GAP, xflip = yflip = 1, mode = 0). Start from these values and change one thing.
+    // Comment: mode < 0 keeps the current mode; OCT_viewports_layout(SCHEME_CUBE, GAP, GAP) restores everything.
+    for (int32_t sector = 0; sector < OCT_QUADS_AT_PLANE; sector++) {
+        int32_t vid = OCT_PLANE_BOTTOM * OCT_QUADS_AT_PLANE + sector;
+        OCT_modify_viewport(vid, OCT_PLANE_TOP, -90 * sector, -(float)GAP, -(float)GAP, 1, 1, 0);
+    }
+}
+
+
 // State machine
 
 void switchDemo(demoId_t demo) {
+    // leave no host side effects behind when switching
+    restoreBrightnessDemo14();
+
     // Short: OCT_restart reinitializes the sprite engine, clearing all objects.
     // Declaration: void OCT_restart(int* objects, int capacity, int objectSize);
     OCT_restart((int*)gObjects, SPRITES_CAP, (int32_t)sizeof(appObject_t));
+
+    // Short: OCT_viewports_layout sets the camera layout (SCHEME_CUBE maps the 6 planes to the 6 faces) with the inner and outer bezel widths in pixels; calling it again undoes OCT_modify_viewport.
+    // Declaration: void OCT_viewports_layout(int scheme, int inside_border_width, int outside_border_width);
+    OCT_viewports_layout(SCHEME_CUBE, GAP, GAP);
 
     // Short: OCT_background sets the background color for the entire cube (all planes and quads).
     // Declaration: void OCT_background(int color);
@@ -718,6 +1314,13 @@ void switchDemo(demoId_t demo) {
         case DEMO_7: initDemo7(); break;
         case DEMO_8: initDemo8(); break;
         case DEMO_9: initDemo9(); break;
+        case DEMO_10: initDemo10(); break;
+        case DEMO_11: initDemo11(); break;
+        case DEMO_12: initDemo12(); break;
+        case DEMO_13: initDemo13(); break;
+        case DEMO_14: initDemo14(); break;
+        case DEMO_15: initDemo15(); break;
+        case DEMO_16: initDemo16(); break;
         default: break;
     }
 }
@@ -729,16 +1332,23 @@ OCT_CALLBACK void on_init() {
     // on_init is called once when the application starts.
     // Use it to initialize the engine, set up the scene, and load resources.
 
-    OCT_viewports_layout(SCHEME_CUBE, GAP, GAP); // Set default viewport layout with gap between quads = GAP
+    // Short: OCT_dev_mode enables engine debug overlays (flags combine with |); returns the previous mode.
+    // Declaration: int OCT_dev_mode(int mode);
+    // Comment: OCT_DEV_TEXT shows OCT_text lines, OCT_DEV_STAT / OCT_DEV_FPS engine statistics, OCT_DEV_QUAD_IDS quad ids on every display, OCT_DEV_COLLIDERS sprite outlines; ship with OCT_dev_mode(0).
     OCT_dev_mode(OCT_DEV_TEXT);
 
-    switchDemo(DEMO_9);
+    switchDemo(DEMO_0);
 }
 
 OCT_CALLBACK void on_pretwisted(int32_t twid) {
     // API info
-    // on_pretwisted is called when a twist action begins.
-    // Use it to prepare the game state for the twist, e.g., pause animations.
+    // on_pretwisted is called when a twist has physically STARTED (a ring disconnected).
+    // twid here is the PLANE index (0..5) whose ring is turning - NOT a twist id, the direction is unknown until on_twisted, which is authoritative.
+    // Use it to pause logic on the affected ring or to freeze animations, never move sprites here.
+    switch (vars.currentDemo) {
+        case DEMO_12: pretwistDemo12(twid); break;
+        default: break;
+    }
 }
 
 OCT_CALLBACK void on_twisted(int32_t twid, uint32_t disconnected_ms) {
@@ -780,6 +1390,7 @@ OCT_CALLBACK void on_twisted(int32_t twid, uint32_t disconnected_ms) {
     switch (vars.currentDemo) {
         case DEMO_0: twistDemo0(); break;
         case DEMO_8: twistDemo8(twid); break;
+        case DEMO_12: twistDemo12(twid); break;
         default: break;
     }
 }
@@ -789,9 +1400,8 @@ OCT_CALLBACK void on_tap(int32_t tapid, int32_t count) {
     // API info
     // on_tap is called when the user taps on a plane.
     // Use it to handle user interactions, e.g., select objects or trigger actions.
-    // tapid  - the plane index (0..5) that was tapped
-    // count  - tap-series counter: 1 for a single tap, 2 for the second tap
-    //          in a quick series (within 500 ms), and so on
+    // tapid - the plane index (0..5) that was tapped
+    // count - tap-series counter: 1 for a single tap, 2 for the second tap in a quick series (within 500 ms), and so on
     (void)count;
 
     // API info
@@ -811,6 +1421,8 @@ OCT_CALLBACK void on_tap(int32_t tapid, int32_t count) {
     // switch (vars.currentDemo) {
     //     case DEMO_0: tapDemo0((size_t)tapid); break;
     //     case DEMO_5: tapDemo5((size_t)tapid); break;
+    //     case DEMO_14: tapDemo14((size_t)tapid, count); break; // double tap exits the app
+    //     case DEMO_15: tapDemo15((size_t)tapid); break; // launches another installed app
     //     default: break;
     // }
 }
@@ -822,6 +1434,7 @@ OCT_CALLBACK void on_tick() {
     // Use it to update game logic, animations, and physics.
 
     // OCT_1SEC_TICKS is the number of ticks in one second (standard is 20 ticks, 50ms per tick).
+    // OCT_DT is the tick length in seconds (0.05f) for velocity integration.
 
     // API info
     if (vars.tick % OCT_1SEC_TICKS / 2 == 0) {
@@ -859,6 +1472,11 @@ OCT_CALLBACK void on_tick() {
         case DEMO_6: processDemo6(); break;
         case DEMO_7: processDemo7(); break;
         case DEMO_9: processDemo9(); break;
+        case DEMO_10: processDemo10(); break;
+        case DEMO_11: processDemo11(); break;
+        case DEMO_12: processDemo12(); break;
+        case DEMO_13: processDemo13(); break;
+        case DEMO_14: processDemo14(); break;
         default: break;
     }
 
@@ -867,17 +1485,33 @@ OCT_CALLBACK void on_tick() {
 
 
 OCT_CALLBACK void on_shake(int32_t shakeid) {
-    // on_shake fires when the cube is shaken. NOTE: in the current beta the
-    // engine always runs the system default (animated go-home) and does NOT
-    // route shakes here — but the symbol MUST exist or the ARM module fails
-    // to link (octavios/apps/src/app_module.cpp references it).
+    // on_shake fires when the cube is shaken.
+    // NOTE: in the current beta the engine always runs the system default (animated go-home) and does NOT route shakes here - but the symbol MUST exist or the ARM module fails to link (octavios/apps/src/app_module.cpp references it).
     (void)shakeid;
 }
 
 
 //Enable the APP_HAS_PROC_DRAW define (top of this file) to use procedural sprites
 OCT_CALLBACK void on_proc_draw(uint16_t* back, int idx, float x, float y, int angle, int vid, int reserved) {
-    // Per-pixel procedural drawing callback. Only bound when APP_HAS_PROC_DRAW
-    // is defined; keep the stub otherwise.
-    (void)back; (void)idx; (void)x; (void)y; (void)angle; (void)vid; (void)reserved;
+    // API info
+    // on_proc_draw is called by the renderer for every visible PROCEDURAL_CUSTOM sprite, once per display it appears on.
+    // back - this display's half-resolution back buffer, HALFSIDE x HALFSIDE RGB565, back[row * HALFSIDE + col]
+    // idx - index of the sprite in gObjects
+    // x, y - sprite center in display pixels (0..239), x = column, y = row; shift right by 1 for the half-res buffer
+    // angle - sprite rotation in display space (degrees)
+    // vid - display (quad) id 0..23 being rendered
+    // Comment: Runs on the render path - only write into back, never touch the scene or app state here.
+    (void)angle;
+    (void)vid;
+    (void)reserved;
+
+    if (gObjects[idx].Idx != idx) return;
+
+    int32_t px = (int32_t)x >> 1;
+    int32_t py = (int32_t)y >> 1;
+
+    switch (vars.currentDemo) {
+        case DEMO_13: drawCustomDemo13(back, idx, px, py); break;
+        default: break;
+    }
 }
