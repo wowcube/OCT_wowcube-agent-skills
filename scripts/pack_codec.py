@@ -1229,6 +1229,14 @@ def pack_sprite(
                 fullsize=bool(header[HDR_OFF_FLAGS] & SpriteFlag.FULLSIZE))
             pivot_x = cpx if pivot_x is None else pivot_x
             pivot_y = cpy if pivot_y is None else pivot_y
+        if (pivot_x is None or pivot_y is None) and (old_w, old_h) != (w, h) and (
+                PIVOT_MODE in (PivotMode.LEGACY, PivotMode.PSD)
+                or (atlas_x is not None and atlas_y is not None)):
+            # the old pivot belongs to the old size: a resized sprite with no
+            # explicit pivot gets the same default a fresh header would
+            dpx, dpy = compute_default_pivot(w, h, atlas_x, atlas_y)
+            pivot_x = dpx if pivot_x is None else pivot_x
+            pivot_y = dpy if pivot_y is None else pivot_y
         if pivot_x is not None and pivot_y is not None:
             struct.pack_into('<ff', header, HDR_OFF_PIVOT_X, pivot_x, pivot_y)
 

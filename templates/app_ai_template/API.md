@@ -361,13 +361,13 @@ named), checked against the source on 2026-10-29.
 | Screen | 24 displays of 240x240 RGB565; half-res compose buffer 120x120 per display | `oct_shared.h:107-110` |
 | Sound voices | 6 per module (`OCT_SND_VOICES_MAX`), shared with system chimes; all busy -> new sound refused | `oct_consts.h:1065-1075` |
 | Sound length | unbounded (4 KB read-ahead window per voice) | `oct_consts.h:1101-1108`, `oct_pack.h:444-449` |
-| Sound format | MP3 22 050 Hz, mono, 32 kbps CBR, 16-bit | `oct_pcm.h:339, 527`, `octpacker/octpack/sound.py:31-45` |
+| Sound format | MP3 22 050 Hz, mono, 32 kbps CBR, 16-bit | `oct_pcm.h:339, 527`, `octpacker/octpack/sound.py:31-46` |
 | Save area | `APP_SAVE_SIZE` <= 512 KB (`OCT_SAVE_SIZE_MAX`); one sync <= 64 KB; sync deadline 200 ticks (10 s) | `oct_disk.h:36,53`, `oct_save.h:899-925`, `oct_consts.h:707` |
 | Scratch | 32 KB non-cached (`OCT_SCRATCH_BYTES`) | `oct_shared.h:26` |
 | Installed apps | <= 100 catalog entries; app region on SD 16..128 MB (112 MB) in 512 KB cells | `oct_consts.h:1311`, `oct_disk.h:34-36` |
 | External maps | ids 2..31, <= 512 descriptors scanned, <= 100 places | `oct_pack.h:15-17` |
 | Input latency | a command applies 65-114 ms after the leader authors it; taps wait <= 50 ms for fusion | `docs/knowledge/lockstep_app_determinism.md:11`, `oct_gesture_core.h:736` |
-| Taps | series 60-536 ms apart, count <= 7; >= 4 modules must share the push (`OCT_TAP_MIN_SHARING`); a tap on another face < 500 ms after an impact and pushes through the down-facing face are vetoed; none < 100 ms after a twist closes or within 1 s after a state change | `oct_gesture_core.h:109-121, 729-751`, `oct_consts.h:1156` |
+| Taps | series 60-536 ms apart, count <= 7; >= 4 modules must share the push (`OCT_TAP_MIN_SHARING`); a tap on another face < 500 ms after an impact and pushes through the down-facing face are vetoed; none < 100 ms after a twist closes or within 1 s after a state change | `oct_gesture_core.h:109-121, 729-751`, `oct_shared.h:305`, `oct_consts.h:1156` |
 | Shake | not available to apps: always exits | `oct_app.h:35-36` |
 | Idle | game paused after 60 s without motion or input; cube sleeps 5 min later | `oct_batsave.h:31-35` |
 | App / pack size | no practical limit beyond the SD app region | `oct_disk.h:34-36` |

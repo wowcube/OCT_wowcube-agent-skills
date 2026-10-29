@@ -368,3 +368,36 @@ def test_run_modes_never_falls_back_to_a_paid_provider_without_opt_in():
 def test_agent_safety_states_yolo_is_not_paid_consent():
     text = (DOCS / "cube_orchestrator" / "references" / "AGENT_SAFETY.md").read_text(encoding="utf-8")
     assert "No paid API without the user's explicit opt-in" in text and "`YOLO`" in text
+
+
+def test_codex_calls_never_see_a_billable_key(monkeypatch, tmp_path):
+    """A ChatGPT login is not enough if codex can still pick OPENAI_API_KEY / CODEX_API_KEY from the
+    environment: every codex subprocess gets the environment without them."""
+    import subprocess as sp
+    import sys as _sys
+    from pathlib import Path as _P
+    _sys.path.insert(0, str(_P(__file__).resolve().parents[1] / "skills" / "cube_art-director" / "scripts"))
+    import art_codex
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-real")
+    monkeypatch.setenv("CODEX_API_KEY", "sk-test-not-real")
+    seen = []
+
+    class R:
+        returncode = 0
+        stdout = "Logged in using ChatGPT"
+        stderr = ""
+
+    def fake_run(cmd, **kw):
+        seen.append((cmd[1:3], kw.get("env")))
+        return R()
+
+    monkeypatch.setattr(art_codex.subprocess, "run", fake_run)
+    monkeypatch.setattr(art_codex, "find_codex", lambda: "codex")
+    monkeypatch.setattr(art_codex, "pick_model", lambda: ("m", "max"))
+    monkeypatch.setattr(art_codex, "_login_ok", {})
+    monkeypatch.setattr(art_codex.time, "sleep", lambda s: None)
+    ok, _ = art_codex.run("x", "draw", [], tmp_path / "x.png", tmp_path / "logs", retries=1)
+    assert not ok                                   # the fake draws nothing
+    assert [c for c, _ in seen] == [["login", "status"], ["exec", "-m"]]
+    for _, env in seen:
+        assert env is not None and "OPENAI_API_KEY" not in env and "CODEX_API_KEY" not in env

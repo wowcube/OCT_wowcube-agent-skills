@@ -190,6 +190,17 @@ def test_reuse_refreshes_flags_and_marker_pivot(tmp_path):
     assert _pivot(blob) == (1.0, 2.0)
 
 
+def test_reuse_recomputes_the_default_pivot_when_the_sprite_was_resized(tmp_path):
+    """A header reused from a pack of the old size must not keep the old size's pivot."""
+    from PIL import Image
+    png, pal, old = _reuse_setup(tmp_path)          # header of an 8x8 sprite, pivot 7.5
+    big = tmp_path / "big.png"
+    Image.open(png).convert("RGBA").resize((12, 12), Image.NEAREST).save(big)
+    blob = pack_sprite(str(big), pal, header_bytes=old)
+    assert _pivot(blob) == (11.5, 11.5)             # the x2 default for 12x12, as a fresh header
+    assert struct.unpack_from("<b", blob, HDR_OFF_RATE)[0] == 5   # the rate still survives
+
+
 # ── 4. BOM manifest ─────────────────────────────────────────────────────────
 
 def test_load_manifest_accepts_utf8_bom(tmp_path, minimal_manifest):

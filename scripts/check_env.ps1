@@ -134,7 +134,10 @@ else { Miss "MSVC C++ build tools + Windows SDK (simulator builds; several GB)" 
 
 # --- assets ----------------------------------------------------------------
 $python = (Get-Command python -ErrorAction SilentlyContinue).Source
-if (-not $python) { Miss "python 3 (pipeline scripts)" "install Python 3.10+ (python.org or the Microsoft Store)" }
+$pyOld = $false
+if ($python) { & $python -c "import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)" 2>$null; $pyOld = ($LASTEXITCODE -ne 0) }
+if (-not $python) { Miss "python 3.11+ (pipeline scripts)" "install Python 3.11+ from python.org (not the Microsoft Store build: its uv cannot see managed Pythons)" }
+elseif ($pyOld) { Miss "python 3.11+ (pipeline scripts; $python is older, the pinned numpy needs 3.11)" "install Python 3.11+ from python.org" }
 else {
     $code = "import importlib.util as u; print(' '.join(m for m in ['PIL', 'numpy', 'pytoshop', 'psd_tools'] if u.find_spec(m) is None))"
     $absent = (& $python -c $code 2>$null) -join ''

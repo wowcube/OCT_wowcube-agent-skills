@@ -17,7 +17,9 @@
 //    Keep this record small and put bulk data in further ranges after it (APP_SAVE_SIZE = the total), or define a
 //    new header with a uint32_t size under a new SAVE_VERSION.
 #define SAVE_MAGIC   0x54504C31u     // "TPL1": pick four bytes that are yours (e.g. the game's initials), never 0
-#define SAVE_VERSION 1               // bump whenever a field moves, grows or changes meaning
+#define SAVE_VERSION 1               // bump whenever a field moves, grows or changes meaning - AND add the upgrade
+                                     // branch for the old version in saveLoad(): a record of an unknown version is
+                                     // kept but never written over, so without it players' progress stops saving
 
 typedef struct {
     uint32_t magic;          // SAVE_MAGIC

@@ -82,11 +82,13 @@ if have xvfb-run; then ok "xvfb-run (hidden simulator smoke runs)"
 else info "xvfb-run not found: hidden smoke runs are skipped (agents never open a window on the user's display); apt install xvfb / pacman -S xorg-server-xvfb"; fi
 
 # --- assets ----------------------------------------------------------------------
-if have python3; then
+if have python3 && ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)'; then
+    miss "python 3.11+ (python3 is older; the pinned numpy needs 3.11)" "install Python 3.11+ (distro package or uv python install 3.11)"
+elif have python3; then
     absent=$(python3 -c "import importlib.util as u; print(' '.join(m for m in ['PIL','numpy','pytoshop','psd_tools'] if u.find_spec(m) is None))")
     if [ -n "$absent" ]; then miss "python packages: $absent" "python3 -m pip install -r <skills repo>/scripts/requirements.txt"
     else ok "python3 + Pillow/numpy/pytoshop/psd-tools"; fi
-else miss "python3" "install Python 3.10+"; fi
+else miss "python3 (3.11+)" "install Python 3.11+"; fi
 if have ffmpeg; then ok "ffmpeg (sound encoding)"; else miss "ffmpeg (sound encoding)" "see the install line below"; fi
 
 # --- informational -----------------------------------------------------------------

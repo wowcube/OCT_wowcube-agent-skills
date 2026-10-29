@@ -50,6 +50,15 @@ def find_codex() -> str:
 # dozens of images; the login does not change mid-run).
 _login_ok: dict[str, tuple[bool, str]] = {}
 
+# Keys the Codex CLI would bill instead of the ChatGPT login (codex exec reads CODEX_API_KEY; an
+# OPENAI_API_KEY set for something else must not reach it either). Removed from every codex call.
+_BILLABLE_ENV = ("OPENAI_API_KEY", "CODEX_API_KEY", "OPENAI_BASE_URL")
+
+
+def codex_env() -> dict[str, str]:
+    """The environment for a codex subprocess: ours minus every key it could bill."""
+    return {k: v for k, v in os.environ.items() if k.upper() not in _BILLABLE_ENV}
+
 
 def login_status(exe: str) -> tuple[bool, str]:
     """(logged in with ChatGPT?, first line of `codex login status`).
@@ -57,7 +66,7 @@ def login_status(exe: str) -> tuple[bool, str]:
     key instead of the subscription."""
     try:
         r = subprocess.run([exe, "login", "status"], capture_output=True, text=True, timeout=60,
-                           encoding="utf-8", errors="replace")
+                           encoding="utf-8", errors="replace", env=codex_env())
     except (OSError, subprocess.TimeoutExpired) as e:
         return False, f"`codex login status` failed: {e}"
     out = (r.stdout or "") + "\n" + (r.stderr or "")
@@ -179,7 +188,7 @@ def run(name: str, prompt: str, refs: list[Path], out_png: Path, log_dir: Path,
         t0 = time.time()
         try:
             proc = subprocess.run(cmd, input=prompt, text=True, capture_output=True,
-                                  encoding="utf-8", errors="replace", timeout=timeout)
+                                  encoding="utf-8", errors="replace", timeout=timeout, env=codex_env())
             out = proc.stdout + "\n--- stderr ---\n" + proc.stderr
         except subprocess.TimeoutExpired as e:
             out = f"timeout after {timeout}s\n{e.stdout or ''}"
