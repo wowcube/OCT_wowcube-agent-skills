@@ -1,272 +1,567 @@
-# OctaviOS API
+# OctaviOS app API: engine reference for WowCube games
 
-Every call below goes through the app-facing interface: `oct_api.h` in the simulator, the `OCT_APP_IMPORTS` table (`oct_app_module.h`) in the ARM module, constants from `oct_shared.h` / `oct_consts.h`. Tap any face to cycle to the next demo.
+The one shared reference for engine facts, limits and rules; skills link here instead of copying tables. Every
+statement was checked against octavios **dev @ 609d5ae** (2026-10-21, tag `fw-0.100.6-dev.7bf1e85`). Read this page
+before writing game code.
 
-## Summary
+- `src/app_ai_template.h` shows every call in use (column "Demo" below; tap a face to step through the demos).
+- `../../src/app_structure_example.h` is the skeleton a new game header starts from.
 
-| Demo | API | What it does |
+Markers: **NEW** = absent from the older SDK (octavios 1b2cf19, fw-0.98.12). **CHANGED** = same call, new behaviour.
+**unguarded fw-x** = the module macro has no NULL check: on cube firmware older than fw-x the call jumps to 0 and crashes.
+
+Sections: [Minimum SDK](#minimum-sdk) · [App layout](#app-layout) · [Build](#build) · [Callbacks](#callbacks) ·
+[Tick, lockstep, randomness](#tick-lockstep-randomness) · [Coordinates and drawing](#coordinates-and-drawing) ·
+[API](#api) · [Data structures](#data-structures) · [Constants](#constants) · [Limits](#limits) ·
+[Art tiers](#art-tiers) · [Sound](#sound) · [Saves](#saves) · [Firmware compatibility](#firmware-compatibility) ·
+[Holds, idle, dock, sleep, exit](#holds-idle-dock-sleep-exit) · [Simulator vs cube](#simulator-vs-cube) ·
+[Test hooks](#test-hooks) · [Pitfalls](#pitfalls)
+
+## Minimum SDK
+
+octavios **dev >= 609d5ae**. Needed for: the 6-voice mixer, `SND_play_quad`, `SND_set_mixer`, `OCT_APP_SEMVER` and
+`app_metadata.h`, the save API, `OCT_tap_source`, `OCT_tint_mode`, `OCT_label_static`, `OCT_random_local`,
+`OCT_cube_pose`, the simulator's MCP socket. Against an older SDK the template does not compile.
+
+Check: `<skills>/scripts/check_env.ps1` / `check_env.sh` runs all of these (and the toolchain). By hand, in the folder
+that holds `octavios/`:
+
+| | PowerShell | Linux / macOS |
 |---|---|---|
-| all | `on_init` | Called once at startup to set up the scene. |
-| all | `on_tick` | Called every tick for game logic, animation and physics. |
-| all | `on_pretwisted` | Fires when a ring physically starts turning; the argument is the plane index, not a twist id. |
-| all | `on_twisted` | Fires when a twist completes with the twist id and the disconnection time. |
-| all | `on_tap` | Fires on a face tap with the plane index and the tap-series counter. |
-| all | `on_shake` | Must exist for the ARM module to link; the engine currently runs the system go-home instead. |
-| all | `on_proc_draw` | Draws a `PROCEDURAL_CUSTOM` sprite into a display back buffer; bound on the cube only under `APP_HAS_PROC_DRAW`. |
-| 0 | `OCT_add` | Adds a sprite to the scene and returns its index in `gObjects`. |
-| 0 | `OCT_del` | Deletes a sprite together with its child sprites and any tweens targeting it. |
-| 0 | `OCT_random` | Random integer in a half-open range. |
-| 0 | `SND_getAssetId` | Resolves a sound file name to its asset id. |
-| 0 | `SND_play` | Plays a sound asset at a volume 0..100. |
-| 0 | `OCT_TM_quad` | Returns the quad id (0..23) a transform sits on. |
-| 0 | `OCT_TM_move` | Offsets a transform inside its plane without cross-plane handling. |
-| 0 | `OCT_TM_change_plane` | Low-level move of a transform to another plane, adjusting coordinates and angle. |
-| 0 | `XSIGN` / `YSIGN` | Engine tables with the coordinate signs of the four local quads. |
-| 1 | `OCT_twist_sprites` | Applies a virtual twist to every twistable sprite. |
-| 2 | `OCT_TM_walk` | Walks a transform along a direction angle, crossing plane edges automatically; the preferred way to move. |
-| 2 | `OCT_TM_copy` | Copies a full transform. |
-| 2 | `OCT_TM_lerp` | Interpolates between two transforms, handling cross-plane cases. |
-| 3 | `OCT_sequence` | Sets a sprite frame sequence and its restart mode. |
-| 4 | `OCT_add_label` | Adds a text label with a font and an alignment. |
-| 4 | `OCT_label_set` | Sets the label text, rebuilding one child glyph sprite per character. |
-| 5 | `OCT_BMP_info` | Fills `octBmpInfo_t` (name, size, pivot, bounding box) for any bitmap id. |
-| 5 | `OCT_text` | Prints a debug line on screen when `OCT_DEV_TEXT` is on. |
-| 5 | `OCT_F_INT` / `OCT_F_FRAC` | Template macros to print a float as `%d.%03d` since `%f` is unavailable on ARM. |
-| 6 | `OCT_TM_set` | Teleports a transform to a position, angle and plane. |
-| 8 | `OCT_TWISTS` | Table of the 12 full twists with their disk quads, ring quads, ring mask and impulses. |
-| 8 | `OCT_TWIST_HALF` | Offset of half-twist ids; subtract it to index `OCT_TWISTS`. |
-| 9 | `OCT_TM_sin` / `OCT_TM_cos` | Table-driven sine and cosine for integer degrees. |
-| 10 | `OCT_ANIM_tm` | Starts an engine-driven tween of a transform between two points with an easing function. |
-| 10 | `OCT_ANIM_tm_tw` | Same tween, but its endpoints are carried along by physical twists. |
-| 10 | `OCT_ANIM_on_half` | Reports that a tween passed its half-way point. |
-| 10 | `OCT_ANIM_on_end` | Reports that a tween finished on this tick. |
-| 10 | `OCT_ANIM_get_progress` | Returns the tween tick counter. |
-| 10 | `OCT_ANIM_del` | Cancels a tween by index. |
-| 10 | `FUNC_LINEAR` .. `FUNC_SPAWN` | Easing functions; `FUNC_QUAD`, `FUNC_JELLY`, `FUNC_SPAWN` are effects that return to the start point. |
-| 11 | `OCT_TM_face_up` | System "up" direction for a plane, latched on the top face the same way notifications orient themselves. |
-| 11 | `OCT_TM_acc_x/y/n` | Linear acceleration without gravity projected on a plane. |
-| 11 | `OCT_TM_mixed_acc_x/y/n` | Raw accelerometer including gravity projected on a plane. |
-| 11 | `OCT_TM_tap_x/y/n` | Direction of the current tap series projected on a plane. |
-| 11 | `OCT_TM_arctan` | Integer-degree arctangent of a vector. |
-| 11 | `OCT_TM_normalize_angle` | Wraps an angle into 0..360. |
-| 11 | `OCT_lerp` | Blends two floats with a reversed weight, `t = 1` returns `from`. |
-| 11 | `OCT_acc_visual_x/y/z` | Latest raw IMU sample as integers, for debugging. |
-| 12 | `OCT_TM_wrap` | Moves a transform that went past the plane edge onto the adjacent plane. |
-| 12 | `OCT_TM_adapt_dir` | Re-expresses a velocity vector when moving to another plane so motion stays straight. |
-| 12 | `OCT_TM_adapt_angle` | Angle delta that keeps a heading unchanged across a plane change. |
-| 12 | `OCT_disconnected_axis` | Axis of the ring that is physically turning right now. |
-| 12 | `OCT_TM_twist` | Applies a full twist to one transform by hand. |
-| 12 | `OCT_TM_twist_impulse` | Direction a twist pushes a quad, or 360 when the quad is not affected. |
-| 13 | `PROCEDURAL_CIRCLE` | Soft-edged filled circle sprite with radius in `Param3` and color in `Data0`. |
-| 13 | `OCT_label_embed` | Switches a label to the OS built-in font without glyph sprites. |
-| 13 | `PROCEDURAL_CUSTOM` | Sprite drawn by the app itself in `on_proc_draw`, culled by `Zw` / `Zh`. |
-| 14 | `OCT_cache_assets` | Pre-loads assets from SD into the RAM cache. |
-| 14 | `OCT_get_brightness` | Reads the saved backlight level. |
-| 14 | `OCT_set_brightness` | Sets the backlight, transient or persisted into settings. |
-| 14 | `OCT_get_volume` | Reads the saved volume. |
-| 14 | `OCT_set_volume_transient` | Sets the volume temporarily without touching the saved setting. |
-| 14 | `OCT_scratch` | 32 KB of fast scratch RAM for temporary work within a tick. |
-| 14 | `OCT_trace` | Prints a line to the host console instead of the screen. |
-| 14 | `OCT_calendar_time` | Cube local time as a UNIX epoch with the time zone applied. |
-| 14 | `OCT_BAT_level` | Cube battery percent, the most discharged cublet. |
-| 14 | `OCT_BAT_level_local` | Battery percent of this cublet. |
-| 14 | `OCT_first_run` | True for the whole session in which the onboarding pack was autostarted. |
-| 14 | `OCT_fw_up_to_date` | The phone verdict on whether the firmware is current. |
-| 14 | `OCT_screen_quad` | Scene quad shown on a display of this cublet; cube-only. |
-| 14 | `OCT_app_exit` | Returns the cube to its home screen. |
-| 14 | `OCT_sleep_now` | Puts the whole cube to sleep at once. |
-| 15 | `OCT_CATALOG_scan_entries` | Number of catalog entries held in RAM. |
-| 15 | `OCT_CATALOG_count` | Number of catalog entries. |
-| 15 | `OCT_CATALOG_entry` | Fills `octEntryInfo_t` (GUID, type, name) for an entry. |
-| 15 | `OCT_CATALOG_version` | Installed pack version with the semver scheme tag in the high byte. |
-| 15 | `OCT_launch` | Starts another installed app. |
-| 15 | `OCT_launch_from` | Starts another installed app with the screen spot where the transition wave begins. |
-| 16 | `OCT_modify_viewport` | Re-aims one display at another plane of the scene. |
-| 16 | `OCT_viewports_layout` | Resets the camera layout to the default cube scheme. |
-| setup | `OCT_restart` | Reinitializes the sprite pool, clearing every object. |
-| setup | `OCT_background` | Fills the whole cube with a solid RGB565 color. |
-| setup | `OCT_dev_mode` | Enables engine debug overlays by flags. |
-| setup | `OCT_TM_gravity_x/y/n` | Filtered gravity vector projected on a plane. |
-| setup | `OCT_TM_top_side` / `OCT_TM_bottom_side` | Planes currently facing up and down. |
-| setup | `OCT_1SEC_TICKS` / `OCT_DT` | Ticks per second and tick length in seconds. |
-| defines | `APP_VERSION` | App version packed by `OCT_APP_SEMVER(major, minor, patch)`. |
-| defines | `APP_GUID1` | Unique 64-bit id of the app. |
-| defines | `APP_CATEGORIES` | `APP_CATEGORY_GAME` or `APP_CATEGORY_LAUNCHER` for a home-screen app. |
+| layout (>= 2026-08-25) | `Test-Path octavios\engine\oct_app_version.h` | `test -f octavios/engine/oct_app_version.h` |
+| 609d5ae import set | `Select-String -Quiet cube_pose_visual octavios\engine\oct_app_module.h` | `grep -q cube_pose_visual octavios/engine/oct_app_module.h` |
+| git checkout | `git -C octavios merge-base --is-ancestor 609d5ae HEAD` | same |
 
-## Handlers (mandatory in every app)
+If a check fails, the user updates octavios (dev branch); never patch the engine. Cube firmware older than the SDK
+is a separate question: see [Firmware compatibility](#firmware-compatibility).
 
-| Handler | What it does |
+## App layout
+
+| Path | Content |
 |---|---|
-| `on_init` | Called once at startup - set up the scene, viewports, dev mode. |
-| `on_tick` | Called every tick (20 per second, `OCT_1SEC_TICKS`) - game logic, animation, physics. |
-| `on_pretwisted(twid)` | Fires when a ring physically starts turning; `twid` is the PLANE index (0..5), the direction is only known in `on_twisted`. |
-| `on_twisted(twid, disconnected_ms)` | Fires when a twist completes; `twid` 0..11 is a full twist, 12..23 a half twist. |
-| `on_tap(tapid, count)` | Fires on a face tap; `tapid` is the plane, `count` is the position in a quick tap series. |
-| `on_shake(shakeid)` | Symbol must exist for the ARM module to link; the engine currently runs the system go-home instead of routing shakes here. |
-| `on_proc_draw(back, idx, x, y, angle, vid, reserved)` | Draws a `PROCEDURAL_CUSTOM` sprite into a display's half-resolution back buffer; bound on the cube only under `APP_HAS_PROC_DRAW`. |
+| `app_<name>/` | sibling of `octavios/` |
+| `app_<name>.target` | empty marker, exactly one; name must match `^[a-z]{3}_[A-Za-z0-9_]+$` |
+| `src/app.h` | `#include "app_metadata.h"` first, then `#include "app_<name>.h"`, then `#define APP_DIR "../../app_<name>"` |
+| `src/app_metadata.h` | leaf header with every pack-header define (table below). `octpack-build` compiles it alone with a host compiler: include only `oct_app_version.h`, `oct_app_categories.h`, `app_save.h` |
+| `src/app_save.h` | optional: the save record + `#define APP_SAVE_SIZE sizeof(saveRecord_t)` (see [Saves](#saves)) |
+| `src/app_<name>.h` | the whole game: header-only, one translation unit, every mutable global `TL` (immutable `static const` data needs none) |
+| `src/app_<name>_ids.h` | generated by the pack: `BMP_*`, `MAP_*`, `SND_*` = the asset's order in `index.bin` |
+| `index.bin`, `art/packed/*.raw|*.pal`, `sound/assets/*.mp3` | packed assets |
+| `out/<app>.bin`, `out/<app>.elf` | ARM module |
+| `<app>.oct` | the installable pack: header + assets + module |
 
-## Demo 0 - sprites, sounds, quads
-
-| API | What it does |
+| Define (app_metadata.h) | Meaning |
 |---|---|
-| `OCT_add` | Adds a sprite to the scene on a plane at (x, y) with an angle, optional frame animation; returns its index in `gObjects`. |
-| `OCT_del` | Deletes a sprite together with its child sprites and any tweens targeting it. |
-| `OCT_random` | Random integer in `[dmin; dmax)`. |
-| `SND_getAssetId` | Resolves a sound file name to its asset id. |
-| `SND_play` | Plays a sound asset at a volume 0..100. |
-| `OCT_TM_quad` | Returns the quad id (0..23) a transform sits on. |
-| `OCT_TM_move` | Offsets a transform inside its plane, no cross-plane handling. |
-| `OCT_TM_change_plane` | Low-level move of a transform to another plane, adjusting coordinates and angle. |
-| `XSIGN` / `YSIGN` | Engine tables with the coordinate signs of the four local quads. |
+| `APP_VERSION_MAJOR/MINOR/PATCH`, `APP_VERSION OCT_APP_SEMVER(...)` | `(1<<24)|(maj<<16)|(min<<8)|patch`; store and update check compare it exactly. A bare integer is the legacy scheme-0 counter |
+| `APP_GUID1` | 64-bit permanent identity. **Fresh random value per game**: an install replaces any pack with the same GUID, saves are keyed by it. 0 = no identity |
+| `APP_TITLE` | name under the launcher icon, <= 79 chars |
+| `APP_CATEGORIES` | `APP_CATEGORY_GAME` (0) for games; `_SCREENSAVER` never paused/slept/dimmed by idle or dock; `_TEST` never paused, only dimmed; `_LAUNCHER/_CHARGER/_SYSTEM/_GETSTARTED/_SLEEP` are system packs |
+| `APP_COLORS` | uint32 in the header (launcher colouring) |
+| `APP_SAVE_SIZE` | bytes of save area (<= 512 KB), via `app_save.h` |
+| `APP_HAS_PROC_DRAW`, `APP_HAS_ON_SAVE`, `APP_HAS_ON_SAVE_SYNCED`, `APP_HAS_ON_DOCK` | export the optional callback of that name (the game must define it) |
+| `APP_HAS_TELEMETRY` | octpack-build builds with the telemetry library (`WLOG_*`/`WCOUNT`); needs `telemetry/` next to octavios |
+| `APP_DIR` (app.h) | Windows simulator only: app folder relative to its `bin/` |
 
-## Demo 1 - virtual twist
+## Build
 
-| API | What it does |
+| What | Command |
 |---|---|
-| `OCT_twist_sprites` | Applies a virtual twist (`TOP_CW`, `FRONT_CCW`, ...) to every twistable sprite. |
+| ARM module | in `app_<name>/`: `cmake -G Ninja -S ../octavios/apps -B out` then `cmake --build out` -> `out/<app>.bin` + `.elf` |
+| Official full build | `octavios/tools/build.ps1 <app dir>` / `build.sh` (octpack-build: metadata, art from `art/octpack.json`, ARM, `.oct`) |
+| Windows simulator | in `app_<name>/`: `..\octavios\apps\build_sim.cmd` (MSVC). Needs `telemetry/` (wowcube/telemetry) next to octavios. At 609d5ae it fails inside `engine/oct_mp3.h` (MSVC rejects `__attribute__((noinline))`); the repo's `tools/sim_headless` builds a patched copy |
+| Linux/macOS simulator | `cmake -S octavios -B build-sim -DAPP_DIR=<app dir>`, `cmake --build build-sim` (SDL3 + telemetry) |
 
-## Demo 2 - movement
+ARM flags: `-std=c++20 -Os -Wall -Werror -Werror=float-conversion -Werror=double-promotion -ffreestanding -fno-builtin
+-fsingle-precision-constant -fno-exceptions -fno-rtti -flto`, `-DOCT_APP_MODULE`. Any warning fails the build. The
+build prints the module size (<= 256 KB including `.bss`, link-time assert) and a list of undefined symbols that must
+be empty. Agents never start a visible simulator (headless runs only, see the orchestrator's AGENT_SAFETY.md).
 
-| API | What it does |
+## Callbacks
+
+| Callback | When | Rules |
+|---|---|---|
+| `on_init()` | once per launch, inside a tick shared by all 8 modules | **`OCT_restart` first** (switches the engine to RUNNING; without it `on_tick` never runs). Then `OCT_viewports_layout(SCHEME_CUBE, 18, 18)` and `OCT_background(c)`: both persist from the previous app |
+| `on_tick()` | 20 per second while not held | the app is not told about holds (see [Holds](#holds-idle-dock-sleep-exit)): ticks, sequences, tweens, input just stop |
+| `on_pretwisted(int32_t side)` | a layer started turning | **CHANGED**: argument = SIDE 0..5, not a twist id. A command (same tick on all 8) but may never be followed by `on_twisted` |
+| `on_twisted(int32_t twid, uint32_t ms)` | twist done; twistable sprites already moved, screens re-bound | `twid` 0..11 full, 12..23 half (moved nothing). **180 degrees = two calls, same twid.** `ms` is the leader's timestamp of the split, not a duration (0 on the 2nd half of a 180) |
+| `on_tap(int32_t tapid, int32_t count)` | a tap | `tapid` = plane 0..5. `count` = place in a series on that side (taps 60..536 ms apart, max 7), delivered per tap: a double tap arrives as 1 then 2. Exact screen: `OCT_tap_source` |
+| `on_shake(int32_t)` | never | must exist; a shake always exits a plain game (`on_save` runs) |
+| `on_proc_draw(uint16_t* back, int idx, float x, float y, int angle, int vid, int reserved)` | `APP_HAS_PROC_DRAW`; per visible `PROCEDURAL_CUSTOM` sprite, per display, per drawn frame | `back` = 120x120 RGB565 (never write outside). `x = Tm.Y`, `y = Tm.X` (full-res screen px, `>>1` for `back`), `angle = 90 - Tm.A`, `vid` = scene quad. Render path: no game state, no `OCT_random` |
+| `on_save()` | `APP_HAS_ON_SAVE` (**NEW** fw-0.99.2): every exit, dock reset (every docking), sleep | `OCT_save_write` and return; no animation, sound or sync |
+| `on_save_synced(int32_t result)` | `APP_HAS_ON_SAVE_SYNCED` (**NEW**): verdict of `OCT_save_sync`, one tick on all 8 | read the range back here |
+| `on_dock(int32_t docked)` | `APP_HAS_ON_DOCK` (**NEW** fw-0.100.0) | only `APP_CATEGORY_SYSTEM` apps holding `OCT_shake_exit_block(true)` |
+
+The six mandatory callbacks are always exported; an optional one is exported only under its define, and a define
+without the function fails the build. A game is never resumed after sleep or a cube re-assembly: the cube relaunches
+HOME, so restore progress from the save area.
+
+## Tick, lockstep, randomness
+
+- `OCT_FRAME_MS 50`, `OCT_1SEC_TICKS 20`, `OCT_DT 0.05f`. Order inside a tick: due commands (`on_tap`, `on_twisted`,
+  `on_pretwisted`, `on_dock`, `on_save_synced`, launches/`on_init`), then (if not held) every sprite's frame sequence,
+  then `on_tick`, then tweens. Rendering is separate, per frame, per module. A stalled module replays missed ticks.
+- **8 copies**: every module runs its own copy of the game and draws its own 3 screens. Nothing is reconciled; the
+  copies stay equal only through identical commands on identical ticks and the same number of `on_tick` calls.
+  Every mutable global (game state, the sprite pool, counters) is `TL` (thread_local in the simulator, empty on the
+  cube). Immutable `static const` / `constexpr` data (tunables, lookup tables) is never written, so the simulator's
+  threads can share it: no `TL` needed.
+- `OCT_random(lo, hi)` returns `[lo, hi)`, needs `hi > lo`, range <= 131 073. It is re-anchored before every command
+  and every `on_tick`: draw it for game state in `on_init`, `on_tick` and input callbacks, never in `on_proc_draw`.
+  **`OCT_restart` resets the seed to 1**: draws after it inside `on_init` repeat on every launch; roll random content
+  in the first `on_tick`. Keep each callback's draw count independent of per-tick history.
+- `OCT_random_local(lo, hi)` (**NEW**): per-module stream for cosmetics. It may set only values logic never reads back
+  (jitter, colour, frame), never whether a sprite exists and never game state.
+- Same on all 8 (logic-safe): tick count, `OCT_TM_gravity_*`, `_acc_*`, `_mixed_acc_*`, `_tap_*`, `OCT_TM_top_side`,
+  `_bottom_side`, `OCT_TM_face_up`, `OCT_tap_source`, `OCT_cube_pose`, `OCT_module_pose`, the `on_save_synced` verdict.
+- Per module (display only): `OCT_random_local`, `OCT_acc_visual_*`, `OCT_disconnected_axis`, `OCT_screen_quad`,
+  `OCT_cube_pose_visual` (outside the tick), `OCT_gesture_probe`, `OCT_BAT_level_local`, `OCT_calendar_time`,
+  `OCT_get_progress`, return values of `SND_play`/`SND_play_quad`, `OCT_save_read` contents (own card; sync first),
+  everything in `on_proc_draw`. `OCT_BAT_level` and `OCT_link_status` are the same figure everywhere but may lag.
+
+## Coordinates and drawing
+
+- Plane space: X right, Y **up**, origin = face centre, `|X|,|Y| < LIM = 240 + 2*GAP` (276 with GAP 18). Planes
+  `OCT_PLANE_TOP 0, FRONT 1, RIGHT 2, BACK 3, LEFT 4, BOTTOM 5`. Quad q (0..3, CCW from +X+Y; signs `XSIGN`/`YSIGN`)
+  covers `|x|,|y|` in `[GAP, 240+GAP]`; `0..GAP` (the cross) and the rim are bezel. Scene quad = `plane*4 + q`, 0..23.
+- `OCT_add`/`OCT_add_label` with plane 0..5 push x,y outward by `GAP+0.01`: pass `(+-120, +-120)` for quad centres.
+  Plane `OCT_PLANE_WITH_BORDER + p` (10..15) = no push; plane -1 = local to `Parent`. **Everything else is raw**:
+  `OCT_TM_set/move/walk`, tweens and `Tm` writes put quad centres at `(+-(120+GAP), +-(120+GAP))`; one screen step on a
+  face = `240 + 2*GAP`.
+- **Screen-filling art goes at `+-119.5`, not `+-120`** (`QUAD_FILL` in the template; raw: `+-(119.5+GAP)`). Every
+  packer (ours, octpack-build, utils.exe) puts an even-sized sprite's pivot at its middle pixel centre (119.5 for a
+  full screen) and the renderer rounds the corner: at `(+-120, +-120)` a 120x120 x2 sprite leaves a 2-px line of the
+  background on two inner edges of every face (a thin cross; 240 fullsize art: 1 px). Use it for backgrounds,
+  panorama pieces and every tile that must meet a screen edge; a 0.5-px shift is invisible for anything else.
+  Measured on all 24 screens (dev 609d5ae); `tools/sim_headless/run.ps1` prints a `seams:` report for its last frame.
+- **Upright for the player**: an up angle (`OCT_TM_face_up(plane)`) is CCW from the plane's +Y, so up =
+  `(-sin a, cos a)` and right = `(cos a, sin a)` in plane coordinates. Template utils: `uprightAround(playfield,
+  side, ux, uy, &x, &y)` for the four faces around the playfield (HUD, panorama pieces: "up" points at the
+  playfield, from the `UP_TOWARD` table: geometry, never stale), `uprightToPlane(plane, ...)` for the playfield's
+  own content (the engine's latched up, as notifications use it). Both map a player-view offset (ux right, uy up)
+  to plane x,y and return the sprite angle (`Tm.A`).
+- **`OCT_TM_top_side()` and `OCT_TM_face_up()` switch at different moments.** `top_side` is the most-up face now,
+  no hysteresis; the `face_up` latch moves to a new top only when it leads by 0.29 in `gravity_n` (~12 degrees past
+  45), so between ~45 and ~57 degrees the new top's `face_up` still describes the old one and the old top keeps its
+  latched angle (reproduced in the simulator: `cube 0 50 0` from TOP up). A game that follows the up face: take the
+  playfield from the template's `topWithHysteresis(&vars.heldTop)` (the engine's own rule, so it switches with the
+  latch: 55 degrees keeps it, 60 switches, checked in the simulator), orient the four faces around it with
+  `uprightAround`, and re-read the playfield's own snapped `face_up` every tick, rebuilding its content when that
+  angle changes (the latch can follow a tick later). During a twist `top_side` can flicker for ~0.5 s: ignore
+  playfield changes for a fixed ~15 ticks after `on_pretwisted` (bounded: `on_twisted` may never come, see Callbacks)
+  and after each `on_twisted`.
+- Angles 0/90/180/270 only (others truncated), CCW positive, 0 = +X. Screen space is swapped: `x = Tm.Y`,
+  `y = Tm.X`, `angle = 90 - Tm.A`. Opposite faces never see each other; `OCT_TM_change_plane` to the opposite plane
+  terminates: route through an adjacent plane.
+- Draw order ascending `Layer*8192 - Y` (higher layer on top; within a layer lower on the face is drawn later). Label
+  glyphs +512. **Every `<FULLSIZE>` bitmap draws above all half-res content.** Lines draw last. Keep `Layer` <= ~120.
+- Twistable sprites are carried by twists; non-twistable ones keep their scene position (the screens move under
+  them). Faces whose picture did not change are not redrawn (`OCT_DEV_DIRTY_SKIP`, default on).
+
+## API
+
+Signatures as the app calls them (`oct_api.h`; module builds route through `OCT_APP_IMPORTS` macros).
+
+**Scene and sprites**
+
+| Call | St | What / gotcha | Demo |
+|---|---|---|---|
+| `int OCT_restart(int* pool, int cap, int size)` | CHANGED | binds the sprite pool; 1, or 0 when `size%4`, `cap > 5120` or `cap < 2`. Clears sprites, label slots, tweens, external maps, palette cache; seed = 1; RUNNING; blits black | on_init |
+| `int OCT_add(layer, twistable, plane, x, y, a, loop, bmpfrom, bmpto, framelen)` | CHANGED | sprite index, **0 = pool full** (never touch `gObjects[0]`). Born `Data0 = 0xFFFF`, `Blend = MUL`, `Mask = 0xFFFFFF` | 0 |
+| `void OCT_del(octSprite_t*)` | | deletes children and its tweens; the index is reused by the next `OCT_add` (LIFO) | 0 |
+| `void OCT_add_map(int mapid)` | | spawns the places of an own MAP asset | |
+| `int OCT_external_map(g1, g2, name)` / `void OCT_external_unmap(ext)` | | map from another installed pack, ids 2..31 | |
+| `void OCT_twist_sprites(twid)` | | virtual twist (0..11) of twistable sprites and `_tw` tween endpoints; screens not re-bound | 1 |
+| `void OCT_viewports_layout(SCHEME_CUBE, in, out)` | | camera layout + bezels; resets all 24 viewports; persists across apps | on_init |
+| `void OCT_modify_viewport(vid, plane, angle, x, y, xflip, yflip, mode)` | | re-aim display `vid` (inverted camera; default `x=y=-(GAP+0.01)`, `angle=-90*sector`); mode 0 normal, 2 off, -1 keep | 16 |
+
+**Text**
+
+| Call | St | What / gotcha | Demo |
+|---|---|---|---|
+| `int OCT_add_label(layer, twistable, side, x, y, a, font, align)` | CHANGED | label sprite (no text slot until text is set); `FONT_1..3`, `ALIGN_CENTER/LEFT/RIGHT` | 4 |
+| `int OCT_label_set(label, text)` | CHANGED | one glyph sprite per char, `\n`, <= 128 chars, memoized (unchanged text = cheap no-op). **0 when the 64-slot text pool (62 usable) is full** or the font is missing | 4 |
+| `int OCT_label_static(label, text)` | **NEW**, unguarded fw-0.98.19 | same layout, no text slot, full rebuild per call: captions and HUD text | 19 |
+| `int OCT_label_embed(label, text)` | CHANGED | engine 4x5 font (ASCII 0x20-0x7E, shadow), uses a slot; colour = `Data0` verbatim, **0 = black** | 13 |
+| `void OCT_text(idx, fmt, ...)` | | debug overlay (needs `OCT_DEV_TEXT`), 10 lines x 128; idx out of 0..9 = scroll log; `'.'`-prefixed lines pinned | 5 |
+| `void OCT_trace(cubeid, fmt, ...)` | | simulator console only (-1 = every module); no-op on the cube | 14 |
+
+**Animation**
+
+| Call | St | What / gotcha | Demo |
+|---|---|---|---|
+| `void OCT_sequence(spr, from, to, framelen, restart)` | | from/to 0 = keep; **framelen 0 = fastest, -1 = keep**; frame lasts `bmp.Rate*framelen + 1` ticks (Rate 1 from the pipeline packer: 0 = 20 fps, 1 = 10 fps); `OCT_SEQ_RESTART/REVERSE/REFRESH`; fields `Loop`, `PingPong`, `Paused`, `FramesCooldown`, one-tick `OnEnd`/`OnCooldown` | 3 |
+| `int OCT_ANIM_tm(arc, delay, duration, ctx, func, from, to, reffrom, refto, target)` | | tween of X/Y/Plane (never A), id 1..98 or 0 (100 slots); runs after `on_tick`, frozen while held; `FUNC_ACC/DEC/LINEAR/FALL/BOUNCEOUT` reach `to`, `FUNC_QUAD/JELLY/SPAWN` return to `from`; `FUNC_NONE` terminates; duration > 0 | 10 |
+| `int OCT_ANIM_tm_tw(...)` | | same, endpoints follow twists | 10 |
+| `int OCT_ANIM_on_end(id)` / `on_half(id)` / `get_progress(id)` / `void OCT_ANIM_del(id)` | | `on_end` = 1 for one `on_tick`, then the id is freed (zero yours); `on_half` stays 1 after half-way | 10 |
+
+**Transforms** (`octTm_t`: `float X, Y; int16_t A; int8_t Plane`)
+
+| Call | What / gotcha | Demo |
+|---|---|---|
+| `OCT_TM_set(tm, x, y, a, plane)` / `OCT_TM_copy(dst, src)` | raw set (no GAP push) / copy | 6, 2 |
+| `OCT_TM_walk(tm, dir, fwd, left, wrap)` | move along a direction; `wrap` crosses plane edges; returns the old plane | 2, 6 |
+| `OCT_TM_move(tm, dx, dy)` | add, then **wrap across plane edges** | 0 |
+| `OCT_TM_wrap(tm)`, `OCT_TM_change_plane(tm, adjacent)`, `OCT_TM_adapt_dir`, `OCT_TM_adapt_angle` | plane changes; never with the opposite plane | 12 |
+| `OCT_TM_lerp(tm, a, b, t)` | X/Y between a and b (b's plane), A not interpolated. `OCT_lerp(from, to, t)` has a **reversed weight** (t=1 gives from) | 2 |
+| `OCT_TM_quad(tm)` | scene quad 0..23 | 0 |
+| `OCT_TM_twist(tm, twid)`, `OCT_TM_twist_impulse(quad, twid)` | apply a full twist to one transform; push direction (360 = unaffected) | 12 |
+| `OCT_TM_combine(tm, t, checkside)` | parent composition | |
+| `OCT_TM_gravity_x/y/n(plane)`, `OCT_TM_acc_*`, `OCT_TM_mixed_acc_*` | synced IMU: gravity (n about -1 on the up face), linear accel, raw accel | 11 |
+| `OCT_TM_tap_x/y/n(side)` | inward normal of the last tapped side (not a measured vector), 0 before any tap | 11 |
+| `OCT_TM_top_side()`, `OCT_TM_bottom_side()`, `OCT_TM_face_up(side)` | up/down face; system "up" of a face (latched on top/bottom) | 11 |
+| `OCT_TM_sin/cos(deg)`, `OCT_TM_arctan(y, x)`, `OCT_TM_normalize_angle(deg)` | tables, integer degrees | 9, 11 |
+
+**Input, pose, randomness**
+
+| Call | St | What / gotcha | Demo |
+|---|---|---|---|
+| `int OCT_tap_source(void* out, uint32_t size)` -> `octTapSource_t` | **NEW** fw-0.100.0 (`Quad` fw-0.100.1), guarded (0) | in `on_tap`: `Quad` = scene quad 0..23 of the struck screen (-1 unbound), `Module`, `Screen`, `Amplitude`, `Agreeing`, `Axis`. Same on all 8. Keep a per-face fallback | 20, `appTapQuad` |
+| `int OCT_cube_pose(out, size)` / `OCT_module_pose(m, out, size)` | **NEW** fw-0.100.5, guarded (0) | synced pose: `flags & OCT_POSE_VALID`, quaternion `q[4]`, `gravity_cube[3]`, `rate_cube[3]` deg/s; yaw drifts | 11 |
+| `int OCT_cube_pose_visual(out, size)` | **NEW**, guarded | this module's low-latency pose, drawing only | |
+| `int OCT_gesture_probe(out, size)`, `int OCT_imu_record(ms)` | **NEW**, guarded | per-module diagnostics; IMU samples to telemetry (<= 10 s) | |
+| `int OCT_random(lo, hi)` | CHANGED | synced generator (see [Tick, lockstep, randomness](#tick-lockstep-randomness)) | 0 |
+| `int OCT_random_local(lo, hi)` | **NEW** fw-0.99.4, guarded (private stream) | per-module cosmetics | 19 |
+| `int OCT_disconnected_axis()`, `OCT_acc_visual_x/y/z()` | | per module, display only | 11, 12 |
+| `void OCT_align_top()` | | legacy local re-bind, bypasses lockstep: do not use | |
+
+**Sound** (see [Sound](#sound))
+
+| Call | St | What / gotcha | Demo |
+|---|---|---|---|
+| `int SND_play(id, volume)` | CHANGED | adds a voice to this module's mixer (<= 6), **volume 0..100 honoured**, any length; 1 accepted, 0 refused (bad id, all voices busy, simulator modules 1-7) | 17 |
+| `int SND_play_quad(id, volume, quad)` | **NEW**, unguarded fw-0.98.19 | only the module showing scene quad `quad` plays it (follows twists); others return 0 | 17, 20 |
+| `void SND_set_mixer(bool on)` | **NEW** fw-0.98.20, guarded (no-op) | `false`: the next `SND_play` fades out (52 ms) everything this module plays and replaces it | 17 |
+| `int SND_getAssetId(name)` | | linear search by name (`.mp3`/`.wav` stripped), -1 if missing: resolve once, or use `SND_*` ids | 17 |
+
+**Graphics, assets, debug**
+
+| Call | St | What / gotcha | Demo |
+|---|---|---|---|
+| `int OCT_tint_mode(spr, color565, mode)` | **NEW** fw-0.100.1 (older: MUL falls back to `OCT_tint`, others no-op) | writes `Data0`+`Blend` (and a label's glyphs): `OCT_BLEND_MUL` (identity `OCT_TINT_NONE` 0xFFFF), `_ADD`, `_SUB`, `_SCREEN` (identity 0), `_HUE` (colour arg = degrees, 60 steps) | 19, 20 |
+| `int OCT_tint(spr, color565)` | **NEW**, unguarded fw-0.98.19, deprecated | = `OCT_tint_mode(..., OCT_BLEND_MUL)` | |
+| `void OCT_background(int32_t rgb565)` | | per-frame clear colour of every module's frame; <0 = no clear; persists across apps | on_init |
+| `void OCT_BMP_info(bmp, octBmpInfo_t*)` | | name, W/H in **screen** px (texels x2 for half-res), pivot, bounds; not the format | 5 |
+| `int OCT_cache_assets(int* ids, int n)` | | make assets resident now (blocking SD reads) | 14 |
+| `void* OCT_scratch()` | CHANGED | 32 KB non-cached RAM, valid until the callback returns or `OCT_save_erase` | 14 |
+| `int OCT_dev_mode(int mode)` | | **replaces the whole mask** and returns it; -1 reads. Always `OCT_dev_mode(OCT_dev_mode(-1) | OCT_DEV_TEXT)`, never a bare flag (kills `OCT_DEV_DIRTY_SKIP`). Reset at app teardown | on_init |
+| `void OCT_terminate(txt)` / `DIE(txt)` | | cube: logs and continues; debug simulator: breakpoint | |
+
+**Catalog, launch, exit**
+
+| Call | What / gotcha | Demo |
+|---|---|---|
+| `OCT_CATALOG_scan_entries()`, `_count()`, `_entry(i, octEntryInfo_t*)`, `_version(i)` | installed packs (<= 100); version byte 3 = scheme (1 = semver) | 15 |
+| `OCT_launch(g1, g2, CMD_APP_ACTION_DEFAULT)`, `OCT_launch_from(g1, g2, action, plane, x, y)` | start another app (leader-only inside; call on all 8) | 15 |
+| `OCT_app_exit()`, `OCT_sleep_now()` | go home / sleep the cube; `on_save` runs; a wake relaunches HOME | 14 |
+| `OCT_shake_exit_block(bool)` | `APP_CATEGORY_SYSTEM` packs only | |
+
+**Saves** (**NEW** fw-0.99.2; all guarded: older firmware answers `OCT_SAVE_UNSUPPORTED` and touches nothing; see [Saves](#saves))
+
+| Call | What / gotcha | Demo |
+|---|---|---|
+| `int OCT_save_read(dst, offset, size)` | bytes read; **0 = nothing trustworthy, dst zeroed**; <0 error. Works from `on_init` | 18 |
+| `int OCT_save_write(src, offset, size)` | `OCT_SAVE_OK` (0) = on the card when it returns; **blocks** | 18 |
+| `int OCT_save_erase()` | whole area back to zeros ("new game"); invalidates `OCT_scratch` | 18 |
+| `int OCT_save_sync(offset, size)` | leader's bytes -> all 8; only inside the tick, <= 64 KB; holds the game until `on_save_synced` (deadline 10 s) | 18 |
+
+**Host, settings, battery, clock**
+
+| Call | St | What / gotcha | Demo |
+|---|---|---|---|
+| `OCT_get_brightness()`, `OCT_set_brightness(level, OCT_BRIGHTNESS_TRANSIENT)` | | transient = rail only, restored at app exit; `_PERSIST` is for the settings app | 14 |
+| `OCT_get_volume()`, `OCT_set_volume_transient(level)`, `OCT_set_volume(level)` | | transient is **not** reverted at exit (restore it yourself); persist = settings app only | 14 |
+| `int8_t OCT_BAT_level()`, `OCT_BAT_level_local()` | CHANGED | cube battery (weakest module, settled) / this module; -1 unknown | 14 |
+| `uint32_t OCT_calendar_time()` | CHANGED | **local** wall time (UTC + zone) on the cube, UTC in the simulator; 1 = RTC unset | 14 |
+| `OCT_screen_quad(display)`, `OCT_link_status()` | | quad shown on this module's display 0..2 (per module); leader's phone link | 14 |
+| `OCT_first_run()`, `OCT_fw_up_to_date()` | **NEW**, guarded (false) | onboarding session; phone's firmware verdict | 14 |
+| `OCT_host_info(kind, out, size)` | **NEW** fw-0.100.5, guarded (0) | phone payloads: `HOST_KIND_BATTERY`, `_SETTINGS`, `_DEVICE_INFO`, `_STORAGE_INFO`, `_CHARGER_INFO`, `_RUNNING_APP`, `_ACTIVATION`, `_TELEMETRY_HEALTH` | 14 |
+| `OCT_bootloader_build_id()` | **NEW**, unguarded fw-0.98.17 | opaque stamp | |
+| `OCT_STATS_snapshot(octCubeStats_t*)`, `OCT_DIAG_snapshot(octDiagnosticInfo_t*)` | | lifetime counters / diagnostics | |
+| `OCT_HW_reboot()`, `OCT_APP_IMPORTS.factory_reset/shutdown/toggle_debug_overlays` | | system actions: never in a game | |
+
+Not importable in a module (link error on ARM): `OCT_quad_module`, `OCT_get_download_flags`,
+`OCT_CATALOG_entries_cached`, `OCT_local_time`, `OCT_BR_*`, `OCT_VOL_*`, `OCT_GETSTARTED_*`, `OCT_HOST_info`,
+`OCT_DIAG_gesture_probe`, `OCT_HW_screen_quad`: use the macros above.
+
+Module libc (`engine/oct_freestanding.h`): `memset`, `memcpy`, `memcmp`, `snprintf` (= `OCT_snprintf`: only
+`%d %u %ld %lu %zu %Nd %0Nd %s %c %%`; any other specifier is printed literally and does not consume its argument),
+`abs`, `fabsf`, `sqrtf`, `sinf`, `cosf`, `roundf`, `floorf`, `rand()` (= `OCT_random`). No `strlen/strcmp/strcpy`,
+no `<math.h>`, `sprintf` is a compile error, **`double` is poisoned**: floats cannot go through `...` (print them as
+`%d.%03d`, `OCT_F_INT`/`OCT_F_FRAC` in the template).
+
+## Data structures
+
+`octSprite_t` (80 B; extend it by inheritance: `struct appObject_t : octSprite_t { ... }`, total size a multiple of 4):
+
+| Field | Meaning |
 |---|---|
-| `OCT_TM_walk` | Preferred way to move: walks a transform along a direction angle, crossing plane edges automatically; returns the old plane. |
-| `OCT_TM_copy` | Copies a full transform. |
-| `OCT_TM_lerp` | Interpolates between two transforms by `t` in `[0; 1]`, handling cross-plane cases. |
+| `Idx` | own index; `gObjects[i].Idx == i` = slot alive (freed slots hold a free-list link) |
+| `Parent` | parent index or 0; the child's `Tm` is local; `OCT_del` cascades; parent `Hidden` does NOT hide children |
+| `Tm` | transform (`X`, `Y`, `A`, `Plane`) |
+| `Mask:24` | bit v = drawn on viewport v (default all); Lines ignore it |
+| `Zw, Zh` | `PROCEDURAL_CUSTOM` cull half-extents; Line end offset |
+| `Param3` | `PROCEDURAL_CIRCLE` radius, full-res px (<= 127) |
+| `Data0` | **the sprite's tint** (born `OCT_TINT_NONE` 0xFFFF); colour of procedural text, circle, Line. Never store game data in it |
+| `Data1, Data2` | label internals: do not touch on labels |
+| `Tags`, `Number`, `Type`, `Name`, `Group` | free app/map fields |
+| `AgeTicks`, `AgeMark` + `Autokill` | `AgeTicks` +1 per non-held tick; with `Autokill` the engine deletes the sprite at `AgeMark` |
+| flags | `Twistable`, `Hidden`, `FlipH`, `FlipV`, `Loop`, `PingPong`, `Line` (1-px line Tm -> Tm+(Zw,Zh), colour Data0, drawn last), **`Keyed`** (NEW) |
+| `FrameFrom, FrameTo, Frame`, `Paused`, `OnEnd`, `OnCooldown`, `FramesCooldown` | sequence state (`Frame 0` without Procedural/Line draws nothing) |
+| `Layer` | z-layer (<= ~120) |
+| `Transp:5` | 0 opaque .. 31 invisible (`OCT_TRANSP_HALF` 15) |
+| `Procedural` | 0, `PROCEDURAL_TEXT`, `PROCEDURAL_CIRCLE` (soft blob), `PROCEDURAL_CUSTOM` (`on_proc_draw`) |
+| `DrawKey` (NEW) | picture key of a `Keyed` custom sprite: redraw only when it changes |
+| `Blend` (NEW) | `OCT_BLEND_*` mode of `Data0` |
 
-## Demo 3 - frame animation
+Others: `octBmpInfo_t {Name[24]; PivotX, PivotY, Bx, By, Bw, Bh; Tags; W, H; Number; Group; Type}`;
+`octTapSource_t {Module, Screen, Agreeing, Amplitude, Plane, Axis, Quad}` (8 B);
+`octCubePose_t {size, flags, plane, q[4], gravity_cube[3], rate_cube[3], apply_tick, age_ms}` (52 B);
+`octModulePose_t {size, module, flags, q[4], corner[3], sides[3]}` (28 B);
+`octEntryInfo_t {Guid1, Guid2, Type, Name[80]}`;
+`octTwist_t OCT_TWISTS[12] {QuadsDisk[4], QuadsRing1[4], QuadsRing2[4], RingsMask, ..., Impulse[6]}`.
 
-| API | What it does |
-|---|---|
-| `OCT_sequence` | Sets a sprite's frame sequence (from, to, ticks per frame) with a restart mode `OCT_SEQ_RESTART` / `OCT_SEQ_REVERSE` / `OCT_SEQ_REFRESH`. |
-| `Paused` / `Loop` (sprite fields) | Sprite fields that pause or loop the frame animation. |
+## Constants
 
-## Demo 4 - labels
+- Twists: `TOP_CCW 0, TOP_CW 1, FRONT_CCW 2 ... BOTTOM_CW 11` (CW/CCW seen from outside, at that face);
+  `twid/2` = face, `twid&1` = CW, `twid^1` = reverse; `OCT_TWIST_HALF 12`, `OCT_TWIST_ALL 24` (re-binds every screen,
+  no callback). `AXIS_NONE 0, AXIS_X 1, AXIS_Y 2, AXIS_Z 3`.
+- `SIDES_COUNT 6`, `SECTORS_COUNT 4`, `VIEWPORTS_COUNT 24`, `HALFSIDE 120`, `SIDE 240`, `XSIGN {+1,-1,-1,+1}`,
+  `YSIGN {+1,+1,-1,-1}`, `FONT_1..3`, `ALIGN_CENTER 0 / LEFT 1 / RIGHT 2`, `OCT_TRANSP_MAX 31`.
+- Colours (RGB565, panel-calibrated): `COLOR_RED, ORANGE, YELLOW, GREEN, CYAN, BLUE, VIOLET, MAGENTA, GRAY`,
+  `COLOR_BLACK 0x0821`, `COLOR_LIGHT_*`, `COLOR_WHITE 0xf7de`, `COLORS[COLORS_COUNT]` (20). No RGB conversion macro.
+- `OCT_DEV_TEXT, STAT, FPS, COLLIDERS, QUAD_IDS, OVERDRAW ... DIRTY_SKIP (1<<15, default on)`.
+- `OCT_BLEND_MUL 0, ADD 1, SUB 2, SCREEN 3, HUE 4`, `OCT_TINT_NONE 0xFFFF`, `OCT_BLEND_IDENTITY(mode)`.
+- `OCT_SAVE_OK 0, NO_AREA -1, BAD_SIZE -2, BAD_BUFFER -3, IO -4, RESET_PENDING -5, NOT_SYNCED -6, UNSUPPORTED -7`.
+- `OCT_POSE_VALID 1, _TWIST_OPEN 2, _BIAS_CALIBRATED 4, _LOCAL 8`. `HOST_KIND_*` (oct_consts.h).
 
-| API | What it does |
-|---|---|
-| `OCT_add_label` | Adds a text label with a font (`FONT_1..3`) and alignment (`ALIGN_LEFT` / `ALIGN_CENTER` / `ALIGN_RIGHT`). |
-| `OCT_label_set` | Sets the label text, rebuilding one child glyph sprite per character, `\n` starts a new line. |
-| `Hidden` + `Parent` (sprite fields) | Hiding a label means hiding it and every child glyph (see `showLabel`). |
+## Limits
 
-## Demo 5 - bitmap info
+Exact values of octavios dev @ 609d5ae. Source = file:line in the octavios tree (`engine/` unless another folder is
+named), checked against the source on 2026-10-29.
 
-| API | What it does |
-|---|---|
-| `OCT_BMP_info` | Fills `octBmpInfo_t` (name, size, pivot, bounding box) for any bitmap id. |
-| `OCT_text` | Prints a debug line on screen when `OCT_DEV_TEXT` is on; slot index or `-1` for log mode. |
-| `OCT_F_INT` / `OCT_F_FRAC` | Template macros to print a float as `%d.%03d` since `%f` is not available on ARM. |
+| Limit | Value | Source |
+|---|---|---|
+| Logic tick | 50 ms = 20 Hz (`OCT_FRAME_MS 50`, `OCT_1SEC_TICKS 20`, `OCT_DT 0.05f`) | `oct_shared.h:113-115` |
+| Catch-up | a stalled module replays <= 20 ticks per frame (`OCT_MAX_CATCHUP_TICKS`); a backlog over 30 s is dropped | `oct_consts.h:1455-1456` |
+| Animation speed | one frame lasts `bmp.Rate * framelen + 1` ticks: 20 fps at most (`framelen 0`) | `oct_scene.h:64,104-122` |
+| Sprite pool | the app's own array; `OCT_restart` accepts 2..5120 (`OCT_SPRITES_CAP`); usable = cap - 2 | `oct_consts.h:31`, `oct.h:333-338` |
+| Real sprite ceiling | module image (code + rodata + data + **bss incl. the pool**) <= 256 KB, link-time `ASSERT`; `octSprite_t` = 80 B + your fields; ~1500-2000 sprites practical | `apps/src/app_module.ld:104`, `oct_types.h:40` |
+| Sprites drawn per screen | 512 after culling (`OCT_SPRITES_QUAD_CAP`); extra ones silently not drawn | `oct_consts.h:32`, `oct_render.h:2462` |
+| Tweens | `ANIMS_CAP 100` -> 98 concurrent | `oct_anim.h:22` |
+| Engine text slots | 64 (`OCT_LABELS_CAP`, 62 usable) for `label_set`/`label_embed`; `label_static` limited only by the pool; text <= 128 chars (`OCT_LABEL_LEN`) | `oct_consts.h:33-34` |
+| Fonts | 3 app fonts (`FONT_1..3`), glyph sprites `font_<n>_<5-digit ASCII>`, codes 0x20-0x7F | `oct_pack.h:7, 372-390` |
+| Debug text | 10 lines x 128 chars | `oct_consts.h:35-36` |
+| Asset name | <= 23 chars + NUL (`OCT_ASSET_NAME_MAXLEN 24`), lower case | `oct_pack_format.h:19` |
+| Assets per pack | 5120 (`OCT_ASSETS_CAP`) | `oct_pack_format.h:20` |
+| App title | <= 79 chars (`OCT_SOFTWARE_NAME_MAXLEN 80`) | `oct_pack_format.h:18` |
+| Asset RAM cache | 1.5 MB - 8 x 32 KB stream windows - 172 800 B overlay stage = ~1.09 MB block cache, <= 1024 resident, LRU from SD | `oct_cache.h:9-18` |
+| Big animations | frame chains >= 512 KB stream through 8 windows x 32 KB (8 such animations at once); smaller chains load whole (<= 1/3 of the cache) | `oct_stream.h:10`, `oct_cache.h:9-18` |
+| Palettes | <= 256 colours per palette (index 0 transparent); 4096 resident colours (16 full palettes) per frame | `oct_consts.h:49`, `oct_pack.h:65-97` |
+| Tint pool | 256 colours / 16 tinted palette variants per frame, then reset (a cost, not a failure) | `oct_consts.h:41-42` |
+| Screen | 24 displays of 240x240 RGB565; half-res compose buffer 120x120 per display | `oct_shared.h:107-110` |
+| Sound voices | 6 per module (`OCT_SND_VOICES_MAX`), shared with system chimes; all busy -> new sound refused | `oct_consts.h:1065-1075` |
+| Sound length | unbounded (4 KB read-ahead window per voice) | `oct_consts.h:1101-1108`, `oct_pack.h:444-449` |
+| Sound format | MP3 22 050 Hz, mono, 32 kbps CBR, 16-bit | `oct_pcm.h:339, 527`, `octpacker/octpack/sound.py:31-45` |
+| Save area | `APP_SAVE_SIZE` <= 512 KB (`OCT_SAVE_SIZE_MAX`); one sync <= 64 KB; sync deadline 200 ticks (10 s) | `oct_disk.h:36,53`, `oct_save.h:899-925`, `oct_consts.h:707` |
+| Scratch | 32 KB non-cached (`OCT_SCRATCH_BYTES`) | `oct_shared.h:26` |
+| Installed apps | <= 100 catalog entries; app region on SD 16..128 MB (112 MB) in 512 KB cells | `oct_consts.h:1311`, `oct_disk.h:34-36` |
+| External maps | ids 2..31, <= 512 descriptors scanned, <= 100 places | `oct_pack.h:15-17` |
+| Input latency | a command applies 65-114 ms after the leader authors it; taps wait <= 50 ms for fusion | `docs/knowledge/lockstep_app_determinism.md:11`, `oct_gesture_core.h:736` |
+| Taps | series 60-536 ms apart, count <= 7; >= 4 modules must share the push (`OCT_TAP_MIN_SHARING`); a tap on another face < 500 ms after an impact and pushes through the down-facing face are vetoed; none < 100 ms after a twist closes or within 1 s after a state change | `oct_gesture_core.h:110-121, 729-751`, `oct_consts.h:1156` |
+| Shake | not available to apps: always exits | `oct_app.h:35-36` |
+| Idle | game paused after 60 s without motion or input; cube sleeps 5 min later | `oct_batsave.h:31-35` |
+| App / pack size | no practical limit beyond the SD app region | `oct_disk.h:34-36` |
 
-## Demo 6 - rings
+## Art tiers
 
-| API | What it does |
-|---|---|
-| `OCT_TM_set` | Teleports a transform to a position, angle and plane in one call. |
+Code draws every tier the same way (`OCT_add`, `OCT_sequence`); the tier is chosen per sprite in the asset manifest
+(`scripts/manifest_schema.py`) and decides size, transparency and layering.
 
-## Demo 7 - transparency
+| Tier | Manifest | Authored size | On screen | Transparency |
+|---|---|---|---|---|
+| **1. Palette x2** (default, cheapest) | `color: "palette"` | **half size**, <= 120 per side (120x120 = one full screen) | drawn x2 in the half-res pass | palette index 0 transparent; `flags.alpha` (default on) blends edges with per-entry palette alpha (5 bit); `Transp` works |
+| **2. Palette fullsize** | `color: "palette"` + `flags.fullsize` | native size, <= 240 | 1:1 in the full-res pass, **above every half-res sprite** | as tier 1 (index 0 kept); `Transp` works |
+| **3. Full-colour fullsize** | `color: "full"` + `flags.fullsize` | native size, <= 240 | 1:1 in the full-res pass, **above every half-res sprite** | **none**: RAW565, 0x0000 is opaque black, `flags.alpha` is a validation error; `Transp` ignored |
+| full colour x2 | `color: "full"` | half size, <= 120 | x2 in the half-res pass | none, `Transp` ignored |
 
-| API | What it does |
-|---|---|
-| `Transp` (sprite field) | Sprite transparency 0 (opaque) .. `OCT_TRANSP_MAX` (invisible). |
+- **Sizes = authored half size** for every sprite without `flags.fullsize`: a 64-pixel character on screen is drawn
+  as 32 pixels; `OCT_BMP_info` reports the on-screen size (texels x2). Tiers 2 and 3 are authored 1:1.
+- **Layering**: the renderer sorts every FULLSIZE bitmap after all half-res content (`order += 1000000`) and draws it
+  after the half-res buffer is upscaled (`oct_render.h:2409, 2932-2935`). A FULLSIZE background therefore hides every
+  half-res sprite: opaque backgrounds are **full colour x2** (120x120, preferred: a palette `bg` once rendered magenta)
+  or palette x2, unless everything on that screen is FULLSIZE. Text is half-res too (below): a FULLSIZE picture
+  on a screen hides its labels.
+- **Fonts are drawn x2.** Both packers (pack.py, octpack-build) write the glyphs as palette x2 (`Flags` ALPHA, no
+  FULLSIZE), so `OCT_label_set` doubles every advance and draws each glyph x2: on screen a template font is twice
+  its .fnt size. Measured from the template fonts, on screen: `FONT_1` capitals ~53 px wide / 56 px tall ("TAP
+  TO START" ~560 px: never on one screen), `FONT_2` ~31 / 34 px ("TAP TO START" ~320 px), `FONT_3` ~22 / 24 px
+  ("TAP TO START" ~230-260 px). A screen is 240 px: size every text from these numbers, not from the .fnt size.
+  **`\n` steps down only 1x the line height** (`oct_scene.h`: `cy -= Bh`, not zoomed), so the lines of a
+  multi-line label overlap by half: use one label per line, spaced by 2x the line height (FONT_1 120, FONT_2 70,
+  FONT_3 50 px).
+- **Dither recipe** (full colour only: `dither: true` per sprite, `--icon-dither` for the launcher icon; with a palette
+  sprite it is a validation error). `scripts/pack_beta.py to_rgb565` flattens any transparency onto black, then maps
+  each channel to the RGB565 lattice (5/6/5 bits). Without dither: nearest level, `(v * levels + 127) // 255` (no
+  truncation banding bias). With dither: serpentine Floyd-Steinberg error diffusion per channel in level space (7/16
+  ahead, 3/16 behind-below, 5/16 below, 1/16 ahead-below), then the lossless RLE encode. Use it for photographic art
+  with smooth gradients (sky, glow, skin); it trades banding for fine noise and changes nothing on flat colours.
+- `flags.additive` = additive blend (glows, light); `flags.bg` = opaque blit (index 0 still skipped, `Transp` ignored).
+- Launcher icon (`icon` object): full colour 160x160 by default (1..240, optional dither), or palette 120 (x2) / 240
+  (fullsize). In the pack it is a MAP asset named exactly `ico` among the first 512 assets (the shell spawns it with
+  `OCT_external_map`); without it the icon slot stays empty. **The default full-colour icon is RAW565: it has no
+  transparency**, so the transparent corners of a hexagon badge render black on the dark launcher (a black square
+  around the badge). Real transparent corners need the palette tier, `"icon": {"color": "palette", "side": 120}`
+  (drawn x2) or `240` (fullsize): the pipeline packer resizes the icon PNG to that side and keeps its alpha as
+  palette index 0.
 
-## Demo 8 - twist table
+**New dev codecs** (engine dev; produced by octavios `octpacker` `!pack.txt` group tokens, **not** by the pipeline's
+packer, which writes palette and RAW565 plain/RLE only):
 
-| API | What it does |
-|---|---|
-| `OCT_TWISTS` | Constant table of the 12 full twists: disk quads, the two ring quad lists, ring mask and per-plane impulse. |
-| `OCT_TWIST_HALF` | Offset of half-twist ids (12); subtract it to index `OCT_TWISTS`. |
+| Codec | Token | Transparency | Notes |
+|---|---|---|---|
+| ARGB6666 / ARGB6666_RLE | `<ARGB>` (+ `<DITHER>`) | 6-bit alpha per texel; `Transp` honoured | true colour with soft edges; static FULLSIZE frames go through the G2D block, half-res/animated ones through the CPU |
+| RAW565 SOFTKEY | `<SOFTKEY><KEY=RRGGBB><KEYTHRESHOLD=N>` | the key colour (+- threshold) is transparent; `Transp` ignored | full-colour cut-outs, either zoom |
+| MONO1 | none | two inks, FULLSIZE; `Transp` ignored | engine-made (QR codes); not available to app art |
+| (any) | `<HALF>` | | octpacker halves the art before packing: author at on-screen size, draw x2 |
 
-## Demo 9 - parent and child
+Transparency summary: `Transp` 0..31 works on palette art, ARGB6666 and procedural circles; RAW565 (plain, RLE,
+SOFTKEY) and MONO1 ignore it. Tints (`OCT_tint_mode`) work on every tier: palette art costs per palette entry, raw
+art per pixel. Sprite angles 0/90/180/270 only; `FlipH`/`FlipV` everywhere. `BUMP/DUDV/REFL` bitmaps draw nothing.
+Animations: 20 fps at most, no size budget; frames are named `name_NN` and chained by the packer. Owner's guideline,
+**informational until the owner confirms it** (no gate blocks or deducts for it): at most one animated FULLSIZE /
+full-screen picture per physical module.
 
-| API | What it does |
-|---|---|
-| `Parent` (sprite field) | Setting a sprite's `Parent` makes its transform local to the parent, composed by the engine at render time. |
-| `OCT_TM_sin` / `OCT_TM_cos` | Table-driven sine and cosine for integer degrees. |
+## Sound
 
-## Demo 10 - engine tweens
+- Format: MP3, **22 050 Hz, mono, 32 kbps CBR**, 16-bit, no Xing/ID3/metadata (other rates or stereo are not
+  resampled). `ffmpeg -ac 1 -ar 22050 -sample_fmt s16p -b:a 32k -codec:a libmp3lame -write_xing 0 -map_metadata -1 -id3v2_version 0`.
+- Mixer on (default): voices **add up**, up to 6 per module; with 6 busy the new sound is refused, nothing is cut.
+  The sum saturates: keep peaks moderate when sounds overlap. `volume` 0..100 is a linear per-voice gain under the
+  user's master volume.
+- Game logic runs on all 8 modules, so a plain `SND_play` sounds on 8 speakers (music, global events). A sound
+  that belongs to a place: `SND_play_quad(id, vol, OCT_TM_quad(&spr->Tm))` or the tapped quad.
+- **No stop, loop, pause or is-playing API.** Music loop: re-issue the track every
+  `ceil(length_ms / 50)` ticks from `on_tick` (`updateMusic()` in the template), expect a small seam. Stoppable music:
+  chain 1-4 s segments. Hard cut: `SND_set_mixer(false); SND_play(id, v); SND_set_mixer(true);`. Budget: music
+  takes 1-2 voices, 4-5 remain for effects.
+- Return values are per module: never branch game state on them (the template's `playSound` returns nothing).
+- `<GAME>_MUTE 1` compiles every sound out (one play helper, see [Test hooks](#test-hooks)). The hidden simulator never
+  opens an audio device, so audio checks run autoplay builds without `_MUTE` and read its sound-event log; agents
+  never play audio.
 
-| API | What it does |
-|---|---|
-| `OCT_ANIM_tm` | Starts an engine-driven tween of a transform between two points with an easing function; the engine writes `Tm` every tick. |
-| `OCT_ANIM_tm_tw` | Same, but the tween endpoints are carried along by physical twists. |
-| `OCT_ANIM_on_half` / `OCT_ANIM_on_end` | Report that a tween passed its half-way point or finished on this tick. |
-| `OCT_ANIM_get_progress` / `OCT_ANIM_del` | Read a tween's tick counter and cancel a tween by index. |
-| `FUNC_LINEAR` .. `FUNC_SPAWN` | Easing functions; `FUNC_QUAD`, `FUNC_JELLY`, `FUNC_SPAWN` are effects that return to the start point. |
+## Saves
 
-## Demo 11 - orientation and IMU
+1. `app_save.h`: a record that starts with `{uint32_t magic; uint16_t version; uint16_t size;}`, fixed-width fields,
+   one `static_assert` of its size, `#define APP_SAVE_SIZE sizeof(saveRecord_t)`; `#include "app_save.h"` in
+   `app_metadata.h`. Without it every call answers `OCT_SAVE_NO_AREA`.
+2. Load in `on_init`: `OCT_save_read`; trust the bytes only if magic, version and size match (a fresh area reads as
+   zeros, an unreadable one returns 0 with the buffer zeroed). Each module reads **its own card**: if saved data
+   drives game logic, call `OCT_save_sync(0, sizeof(rec))` in `on_init` (game held up to 10 s) and read back in
+   `on_save_synced`. On a failed verdict, or when the sync cannot even start, every module starts from the same
+   defaults and writes nothing until a later sync succeeds (its card may still hold a good save).
+3. Store small records at safe moments (`OCT_save_write` blocks) and in `on_save` (`APP_HAS_ON_SAVE`). Deterministic
+   games write identical bytes on all 8 on the same tick. Never overwrite a good save with a record that was never
+   loaded. "New game": `OCT_save_erase()`.
+4. An update keeps `min(old, new)` bytes of the area; deleting the app deletes its save.
 
-| API | What it does |
-|---|---|
-| `OCT_TM_face_up` | System "up" direction for a plane in degrees, latched on the top face the same way system notifications orient themselves. |
-| `OCT_TM_acc_x/y/n` | Linear acceleration without gravity projected on a plane, for bumps and shakes. |
-| `OCT_TM_mixed_acc_x/y/n` | Raw accelerometer including gravity projected on a plane. |
-| `OCT_TM_tap_x/y/n` | Direction of the current tap series projected on a plane. |
-| `OCT_TM_arctan` / `OCT_TM_normalize_angle` | Integer arctangent of a vector and wrapping of an angle into 0..360. |
-| `OCT_lerp` | Blends two floats; note the reversed weight, `t = 1` returns `from`. |
-| `OCT_acc_visual_x/y/z` | Latest raw IMU sample as integers, for debugging. |
+The pack header must carry `SaveSize`: octpack-build and the simulators stamp it from `APP_SAVE_SIZE`; check that
+whatever builds the `.oct` does too, otherwise the cube gives the app no save area.
 
-## Demo 12 - twist-aware transforms
+## Firmware compatibility
 
-| API | What it does |
-|---|---|
-| `OCT_TM_wrap` | Moves a transform that went past the plane edge onto the adjacent plane. |
-| `OCT_TM_adapt_dir` / `OCT_TM_adapt_angle` | Re-express a velocity vector or a heading when moving to another plane so motion stays straight. |
-| `OCT_disconnected_axis` | Axis of the ring that is physically turning right now (`AXIS_X/Y/Z`, `AXIS_NONE`). |
-| `OCT_TM_twist` | Applies a full twist to one transform by hand, for non-twistable sprites that should follow selectively. |
-| `OCT_TM_twist_impulse` | Direction a twist pushes a quad's content, or 360 when the quad is not affected. |
+A module built against this SDK can be installed on a cube with older firmware; the imports it lacks read NULL.
+Guarded macros return 0 / false / `OCT_SAVE_UNSUPPORTED` or do nothing. **Four crash (jump to 0) instead:**
+`OCT_label_static`, `OCT_tint`, `SND_play_quad` (need fw-0.98.19) and `OCT_bootloader_build_id` (fw-0.98.17);
+`OCT_tint_mode` with `OCT_BLEND_MUL` falls back to `OCT_tint`, so it needs fw-0.98.19 too. Target current firmware,
+or guard: `#ifdef OCT_APP_MODULE if (OCT_APP_IMPORTS.label_static != NULL) { ... } #endif`.
+Dev firmware flashes the struck screen white for 100 ms on every tap (firmware side; the app cannot turn it off).
 
-## Demo 13 - procedural sprites
+## Holds, idle, dock, sleep, exit
 
-| API | What it does |
-|---|---|
-| `PROCEDURAL_CIRCLE` | Soft-edged filled circle sprite; radius in `Param3`, RGB565 color in `Data0`. |
-| `OCT_label_embed` | Switches a label to the OS built-in font, no glyph sprites; color in `Data0`. |
-| `PROCEDURAL_CUSTOM` + `on_proc_draw` | Sprite drawn by the app itself into the display's half-resolution back buffer; `Zw` / `Zh` are half-extents for culling. |
+The game is **held** (no `on_tick`, sequences, tweens or input; a twist only keeps the picture glued) and is not told:
 
-## Demo 14 - host services
+| Hold | Starts | Ends |
+|---|---|---|
+| dock / charger | the cube is docked while a game is in front ("Paused" toast) | lifted |
+| battery save | 60 s without motion or input ("Paused" toast, dimmed) | handled again; after 5 min the cube sleeps |
+| save sync | the app's `OCT_save_sync` | `on_save_synced` (<= 10 s) |
+| incoming install / critical battery | system | system |
 
-| API | What it does |
-|---|---|
-| `OCT_cache_assets` | Pre-loads assets from SD into the RAM cache to avoid first-use hitches. |
-| `OCT_get_brightness` / `OCT_set_brightness` | Read and set the backlight, `OCT_BRIGHTNESS_TRANSIENT` (reverted on exit) or `OCT_BRIGHTNESS_PERSIST` (settings app only). |
-| `OCT_get_volume` / `OCT_set_volume_transient` | Read the volume and set it temporarily without touching the saved setting. |
-| `OCT_scratch` | 32 KB of fast scratch RAM for temporary work within a tick. |
-| `OCT_trace` | Prints a line to the host console instead of the screen. |
-| `OCT_calendar_time` | Cube local time as a UNIX epoch with the time zone already applied. |
-| `OCT_BAT_level` / `OCT_BAT_level_local` | Cube battery percent (most discharged cublet) and this cublet's own reading. |
-| `OCT_first_run` / `OCT_fw_up_to_date` | First-boot session flag and the phone's verdict on the firmware. |
-| `OCT_screen_quad` | Which scene quad this cublet's display shows; cube-only, absent in the simulator. |
-| `OCT_app_exit` / `OCT_sleep_now` | Return to the home screen or put the whole cube to sleep at once. |
+Sleep, shake, `OCT_app_exit`, an app switch, the power button, an install over the app: `on_save` runs, the app is
+torn down, and a wake **relaunches HOME** (RAM state is gone). A cube re-assembly (a module rebooted or drifted out of
+step) also relaunches HOME. Design: save at safe moments and in `on_save`, restore in `on_init`; keep idle screens
+still (unchanged faces are not redrawn). `APP_CATEGORY_SCREENSAVER`/`_TEST` change the dock and idle rules.
 
-## Demo 15 - app catalog
+## Simulator vs cube
 
-| API | What it does |
-|---|---|
-| `OCT_CATALOG_scan_entries` / `OCT_CATALOG_count` / `OCT_CATALOG_entry` | Enumerate installed packs from the RAM catalog with GUID, type and name. |
-| `OCT_CATALOG_version` | Installed pack version, semver in the low bytes with the scheme tag in the high byte. |
-| `OCT_launch` / `OCT_launch_from` | Start another installed app, optionally from a screen spot where the transition wave begins. |
+| Topic | Simulator | Cube |
+|---|---|---|
+| App copies | 8 threads (`TL` globals). `SIM_SINGLE_THREAD` runs only module 0 (hides lockstep bugs, breaks `on_save*`): never define it | 8 modules |
+| Audio | only module 0 plays; `SND_play` returns 0 on modules 1-7; `SND_play_quad` is not filtered by placement | every module, `SND_play_quad` placed |
+| Clock | `OCT_calendar_time` = UTC | local time |
+| Errors | `OCT_terminate`/`DIE`: debug break (Windows `DIE` = `std::terminate`); `OCT_trace` prints | logs and continues; `OCT_trace` no-op |
+| Compiler | MSVC `/W4` (warnings do not fail), full CRT, `double` allowed | GCC `-Werror`, freestanding libc, no `double`: **always build the ARM module** |
+| Include order | Windows: the app header compiles **before** the engine. No prototype yet for `OCT_get_volume`, `OCT_set_volume`, `OCT_set_volume_transient`, `OCT_screen_quad`, `OCT_link_status`, `OCT_host_info`, `OCT_gesture_probe`, `OCT_bootloader_build_id`, `OCT_STATS_snapshot`, `OCT_DIAG_snapshot`, `OCT_HW_reboot`: wrap them in `#ifdef OCT_APP_MODULE` | all available |
+| Saves | the area is provisioned at launch; a changed `APP_SAVE_SIZE` starts empty | install carries `min(old, new)` |
+| Packing | the stock Windows simulator rewrites `<app>.oct` in the app folder at every launch (from `out/<app>.bin` + the packed assets; without the `.bin` it deletes the `.oct`): build the device `.oct` last | the `.oct` is installed |
+| Tap flash | none | dev firmware flashes the struck screen white for 100 ms |
 
-## Demo 16 - viewports
+## Test hooks
 
-| API | What it does |
-|---|---|
-| `OCT_modify_viewport` | Re-aims one display at another plane of the scene, for mirrors and split views. |
-| `OCT_viewports_layout` | Resets the camera layout to the default cube scheme with the given bezel widths. |
+Every game header carries exactly these three switches near its top, with the game's short upper-case prefix
+(`<GAME>` = e.g. `TD`; the template uses `TPL`, the skeleton `GAME`). Release and device builds keep the defaults;
+agent test builds flip them from outside (`tools/sim_headless/build.ps1 -Define`, or `-D` on the compiler), hence the
+`#ifndef` guards. Procedure and values per check: `skills/cube_orchestrator/references/VISUAL_GATE.md`.
 
-## Scene setup (`switchDemo`, `on_init`, `on_tick`)
+```c
+#ifndef <GAME>_DEBUG_AUTOPLAY
+#define <GAME>_DEBUG_AUTOPLAY 0      // 1 = the game plays itself (scripted inputs, no title tap, restarts rounds)
+#endif
+#ifndef <GAME>_MUTE
+#define <GAME>_MUTE 0                // 1 = no sound at all (every sound goes through one play helper)
+#endif
+#ifndef <GAME>_DEBUG_ROOM_PLANE
+#define <GAME>_DEBUG_ROOM_PLANE (-1) // 0..5 = playfield pinned to this face (no tilt needed); -1 = normal
+#endif
+```
 
-| API | What it does |
-|---|---|
-| `OCT_restart` | Reinitializes the sprite pool, clearing every object. |
-| `OCT_background` | Fills the whole cube with a solid RGB565 color. |
-| `OCT_dev_mode` | Enables engine debug overlays by flags (`OCT_DEV_TEXT`, `OCT_DEV_STAT`, `OCT_DEV_FPS`, `OCT_DEV_QUAD_IDS`, `OCT_DEV_COLLIDERS`). |
-| `OCT_TM_gravity_x/y/n` | Filtered gravity vector projected on a plane. |
-| `OCT_TM_top_side` / `OCT_TM_bottom_side` | Plane currently facing up or down according to the accelerometer. |
-| `OCT_1SEC_TICKS` / `OCT_DT` | Ticks per second and tick length in seconds. |
+`_DEBUG_ROOM_PLANE` is off at -1 because 0 is `OCT_PLANE_TOP`. The template shows the wiring: `playSound()` and
+`playSoundAt()` (no-ops under `_MUTE`), `playfieldPlane()` (the pinned face, else `OCT_TM_top_side()`), and the
+autoplay branch at the end of `on_tick`.
 
-## App defines
+Values per build: visual-gate runs `_DEBUG_AUTOPLAY=1`, `_MUTE=1` (plus the plane pin for tilt games); interactive
+playtests `_DEBUG_AUTOPLAY=0`, `_DEBUG_ROOM_PLANE=-1`, `_MUTE=1` (the agent's taps, twists and tilts must reach the
+game); audio checks drop `_MUTE`; the device build keeps all three defaults.
 
-| Define | What it does |
-|---|---|
-| `APP_VERSION` | App version packed by the engine macro `OCT_APP_SEMVER(major, minor, patch)`; the phone reads it as semver thanks to the scheme tag. |
-| `APP_GUID1` | Unique 64-bit id of the app; generate it, never copy from another app. |
-| `APP_CATEGORIES` | `APP_CATEGORY_GAME` for a plain app, `APP_CATEGORY_LAUNCHER` for an app that autoruns as the home screen. |
+## Pitfalls
+
+1. `OCT_restart` is not the first call of `on_init`: `on_tick` never runs, or draws land in a stale pool.
+2. `OCT_dev_mode(OCT_DEV_TEXT)` without OR-ing the old mask switches the dirty-display skip off for the whole app.
+3. A mutable global without `TL`: the simulator's 8 threads share it and the copies diverge (immutable
+   `static const` tables are fine).
+4. `OCT_random` in `on_proc_draw`, or `OCT_random_local` deciding game state: the 8 copies diverge.
+5. Random content rolled in `on_init` after `OCT_restart`: the same "random" level on every launch.
+6. `OCT_add` result used without checking `> 0`; a pointer kept after `OCT_del` (the slot is reused at once) or to an
+   Autokill sprite.
+7. GAP added twice (`OCT_add` already pushes) or forgotten (`OCT_TM_set/move/walk`, tweens, `Tm` writes do not).
+8. `on_pretwisted`'s argument read as a twist id; `disconnected_ms` read as a duration; a 180-degree twist counted
+   once; half twists (12..23) treated as moves.
+9. A single-tap action that must not fire on a double tap: count 1 always arrives first.
+10. `framelen` 0 passed to `OCT_sequence` to "keep" the speed (0 = fastest; -1 keeps).
+11. Labels without packed `font_*` glyphs draw nothing; `OCT_label_set` silently returns 0 once 62 text slots are
+    used; hiding a label does not hide its glyphs.
+12. Writing game data into `Data0` recolours the sprite; `PROCEDURAL_TEXT` with `Data0 = 0` is black.
+13. `Transp` on full-colour (RAW565) art does nothing; FULLSIZE art always covers half-res art.
+14. More than 512 sprites on one screen, or more than 6 sounds at once on a module: the extra ones silently vanish.
+15. Branching on `SND_play`'s return value, or retrying music on 0: per-module values.
+16. Music expected to loop or stop by itself: retrigger it from `on_tick`; cut with `SND_set_mixer(false)`.
+17. Large `OCT_save_write` mid-game (it blocks); `OCT_save_sync` every tick (10 s hold); trusting `OCT_save_read`
+    without a magic/version header.
+18. A copied or zero `APP_GUID1`: installs replace each other and saves collide.
+19. ARM build breakers: `double` or a float passed to `OCT_text`/`snprintf`, `%f`/`%x` in `snprintf`, `strlen`, any
+    warning (`-Werror`), a module over 256 KB (pool too large).
+20. Windows-simulator-only breakers: the macros listed in [Simulator vs cube](#simulator-vs-cube) used without `#ifdef OCT_APP_MODULE`.
+21. Unguarded new imports (`OCT_label_static`, `OCT_tint`, `SND_play_quad`) on a cube with old firmware: crash.
+22. Opposite-plane conversions (`OCT_TM_change_plane`, tweens between opposite faces): terminate or misplace.
+23. Layout state assumed reset between apps: always set viewports and background in `on_init`.
+24. Shake as a control (it always exits), or game state that must survive sleep without a save (a wake relaunches HOME).

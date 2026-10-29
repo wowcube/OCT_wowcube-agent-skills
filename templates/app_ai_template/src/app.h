@@ -1,14 +1,13 @@
 #pragma once
-
-// generate it, do not copy!
-#define APP_GUID1 0xFF75F948FBD176A8ULL
+// The entry header every build includes: the ARM module (octavios/apps/src/app_module.cpp) and both simulators
+// (SIM_APP_HEADER="app.h"). Layout of octavios dev (>= 609d5ae), see ../API.md.
+//
+// app_metadata.h comes FIRST: the game header may use APP_GUID1, APP_VERSION, APP_SAVE_SIZE and the APP_HAS_* switches.
+// The pack-header defines live in app_metadata.h and never here: #define APP_VERSION, #define APP_GUID1,
+// #define APP_TITLE, #define APP_CATEGORIES, #define APP_COLORS (and APP_SAVE_SIZE through app_save.h).
+#include "app_metadata.h"
 #include "app_ai_template.h"
 
-// Current application version: OCT_APP_SEMVER(Major, Minor, Patch), engine macro from oct_pack.h
-#define APP_VERSION OCT_APP_SEMVER(0, 1, 1) // Version 0.1.1
-#define APP_TITLE "AI DEMO"
-
-#define APP_DIR "..\\..\\app_ai_template"
-#define APP_CATEGORIES (APP_CATEGORY_GAME)
-
-#define APP_COLORS 0x00000000
+// Where the Windows simulator packs this app from, relative to the folder it runs in (bin/). The Linux and macOS
+// simulator takes the app folder from CMake (-DAPP_DIR=...) instead.
+#define APP_DIR "../../app_ai_template"
