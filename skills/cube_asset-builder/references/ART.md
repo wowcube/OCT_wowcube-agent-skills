@@ -14,16 +14,19 @@ its `SKILL.md`, `references/QA_RULES.md` and `references/CODEX.md`.
 
 | # | Provider | Needs | How it draws |
 |---|---|---|---|
-| 0 | `codex` (default) | Codex CLI logged in with the user's ChatGPT account: newest `%LOCALAPPDATA%\OpenAI\Codex\bin\*\codex.exe` or `codex` on PATH; `codex login status` mentions ChatGPT | `build_pipeline.py generate` delegates the whole manifest to `ART gen` + `ART process` (style anchors, chroma-key backdrop, sets, colour lock); `genimg.py` one-offs go through a throw-away art.json |
+| 0 | `codex` (default) | Codex CLI logged in with the user's ChatGPT account: newest `%LOCALAPPDATA%\OpenAI\Codex\bin\*\codex.exe` or `codex` on PATH; `codex login status` mentions ChatGPT (a Codex logged in with an OpenAI API key bills that key: `art_codex.py` refuses to draw until the user runs `codex login` with ChatGPT) | `build_pipeline.py generate` delegates the whole manifest to `ART gen` + `ART process` (style anchors, chroma-key backdrop, sets, colour lock); `genimg.py` one-offs go through a throw-away art.json |
 | 1 | OpenRouter | `OPENROUTER_API_KEY` env var | paid; one `genimg` call per sprite |
 | 2 | any key/URL | `IMAGE_API` env var (bare key/URL or JSON `{"provider","key","base_url","model"}`) | paid (or local SD) |
-| 3 | any key/URL | `~/.wowcube/image_api.json` (written by `image_providers.save_provider()`) | same |
+| 3 | any key/URL | `~/.wowcube/image_api.json` (written by `image_providers.save_provider()`; owner-only `0600` on Linux/macOS, on Windows it relies on the user profile's per-user permissions) | same |
 | – | none | — | agent-drawn placeholders (below) |
 
 - **Paid keys are opt-in.** Steps 1-3 are used only with `WOWCUBE_ALLOW_PAID_IMAGES=1` (or `--allow-paid` on
   `build_pipeline.py generate`, `gen_sprites.py`, `genimg.py`); without it a key found in the environment is ignored and
   generation stops with exit 3 and the reason (an agent once paid through a key that happened to be set). Set the
-  opt-in only when the user asked for a paid provider.
+  opt-in only when the user explicitly asked for a paid provider and agreed to pay per image: an autonomous or `YOLO`
+  run is not consent. No Codex and no opt-in → placeholders (below).
+- A local Stable Diffusion URL (`http://localhost`, `127.x.x.x`, `[::1]`) is free and needs no opt-in; any other URL
+  (a LAN or hosted server) counts as external and needs it.
 - `WOWCUBE_NO_CODEX=1` skips step 0 (use a key although Codex is logged in).
 - Keys are recognised by pattern: `sk-or-` OpenRouter, `sk-` OpenAI, `xai-` xAI, `AIza` Gemini, `http(s)://` local Stable Diffusion (A1111).
 - `image_providers.validate(cfg)` is the cheapest check per provider (Codex: `codex login status`).
@@ -32,7 +35,7 @@ its `SKILL.md`, `references/QA_RULES.md` and `references/CODEX.md`.
 
 ## No Codex: what still works with a paid provider
 
-`ART candidates` and `ART gen` call the Codex CLI directly; without Codex they cannot draw. Every other art.py command works on images that already exist, so a configured paid provider still gives a style lock and the strict QA loop:
+`ART candidates` and `ART gen` call the Codex CLI directly; without Codex they cannot draw. Every other art.py command works on images that already exist, so a paid provider the user opted in to (or a local Stable Diffusion) still gives a style lock and the strict QA loop:
 
 1. **Draw** with the provider: `python <skills>/scripts/build_pipeline.py generate --manifest M --workspace assets_<game>` (first `--group <g>` for the style frame's leaders, later the rest). Each sprite is drawn from `_style` + its `gen_prompt` on a flat backdrop, flood-filled and fitted to `size` straight into `assets_<game>/art/`; `fixes.json`, anchors and subject references are not used on this path.
 2. **Hand the images to art.py**: copy them into `assets_<game>/raw/` under the same names (`Copy-Item assets_<game>\art\*.png assets_<game>\raw\` / `cp assets_<game>/art/*.png assets_<game>/raw/`). Then `ART process M` (re-key, shared scale per set, colour lock), the mock (below), the style lock from the approved leaders (`ART anchor M --only <leaders>`, `ART style M`), `ART qa M` and `ART review M` all work as on the Codex path.
@@ -41,7 +44,7 @@ its `SKILL.md`, `references/QA_RULES.md` and `references/CODEX.md`.
 
 ## Placeholders (last resort)
 
-Only when no provider resolves. The agent draws each sprite itself (ad-hoc Pillow code) into `assets_<game>/art/<name>.png` and writes `assets_<game>/art/0.png` (1×1 transparent): exact manifest `size`; cut-outs RGBA with alpha 0 around the silhouette, opaque pictures alpha 255 everywhere; shapes and colours distinct enough to playtest. They pack like any art, are **never accepted as final**, and the hand-off says the graphics are temporary. Sounds still get `gen_sounds.py` placeholders (`build_pipeline.py generate` is not usable without a provider; run `python <skills>/scripts/gen_sounds.py M`).
+Only when no provider resolves, or the only one found is a paid API the user did not opt in to. The agent draws each sprite itself (ad-hoc Pillow code) into `assets_<game>/art/<name>.png` and writes `assets_<game>/art/0.png` (1×1 transparent): exact manifest `size`; cut-outs RGBA with alpha 0 around the silhouette, opaque pictures alpha 255 everywhere; shapes and colours distinct enough to playtest. They pack like any art, are **never accepted as final**, and the hand-off says the graphics are temporary. Sounds still get `gen_sounds.py` placeholders (`build_pipeline.py generate` is not usable without a provider; run `python <skills>/scripts/gen_sounds.py M`).
 
 ## fixes.json
 

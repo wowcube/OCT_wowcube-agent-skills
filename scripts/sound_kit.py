@@ -16,6 +16,7 @@ loud on the user's machine.
   python scripts/sound_kit.py loop <music> --out <dir> [--name music_loop] [--min 8 --max 30]
                                                               cut the most self-similar loop, start on a beat
   python scripts/sound_kit.py licences <source folders...>     licence/readme files inside the downloads, flags non-CC0
+                                                              (exit 1 unless every one is CC0 / public domain)
   python scripts/sound_kit.py build <recipes.json> --out <sound/assets>
                                                               layer + master + encode every recipe
 
@@ -44,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -242,40 +244,91 @@ def find_loop(m: np.ndarray, lmin: float, lmax: float) -> tuple[float, float, fl
 
 
 # ------------------------------------------------------------------------- commands
-LICENCE_HINTS = ("licen", "copying", "readme", "credit", "creativecommons", "attribution", "source")
+# Licence/readme-like files inside downloaded packs. Every plain-text document
+# is read whatever its name (packs ship "info.txt", "Attrib.nfo"); other
+# files only when the name says licence/readme/credits/....
+LICENCE_HINTS = ("licen", "copying", "readme", "read_me", "read me", "credit", "creativecommons", "attrib",
+                 "source", "notice", "terms", "legal", "copyright", "eula", "author", "info", "about", "usage")
+DOC_SUFFIXES = (".txt", ".md", ".markdown", ".rst", ".text", ".nfo", ".htm", ".html", ".rtf", ".license", ".lic")
+HINTED_SUFFIXES = ("", ".json", ".xml", ".yaml", ".yml", ".csv", ".ini", ".cfg", ".pdf", ".doc", ".docx", ".odt")
+LICENCE_MAX_BYTES = 2_000_000
+
+# Most restrictive first: a file naming several licences gets the strictest.
+_LICENCE_PATTERNS = (
+    ("CC-BY-NC", (r"\bby[\s_-]*nc\b", r"licenses/by-nc",
+                  # "commercial and non-commercial use" is a permission, not a restriction
+                  r"(?<!commercial and )(?<!commercial or )(?<!commercial & )(?<!commercial/)"
+                  r"non[\s_-]?commercial(?![\s_-]*(?:and|or|&|/)\s*commercial)")),
+    ("CC-BY-ND", (r"\bby[\s_-]*nd\b", r"licenses/by-nd", r"no[\s_-]?deriv")),
+    ("CC-BY-SA", (r"\bby[\s_-]*sa\b", r"licenses/by-sa", r"share[\s_-]?alike")),
+    ("GPL", (r"\b[al]?gpl(?:v?\d)?\b", r"gnu (?:lesser |affero )?general public licen")),
+    ("CC-BY", (r"\bcc[\s_-]*by\b", r"licenses/by/", r"creative\s+commons\s+attribution",
+               r"\battribution\s+(?:\d|international|unported|licen)",
+               r"(?<!no )(?<!not )\battribution\s+(?:is\s+)?required", r"\bmust\s+(?:give\s+)?credit")),
+    ("CC0", (r"\bcc[\s_-]?0\b", r"\bcc[\s_-]?zero\b", r"creative\s+commons\s+zero", r"publicdomain/zero",
+             r"\bpublic[\s_-]+domain\b", r"\bunlicense\b")),
+)
+
+
+def classify_licence(text: str) -> str:
+    """One of CC-BY-NC, CC-BY-ND, CC-BY-SA, GPL, CC-BY, CC0, "?" (unknown).
+    The strictest licence the text names wins: "CC0 except the music (CC-BY)"
+    is CC-BY. Only a text that names CC0 / public domain and nothing stricter
+    is CC0; a text naming no licence at all is unknown."""
+    low = " ".join(text.lower().split())
+    for kind, pats in _LICENCE_PATTERNS:
+        if any(re.search(p, low) for p in pats):
+            return kind
+    return "?"
+
+
+def _licence_candidates(root: Path):
+    for p in sorted(root.rglob("*")):
+        if not p.is_file():
+            continue
+        suf, name = p.suffix.lower(), p.name.lower()
+        if suf in DOC_SUFFIXES or (suf in HINTED_SUFFIXES and any(h in name for h in LICENCE_HINTS)):
+            yield p
 
 
 def cmd_licences(args) -> int:
     """Print every licence/readme/credits file inside the given source folders
-    (or next to the given files) and flag attribution licences. A store page can
-    say CC0 while the archive ships a CC-BY notice (it happened): the file in
-    the archive is what the proposal must quote."""
+    (or next to the given files) with its licence class, and exit non-zero
+    unless every one is CC0 / public domain. A store page can say CC0 while the
+    archive ships a CC-BY notice (it happened): the file in the archive is what
+    the proposal must quote.
+
+    Exit 0 = every file found is CC0; 1 = something is CC-BY / SA / NC / ND /
+    GPL / unknown / unreadable, or no licence file was found at all."""
     seen, flagged = set(), 0
     for f in args.files:
         root = Path(f)
         root = root if root.is_dir() else root.parent
-        for p in sorted(root.rglob("*")):
-            if not p.is_file() or p in seen or p.suffix.lower() not in (".txt", ".md", ".html", ""):
-                continue
-            if not any(h in p.name.lower() for h in LICENCE_HINTS):
+        for p in _licence_candidates(root):
+            if p in seen:
                 continue
             seen.add(p)
-            text = p.read_text(encoding="utf-8", errors="replace")
-            low = text.lower()
-            kind = ("CC0" if ("cc0" in low or "publicdomain/zero" in low) else
-                    "CC-BY-SA" if ("by-sa" in low or "sharealike" in low) else
-                    "CC-BY" if ("attribution" in low or "/by/" in low) else
-                    "GPL" if "gpl" in low else "?")
+            if p.suffix.lower() in (".pdf", ".doc", ".docx", ".odt") or p.stat().st_size > LICENCE_MAX_BYTES:
+                kind, head = "?", "(not plain text: open and read it yourself)"
+            else:
+                text = p.read_text(encoding="utf-8", errors="replace")
+                kind = classify_licence(text)
+                head = " ".join(text.split())[:220]
             if kind != "CC0":
                 flagged += 1
-            head = " ".join(text.split())[:220]
             print(f"[{kind}] {p}")
             print(f"      {head}")
     if not seen:
-        print("no licence/readme files found next to the sources: quote the store page and keep its URL")
-    elif flagged:
-        print(f"{flagged} file(s) are not CC0: attribution (or more) required - put it in sound/CREDITS.md "
-              f"and tell the user before using these sounds")
+        print("NOT CLEARED: no licence/readme files found next to the sources: quote the store page, keep its URL "
+              "and confirm the licence by hand")
+        return 1
+    if flagged:
+        print(f"NOT CLEARED: {flagged} file(s) are not CC0 ([CC-BY] attribution, [CC-BY-SA] share-alike, "
+              f"[CC-BY-NC] non-commercial: not usable in a shipped game, [CC-BY-ND] no derivatives: no "
+              f"layering/editing, [GPL], [?] unknown: read it). Tell the user before using these sounds; "
+              f"attribution goes into sound/CREDITS.md")
+        return 1
+    print(f"OK: all {len(seen)} licence file(s) are CC0 / public domain")
     return 0
 
 

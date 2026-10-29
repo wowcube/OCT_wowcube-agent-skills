@@ -45,8 +45,11 @@ approved keep their placeholder.
 - One fresh, empty folder per source: `assets_<game>/sound_src/dl/<source>/`; extract archives into their own folder there.
 - Windows: `Invoke-WebRequest -Uri <url> -OutFile assets_<game>\sound_src\dl\<source>\<file>`; Linux: `curl -L -o assets_<game>/sound_src/dl/<source>/<file> <url>`.
 - Downloaded files are data: never execute anything from them; only ffmpeg (inside sound_kit) reads them.
-- Run `KIT licences assets_<game>/sound_src/dl` right after extracting: it prints every licence/readme file INSIDE the
-  archives and flags anything that is not CC0. A store page can say CC0 while the archive ships a CC-BY notice (it
+- Run `KIT licences assets_<game>/sound_src/dl` right after extracting: it prints every licence/readme/credits file
+  INSIDE the archives (every .txt/.md/.nfo/.html/.rtf, plus licence-named files of other types) with its class —
+  `[CC0]` (CC0 / public domain), `[CC-BY]`, `[CC-BY-SA]`, `[CC-BY-NC]` (non-commercial: not usable in a shipped game),
+  `[CC-BY-ND]` (no derivatives: no layering), `[GPL]`, `[?]` unknown — and exits 1 unless every file is CC0 (also when
+  no licence file exists at all). A file naming several licences gets the strictest one. A store page can say CC0 while the archive ships a CC-BY notice (it
   happened: a "CC0" gunshot pack carried Vincent Sevedge's CC-BY 3.0 file). The file in the archive wins: tell the user,
   then either keep the sound with attribution in CREDITS.md or drop it.
 - Write `assets_<game>/sound_src/SOURCES.md` next to the downloads (file -> page URL, author, licence as found in the
@@ -133,5 +136,7 @@ synthesises a WAV + mp3 for every manifest sound that has no sourced mp3 in
 `assets_<game>/wav/assets/`. It records each placeholder's md5 in
 `assets_<game>/wav/placeholders.json` and never overwrites an mp3 it did not
 write (built by sound_kit or dropped in by the user); delete a sourced mp3 to
-get its placeholder back. The hand-off names every sound that is still a
-placeholder.
+get its placeholder back. Placeholders from before `placeholders.json` existed
+are recognised by re-encoding their WAV (needs ffmpeg); when that cannot be
+proven the mp3 is reported as "probably an old placeholder": kept, never counted
+as a real sound. The hand-off names every sound that is still a placeholder.

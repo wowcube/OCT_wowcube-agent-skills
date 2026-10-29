@@ -197,6 +197,11 @@ def _do_generate(args: argparse.Namespace) -> int:
             print(f"Generating sprites with Codex (cube_art-director art.py) -> {art_dir}")
             png_paths = gen_sprites.generate_codex(manifest_path, workspace, manifest=manifest,
                                                    group=args.group, force=args.force, jobs=args.jobs)
+        elif image_providers.is_free_local(provider):
+            print(f"Generating AI sprites with the local Stable Diffusion at {provider.base_url} "
+                  f"(this machine, no paid opt-in needed) -> {art_dir}")
+            png_paths = gen_sprites.generate(manifest, art_dir, group=args.group,
+                                             style=gen_sprites.manifest_style(manifest_path))
         else:
             print(f"Generating AI sprites with the PAID {provider.provider} API (opted in: "
                   f"{image_providers.ALLOW_PAID_ENV}=1 / --allow-paid) -> {art_dir}")
@@ -213,9 +218,10 @@ def _do_generate(args: argparse.Namespace) -> int:
     mp3_note = f" (+ mp3 -> {wav_dir / 'assets'})" if want_mp3 else ""
     print(f"Placeholder sounds    -> {wav_dir}{mp3_note}")
     kept: list[str] = []
+    unverified: list[str] = []
     try:
         wav_paths = gen_sounds.generate(manifest, wav_dir, group=args.group,
-                                        encode_mp3=want_mp3, kept=kept)
+                                        encode_mp3=want_mp3, kept=kept, unverified=unverified)
     except (RuntimeError, ValueError, subprocess.CalledProcessError) as e:
         # RuntimeError = ffmpeg missing; CalledProcessError = ffmpeg present
         # but the mp3 encode itself failed; ValueError = two manifest sound
@@ -232,6 +238,8 @@ def _do_generate(args: argparse.Namespace) -> int:
     print("=" * 60)
     print(f"  {len(png_paths)} PNG(s) ({'codex via art.py' if codex else provider.provider}), "
           f"{len(wav_paths)} placeholder WAV(s), {len(kept)} sourced sound(s) kept")
+    if unverified:
+        print("  " + gen_sounds.unverified_warning(wav_dir, unverified))
     print(f"  workspace: {workspace}")
     print(f"  groups: {sorted(groups)}")
     if codex:

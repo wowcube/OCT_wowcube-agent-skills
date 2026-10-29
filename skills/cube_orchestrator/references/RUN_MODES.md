@@ -8,11 +8,25 @@ that switches the rest of that run to stepwise.
 |---|---|---|
 | **Autonomous (default)** | Any entry; no signal needed, never asked to confirm, no risk speech | Intake (at most two questions), one start line, then the whole pipeline to the verified device `.oct`. Stops only at the **style lock** (the one creative checkpoint) and for real blockers (below). |
 | **Stepwise (opt-in)** | "по шагам", "с чекпоинтами", "stepwise", "review mode" in the prompt, or "стоп" / "stop" at any time mid-run | Every checkpoint in the skill is in force: stage boundaries, the designer interview, the asset batch review, each prompt, each mod change. Nothing advances without an explicit "ok / дальше". |
-| **`YOLO` token (compat alias)** | The literal token `YOLO` (case-insensitive) in the body of the current prompt | Autonomous, plus: no intake questions (no concept → the designer invents one; no Codex → a configured paid provider, else temporary placeholder art) and the style lock is waived (an independent reviewer approves the style frame instead of the user). |
+| **`YOLO` token (compat alias)** | The literal token `YOLO` (case-insensitive) in the body of the current prompt, then one short risk confirmation (below) | Autonomous, plus: no intake questions (no concept → the designer invents one; no Codex → temporary placeholder art) and the style lock is waived (an independent reviewer approves the style frame instead of the user). |
 
 `YOLO` activation is literal: no paraphrase or translation counts ("автономный
 режим", "go autonomous", "фигачь до конца" do not), it is never inferred from tone,
 and a previous prompt's token does not carry over. It removes stops, never checks.
+
+**YOLO risk confirmation** (the one message before a `YOLO` run; in the user's
+language; wait for an explicit "да / yes", anything else → the default autonomous
+mode):
+
+> YOLO: иду до готового файла без остановок — сам придумаю игру, если её нет в запросе, и не покажу стиль графики на утверждение (его проверит независимый ревьюер). Риск: результат может оказаться не тем, что ты хотел, и потребует переделки. YOLO НЕ разрешает платные API и скачивания: без Codex графика будет временной, звуки — синтезированными. Начинаю? (да / нет)
+
+**Paid image APIs need the user's own explicit opt-in, in every mode.** Neither the
+default autonomous mode nor `YOLO` (nor its confirmation) implies consent to pay: a
+paid provider (`OPENROUTER_API_KEY`, `IMAGE_API`, `~/.wowcube/image_api.json`) is
+used only when the user, in this run, explicitly asked for it and agreed to pay per
+image; only then set `WOWCUBE_ALLOW_PAID_IMAGES=1` / `--allow-paid`. A key that is
+merely configured is not consent. A local Stable Diffusion server on this machine
+(`http://localhost` / `127.0.0.1`) costs nothing and needs no opt-in.
 
 On "стоп" mid-run: finish the atomic step in flight (a coder run, a generation
 batch), save context, then continue in stepwise mode.
@@ -37,6 +51,8 @@ These decide whether the result runs on the cube; no mode suspends them.
   passes; placeholder art is never presented as final.
 - Downloads only after the user approved the list (the `YOLO` waiver is not an
   approval of downloads).
+- Paid image APIs only after the user's explicit opt-in (`--allow-paid`); autonomous
+  mode and `YOLO` never imply it.
 - The deliverable is the Stage 5 device `.oct` with verified ARM code, in `dist/`;
   never a simulator-written `.oct`.
 - `references/AGENT_SAFETY.md`, for you and in every subagent brief.
@@ -52,11 +68,13 @@ options (AskUserQuestion), never a wall of text.
 2. **Art access** — only if Codex cannot draw: `python <skills>/skills/cube_art-director/scripts/art.py doctor`
    fails on the Codex CLI or the ChatGPT login. Ask the user to install Codex or run
    `codex login` themselves (never type credentials, never ask for a paid key while the
-   subscription path can work). Answers: logged in → Codex; "не могу" / "нет" → a paid
-   image provider if one is already configured (`scripts/image_providers.py`, driven by
+   subscription path can work). Answers: logged in → Codex; "не могу" / "нет" →
+   temporary placeholder art, one line about it in the final report. A paid image
+   provider only when the user says explicitly that they want one and agree to pay per
+   image (then `--allow-paid`; `scripts/image_providers.py`, driven by
    `cube_asset-builder`; what still works without Codex:
-   `cube_asset-builder/references/ART.md` "No Codex"), otherwise temporary placeholder
-   art, one line about it in the final report.
+   `cube_asset-builder/references/ART.md` "No Codex"); never offer it while
+   `codex login` can still work.
 
 Not a question but a blocker, reported at intake when the entry checks find it: the
 SDK is older than octavios dev 2026-10-21 (`609d5ae`), `telemetry/` is missing, or
@@ -64,8 +82,9 @@ the toolchain is incomplete. Send the exact update commands once (SKILL.md, entr
 check 3); design, prompts, art and sound continue; the run waits before the infra gate
 until the user says it is done.
 
-`YOLO`: skip questions 1 and 2 (invent the concept; no Codex → a configured paid
-provider, else placeholders). The environment blocker still applies.
+`YOLO`: after the risk confirmation, skip questions 1 and 2 (invent the concept; no
+Codex → placeholders, never a paid provider unless the prompt itself explicitly asks
+for one and agrees to pay). The environment blocker still applies.
 
 **Start line** (autonomous; in the user's language), printed once, then continue
 without waiting for a reply:

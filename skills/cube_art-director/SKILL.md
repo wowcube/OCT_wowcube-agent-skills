@@ -74,7 +74,9 @@ Run commands from anywhere as `python <skill>/scripts/art.py <cmd> <path to art.
 commands the tool prints are copy-pasteable (interpreter, script, spec, workspace).
 `candidates` and `gen` need the Codex CLI; `style`, `anchor`, `process`, `qa`, `review` and
 `feedback` work on whatever images are in the raw folder (in the WowCube pipeline also a
-paid provider's: `cube_asset-builder/references/ART.md` "No Codex").
+paid provider's, but only when the user explicitly asked for one and agreed to pay:
+`cube_asset-builder/references/ART.md` "No Codex"). Codex must be logged in with ChatGPT:
+`gen` refuses an API-key login, which would bill that key.
 
 ## Workflow
 

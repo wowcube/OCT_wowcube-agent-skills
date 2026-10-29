@@ -16,7 +16,9 @@ merely sits in the environment (set for something else) is never used
 silently. Without WOWCUBE_ALLOW_PAID_IMAGES=1 (or `allow_paid=True`; the
 generate CLIs have `--allow-paid`), finding one raises PaidProviderNotAllowed
 with the reason, instead of falling through to it. Set the opt-in only after
-the user agreed to pay per image.
+the user agreed to pay per image. Exception: a Stable Diffusion server on this
+machine (`http://localhost`, `127.x.x.x`, `[::1]`) costs nothing and leaves no
+machine, so it needs no opt-in (`is_local_url()`); any other URL does.
 
 Codex never runs through this module's HTTP code: drawing is delegated to
 cube_art-director's `art.py` (one code path for prompts, Codex quirks, chroma
@@ -34,7 +36,10 @@ Detection patterns — `detect_provider()`:
     http(s)://... -> sd_a1111        else      -> UnknownProviderError
 
 `save_provider(value)` persists a pasted key/URL (or config dict) to the
-config file so the intake question never repeats.
+config file so the intake question never repeats. The file holds a secret: it
+is created owner-only (0600, its folder 0700) on POSIX; on Windows chmod cannot
+express that, so it relies on the per-user ACL of the user profile folder
+(best effort, documented in cube_asset-builder/references/ART.md).
 
 The HTTP providers are non-streaming, use `(15, 180)` (connect, read)
 timeouts and the same 4-attempt retry-with-backoff loop the original genimg
@@ -45,6 +50,7 @@ from __future__ import annotations
 
 import base64
 import glob
+import ipaddress
 import json
 import os
 import shutil
@@ -56,6 +62,7 @@ import time
 from dataclasses import dataclass, asdict
 from io import BytesIO
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 from PIL import Image
@@ -203,7 +210,8 @@ def codex_login_status(exe: str, *, use_cache: bool = True) -> tuple[bool, str]:
                  encoding='utf-8', errors='replace', timeout=60)
         out = f'{r.stdout or ""}\n{r.stderr or ""}'.strip()
         low = out.lower()
-        ok = r.returncode == 0 and 'chatgpt' in low and 'not logged in' not in low
+        ok = (r.returncode == 0 and 'chatgpt' in low and 'not logged in' not in low
+              and 'api key' not in low and 'api_key' not in low)
         first = next((ln.strip() for ln in out.splitlines() if ln.strip()), 'no output')
         result = (ok, first)
     except (OSError, subprocess.TimeoutExpired) as e:
@@ -246,6 +254,33 @@ def paid_chain() -> tuple[ProviderConfig, str] | None:
     return None
 
 
+def is_local_url(url: str | None) -> bool:
+    """True for an http(s) URL whose host is this machine: `localhost` (or
+    `*.localhost`), any 127.0.0.0/8 address or `::1`. A LAN or hosted URL is
+    False (someone else's server, possibly billed)."""
+    if not url:
+        return False
+    try:
+        parts = urlsplit(url.strip())
+        host = parts.hostname
+    except ValueError:
+        return False
+    if parts.scheme not in ('http', 'https') or not host:
+        return False
+    host = host.rstrip('.').lower()
+    if host == 'localhost' or host.endswith('.localhost'):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def is_free_local(config: ProviderConfig) -> bool:
+    """A local Stable Diffusion server: no paid opt-in needed."""
+    return config.provider == 'sd_a1111' and is_local_url(config.base_url)
+
+
 def resolve_provider(*, allow_paid: bool | None = None) -> ProviderConfig | None:
     """Walk the resolution chain (module docstring); None means nothing is
     configured. Codex comes first: a logged-in CLI needs no key.
@@ -262,6 +297,8 @@ def resolve_provider(*, allow_paid: bool | None = None) -> ProviderConfig | None
     if found is None:
         return None
     config, source = found
+    if is_free_local(config):
+        return config
     if allow_paid is None:
         allow_paid = paid_allowed()
     if not allow_paid:
@@ -287,10 +324,28 @@ def save_provider(value: str | dict) -> ProviderConfig:
     else:
         config = _config_from_value(value)
 
-    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     data = {k: v for k, v in asdict(config).items() if v is not None}
-    CONFIG_PATH.write_text(json.dumps(data, indent=2), encoding='utf-8')
+    _write_private(CONFIG_PATH, json.dumps(data, indent=2))
     return config
+
+
+def _write_private(path: Path, text: str) -> None:
+    """Write a secret readable by the owner only: the folder 0700 and the
+    file created 0600 (no window where it is world-readable), then chmod'ed
+    0600 again in case it already existed with wider bits. On Windows the
+    mode bits only toggle read-only; the file then relies on the per-user ACL
+    of the profile folder it lives in (best effort)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if os.name != 'nt':
+        try:
+            os.chmod(path.parent, 0o700)
+        except OSError:
+            pass
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as f:
+        f.write(text)
+    if os.name != 'nt':
+        os.chmod(path, 0o600)
 
 
 # --------------------------------------------------------------------------

@@ -21,6 +21,13 @@ recorded with its md5 in `<out>/placeholders.json`, and an mp3 in
 `<out>/assets/` that is not a recorded placeholder (built by sound_kit,
 dropped in by the user) is kept and skipped. Delete it to get a placeholder
 back.
+
+Placeholders written before placeholders.json existed carry no record. Such an
+unrecorded mp3 next to this module's `<out>/<name>.wav` is re-encoded from
+that WAV (ffmpeg): byte-identical means it is an old placeholder, recorded and
+refreshed like any other. When that cannot be proven (no ffmpeg, another
+encoder version) it is "unverified": kept on disk (never risk overwriting a
+real recording) but never counted as a sourced sound either.
 """
 from __future__ import annotations
 
@@ -31,6 +38,7 @@ import json
 import shutil
 import subprocess
 import sys
+import tempfile
 import wave
 from collections.abc import Iterable
 from pathlib import Path
@@ -295,19 +303,55 @@ def _load_placeholders(out_dir: Path) -> dict[str, str]:
     return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
 
 
-def is_sourced(out_dir: Path, asset: str, placeholders: dict[str, str] | None = None) -> bool:
-    """True when `<out_dir>/assets/<asset>.mp3` exists and is NOT a placeholder
-    this module wrote (a sound_kit build, a user's file): keep it."""
+def _is_legacy_placeholder(out_dir: Path, asset: str, mp3: Path) -> bool | None:
+    """An unrecorded mp3 next to this module's placeholder WAV: True when the
+    WAV encodes to exactly these bytes (an old placeholder), False when the
+    encode works and differs, None when it cannot be checked (no ffmpeg)."""
+    wav = Path(out_dir) / f"{asset}.wav"
+    if not wav.is_file():
+        return False
+    with tempfile.TemporaryDirectory(prefix="gsnd") as tmp:
+        try:
+            enc = encode_beta_mp3(wav, Path(tmp))
+        except (RuntimeError, OSError, subprocess.CalledProcessError):
+            return None
+        enc = Path(enc) if enc is not None else None
+        if enc is None or not enc.is_file():
+            return None
+        return _md5_file(enc) == _md5_file(mp3)
+
+
+def classify(out_dir: Path, asset: str, placeholders: dict[str, str] | None = None) -> str:
+    """State of `<out_dir>/assets/<asset>.mp3`:
+    "missing"; "placeholder" (written by this module: recorded md5, or an
+    unrecorded old one proven by re-encoding its WAV); "sourced" (a sound_kit
+    build, a user's file); "unverified" (unrecorded, sits next to a
+    placeholder WAV, could not be proven either way: keep it, but it does not
+    count as a real sound)."""
     mp3 = Path(out_dir) / "assets" / f"{asset}.mp3"
     if not mp3.is_file():
-        return False
+        return "missing"
     placeholders = _load_placeholders(Path(out_dir)) if placeholders is None else placeholders
-    return placeholders.get(asset) != _md5_file(mp3)
+    if asset in placeholders:
+        return "placeholder" if placeholders[asset] == _md5_file(mp3) else "sourced"
+    legacy = _is_legacy_placeholder(Path(out_dir), asset, mp3)
+    if legacy is None:
+        return "unverified"
+    if legacy:
+        return "placeholder"
+    return "unverified" if (Path(out_dir) / f"{asset}.wav").is_file() else "sourced"
+
+
+def is_sourced(out_dir: Path, asset: str, placeholders: dict[str, str] | None = None) -> bool:
+    """True when `<out_dir>/assets/<asset>.mp3` is a real sound (not a
+    placeholder this module wrote, see classify): keep it, count it."""
+    return classify(out_dir, asset, placeholders) == "sourced"
 
 
 def generate(
     manifest: Manifest, out_dir: Path, *, group: str | None = None,
     encode_mp3: bool = False, kept: list[str] | None = None,
+    unverified: list[str] | None = None,
 ) -> list[Path]:
     """Generate placeholder WAVs for every sound in `manifest` to `out_dir`.
 
@@ -322,7 +366,8 @@ def generate(
 
     Sounds whose mp3 in `out_dir/assets/` is sourced (not a recorded
     placeholder, see is_sourced) are skipped: no WAV, no mp3, their asset
-    name appended to `kept` when a list is passed.
+    name appended to `kept` when a list is passed. "Unverified" mp3s (see
+    classify) are skipped as well, but listed in `unverified`, never in `kept`.
 
     The WAV, the mp3 and the `SND_` id the packer emits all carry the
     MANIFEST name, verbatim: the game looks a sound up by that exact name
@@ -356,11 +401,20 @@ def generate(
         if group is not None and grp != group:
             continue
         asset = asset_names[snd.name]
-        if is_sourced(out_dir, asset, placeholders):
+        state = classify(out_dir, asset, placeholders)
+        if state == "sourced":
             if kept is not None:
                 kept.append(asset)
             if placeholders.pop(asset, None) is not None:
                 changed = True
+                # the record goes, so drop the stale placeholder WAV with it:
+                # a later run would otherwise see an unrecorded mp3 next to a
+                # placeholder WAV and doubt the recording ("unverified")
+                (out_dir / f"{asset}.wav").unlink(missing_ok=True)
+            continue
+        if state == "unverified":
+            if unverified is not None:
+                unverified.append(asset)
             continue
         wav_bytes = render_wav_bytes(
             group=grp, name=snd.name, event_type=snd.event_type,
@@ -399,15 +453,26 @@ def main(argv: list[str] | None = None) -> int:
         root = mp.parent.parent if mp.parent.name == "plans" else mp.parent
         out = root / f"assets_{m.game}" / "wav"
     kept: list[str] = []
+    unverified: list[str] = []
     try:
-        written = generate(m, out, group=args.group, encode_mp3=not args.no_mp3, kept=kept)
+        written = generate(m, out, group=args.group, encode_mp3=not args.no_mp3, kept=kept,
+                           unverified=unverified)
     except RuntimeError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
     suffix = "" if args.no_mp3 else f" (+ mp3 -> {out / 'assets'})"
     print(f"gen_sounds: wrote {len(written)} placeholder WAV(s) to {out}{suffix}"
           + (f"; kept {len(kept)} sourced sound(s): {', '.join(kept)}" if kept else ""))
+    if unverified:
+        print(unverified_warning(out, unverified))
     return 0
+
+
+def unverified_warning(out_dir: Path, names: list[str]) -> str:
+    return (f"WARNING: {len(names)} mp3(s) in {Path(out_dir) / 'assets'} are probably OLD placeholders "
+            f"(no record in {PLACEHOLDERS_FILE}, a placeholder WAV next to them, not provable without "
+            f"ffmpeg): {', '.join(names)}. Kept, NOT counted as real sounds; delete them to get fresh "
+            f"placeholders, or replace them with real recordings.")
 
 
 if __name__ == "__main__":

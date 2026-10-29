@@ -1,7 +1,11 @@
 """Run the local Codex CLI (logged in with a ChatGPT subscription) to draw one
 image with its built-in image generation tool.
 
-No API key is involved: Codex bills the user's ChatGPT plan. Model choice
+No API key is involved: Codex bills the user's ChatGPT plan - but only when it
+is logged in WITH ChatGPT. A Codex CLI logged in with an OpenAI API key bills
+that key per call, so `run()` first requires `codex login status` to report a
+ChatGPT login (checked once per process) and otherwise stops with a message:
+the user runs `codex login` themselves. Model choice
 follows the standing rule "strongest model, maximum reasoning effort": the
 top visible model in ~/.codex/models_cache.json (lowest priority value) at
 its highest supported effort below "ultra" (ultra = max + auto-delegation,
@@ -40,6 +44,44 @@ def find_codex() -> str:
     if on_path:
         return on_path
     raise SystemExit("codex not found: install the Codex CLI and run `codex login` with a ChatGPT account")
+
+
+# `codex login status` verdict per CLI path, once per process (a batch draws
+# dozens of images; the login does not change mid-run).
+_login_ok: dict[str, tuple[bool, str]] = {}
+
+
+def login_status(exe: str) -> tuple[bool, str]:
+    """(logged in with ChatGPT?, first line of `codex login status`).
+    An API-key login ("Logged in using an API key") is NOT ok: it bills the
+    key instead of the subscription."""
+    try:
+        r = subprocess.run([exe, "login", "status"], capture_output=True, text=True, timeout=60,
+                           encoding="utf-8", errors="replace")
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return False, f"`codex login status` failed: {e}"
+    out = (r.stdout or "") + "\n" + (r.stderr or "")
+    out = out.strip()
+    low = out.lower()
+    ok = (r.returncode == 0 and "chatgpt" in low and "not logged in" not in low
+          and "api key" not in low and "api_key" not in low)
+    first = next((ln.strip() for ln in out.splitlines() if ln.strip()), "no output")
+    return ok, first
+
+
+def require_chatgpt_login(exe: str) -> None:
+    """Stop (SystemExit) unless `exe` is logged in with ChatGPT. Never logs in
+    or types credentials. Only a positive verdict is cached."""
+    if exe in _login_ok and _login_ok[exe][0]:
+        return
+    ok, info = login_status(exe)
+    if ok:
+        _login_ok[exe] = (ok, info)
+        return
+    raise SystemExit(
+        f"codex is not logged in with a ChatGPT account ({info}). Nothing was generated: a Codex CLI logged in "
+        f"with an OpenAI API key (or not at all) would bill that key or fail. Ask the user to run `codex login` "
+        f"and sign in with ChatGPT, then rerun.")
 
 
 def pick_model() -> tuple[str, str]:
@@ -109,15 +151,9 @@ def doctor() -> list[tuple[bool, str]]:
         out.append((True, f"codex CLI: {exe}"))
     except SystemExit as e:
         return [(False, str(e))]
-    try:
-        r = subprocess.run([exe, "login", "status"], capture_output=True, text=True, timeout=60,
-                           encoding="utf-8", errors="replace")
-        txt = (r.stdout + r.stderr).strip().splitlines()
-        ok = r.returncode == 0 and "chatgpt" in (r.stdout + r.stderr).lower()
-        out.append((ok, "login: " + (txt[0] if txt else "unknown") +
-                    ("" if ok else " (run `codex login` and sign in with the ChatGPT account)")))
-    except (OSError, subprocess.TimeoutExpired) as e:
-        out.append((False, f"login status failed: {e}"))
+    ok, info = login_status(exe)
+    out.append((ok, "login: " + info +
+                ("" if ok else " (run `codex login` and sign in with the ChatGPT account, not an API key)")))
     m, e = pick_model()
     out.append((True, f"model: {m} at effort {e}"))
     return out
@@ -126,6 +162,7 @@ def doctor() -> list[tuple[bool, str]]:
 def run(name: str, prompt: str, refs: list[Path], out_png: Path, log_dir: Path,
         retries: int = 3, timeout: int = 900) -> tuple[bool, str]:
     codex = find_codex()
+    require_chatgpt_login(codex)          # before anything can be billed
     model, effort = pick_model()
     base = Path(tempfile.gettempdir()) / "artgen"
     base.mkdir(parents=True, exist_ok=True)
