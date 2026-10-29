@@ -1,141 +1,162 @@
 <#
 .SYNOPSIS
-    Produce the cube-loadable .oct package for an existing app_<game> folder.
+    Build the cube-loadable .oct of an app_<game> folder into <workspace>\dist\, verified. No simulator.
 
 .DESCRIPTION
-    The .oct is the file you load onto the physical WowCube. It is assembled by
-    the pure-Python builder (scripts/pack_beta.py --build-oct), which packs:
-    the art .raw assets + the sounds + the ARM device code from
-    out/<app>.bin. So producing a *loadable* .oct is two steps:
+    Builder "octpack" (default when available): the SDK's official one-command build (octavios dev 609d5ae+):
+        uv run --frozen --project <octavios>\octpacker octpack-build <AppDir> --out <Out> --engine <octavios>
+      It compiles src\app_metadata.h for the header fields, packs art\octpack.json if the app has one (our
+      AI-art apps do not: their art\packed + index.bin from the python packer are used as they are), builds
+      the ARM module (cmake + Ninja into out\) and writes the .oct. Needs uv, Python 3.12 (uv-managed),
+      clang++ (or g++), cmake, ninja, arm-none-eabi-g++.
+    Builder "python" (fallback): cmake + Ninja ARM build, then scripts\pack_beta.py --build-oct. It stamps
+      SaveSize from APP_SAVE_SIZE reached through src/app_metadata.h (sizeof(record) read from the
+      static_assert of its wire size in app_save.h), like octpack-build's host probe.
+    Verification (both, mandatory): the last <size of out\<app>.bin> bytes of the .oct are the ARM code, then
+      scripts\pack_beta.py --verify-oct: magic, Size, CRC32, code_size/offset, a non-zero build id, title /
+      version / GUID / categories / save size == the app's defines (src\app.h -> app_metadata.h -> app_save.h),
+      the launcher map "ico", assets == index.bin. The header comes from octpack-info when it runs, otherwise
+      from a local read; any mismatch, or anything that cannot be checked, fails the build (exit 1).
+    The deliverable lives in dist\ because the Windows simulator rewrites <app>\<app>.oct on every launch.
 
-      1. ARM device build  -> app_<game>/out/app_<game>.bin
-         (cmake -G Ninja -S <octavios>/apps -B out ; cmake --build out)
-      2. python scripts/pack_beta.py --build-oct -> app_<game>/app_<game>.oct
-         (assets + sounds + ARM code, deterministic bytes)
-
-    This no longer launches the simulator or needs MSVC -- only the ARM
-    device toolchain (arm-none-eabi-gcc, cmake, ninja) and python. Run
-    check_env.ps1 first if any of those are missing. Without the ARM .bin
-    there is no code to embed; this script treats a missing/empty .bin as a
-    failure.
-
-.PARAMETER AppDir
-    Path to the app_<game> folder (must contain <app>.target and art/packed).
-
-.PARAMETER OctaviOS
-    Path to the octavios SDK. Default: <AppDir>\..\octavios.
+.PARAMETER AppDir    The app_<game> folder (one *.target; packed: index.bin + art\packed).
+.PARAMETER OctaviOS  octavios SDK. Default: <AppDir>\..\octavios.
+.PARAMETER Out       Output .oct. Default: <AppDir>\..\dist\<app>.oct.
+.PARAMETER Builder   auto (default) | octpack | python.
+.PARAMETER UvEnv     octpacker's Python environment. Default: UV_PROJECT_ENVIRONMENT, else <AppDir>\..\.uv_octpack_venv:
+                     never inside octavios. Its first creation downloads the pinned packages (the one-time bootstrap
+                     the user approves, AGENT_SAFETY.md); later builds reuse it.
+.PARAMETER NoUv      Never start uv (python builder + the local header check); also WOWCUBE_NO_UV=1. repack_app.py
+                     passes it when it runs on the Microsoft Store Python: everything that Python starts sees a
+                     private copy of AppData, so uv would not find its managed Python and would rebuild the
+                     octpacker environment.
 
 .EXAMPLE
-    powershell -File .\build_device.ps1 -AppDir C:\ws\app_tetris
+    powershell -NoProfile -ExecutionPolicy Bypass -File .\build_device.ps1 -AppDir C:\ws\app_tetris
 #>
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)] [string] $AppDir,
-    [string] $OctaviOS
+    [string] $OctaviOS,
+    [string] $Out,
+    [ValidateSet('auto', 'octpack', 'python')] [string] $Builder = 'auto',
+    [string] $UvEnv,
+    [switch] $NoUv
 )
 
 $ErrorActionPreference = 'Stop'
 function Fail($m) { Write-Host "ERROR: $m" -ForegroundColor Red; exit 1 }
 function Step($m) { Write-Host "==> $m" -ForegroundColor Cyan }
+function Have($exe) { return [bool](Get-Command $exe -ErrorAction SilentlyContinue) }
 
-$AppDir = (Resolve-Path $AppDir).Path
-$target = Get-ChildItem $AppDir -Filter *.target -File -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $target) { Fail "no *.target marker in $AppDir" }
-$app = [System.IO.Path]::GetFileNameWithoutExtension($target.Name)
+# --- resolve ----------------------------------------------------------------
+$AppDir = (Resolve-Path -LiteralPath $AppDir -ErrorAction SilentlyContinue).Path
+if (-not $AppDir) { Fail "app folder not found" }
+$targets = @(Get-ChildItem -LiteralPath $AppDir -Filter *.target -File)
+if ($targets.Count -ne 1) { Fail "$AppDir must hold exactly one *.target marker (found $($targets.Count))" }
+$app = [IO.Path]::GetFileNameWithoutExtension($targets[0].Name)
+if (-not (Test-Path (Join-Path $AppDir 'index.bin'))) { Fail "$AppDir\index.bin missing - pack the assets first (Stage 3)" }
 
 if (-not $OctaviOS) { $OctaviOS = Join-Path $AppDir '..\octavios' }
-$OctaviOS = (Resolve-Path $OctaviOS -ErrorAction SilentlyContinue).Path
-if (-not $OctaviOS) { Fail "octavios SDK not found (pass -OctaviOS)" }
-$appsDir = Join-Path $OctaviOS 'apps'
+$OctaviOS = (Resolve-Path -LiteralPath $OctaviOS -ErrorAction SilentlyContinue).Path
+if (-not $OctaviOS -or -not (Test-Path (Join-Path $OctaviOS 'apps\CMakeLists.txt'))) { Fail "octavios SDK not found (pass -OctaviOS)" }
 
-foreach ($t in 'arm-none-eabi-gcc', 'cmake', 'ninja', 'python') {
-    if (-not (Get-Command $t -ErrorAction SilentlyContinue)) {
-        Fail "$t not on PATH -- run check_env.ps1 to install the device toolchain"
+if (-not $Out) { $Out = Join-Path (Split-Path $AppDir -Parent) "dist\$app.oct" }
+$Out = [IO.Path]::GetFullPath($Out)
+New-Item -ItemType Directory -Force -Path (Split-Path $Out -Parent) | Out-Null
+
+$metadata = Join-Path $AppDir 'src\app_metadata.h'
+$octpackProject = Join-Path $OctaviOS 'octpacker'
+# octpacker's environment lives in the workspace, never in the SDK tree (uv would otherwise create octpacker\.venv)
+if (-not $UvEnv) { $UvEnv = $(if ($env:UV_PROJECT_ENVIRONMENT) { $env:UV_PROJECT_ENVIRONMENT } else { Join-Path (Split-Path $AppDir -Parent) '.uv_octpack_venv' }) }
+$env:UV_PROJECT_ENVIRONMENT = [IO.Path]::GetFullPath($UvEnv)
+if ($env:WOWCUBE_NO_UV -match '^(1|true|yes)$') { $NoUv = $true }
+$useUv = (Have 'uv') -and -not $NoUv
+if ($NoUv) { Write-Host "    NOTE: -NoUv / WOWCUBE_NO_UV: uv is not started (python builder, local header check)" -ForegroundColor Yellow }
+$octpackReady = (Test-Path (Join-Path $octpackProject 'pyproject.toml')) -and $useUv -and (Test-Path $metadata)
+if ($Builder -eq 'auto') { $Builder = $(if ($octpackReady) { 'octpack' } else { 'python' }) }
+if ($Builder -eq 'octpack' -and -not $octpackReady) {
+    Fail ("octpack-build needs octavios dev (octpacker\pyproject.toml), uv on PATH (and no -NoUv) and src\app_metadata.h " +
+          "(scripts\check_env.ps1 lists what is missing); or pass -Builder python")
+}
+
+$bin = Join-Path $AppDir "out\$app.bin"
+$started = Get-Date
+
+# --- 1. build ----------------------------------------------------------------
+if ($Builder -eq 'octpack') {
+    if (Test-Path (Join-Path $AppDir 'art\octpack.json')) {
+        Write-Host "    NOTE: art\octpack.json present: octpack-build re-packs art from its PSD/raw sources (wipes art\packed and index.bin)." -ForegroundColor Yellow
     }
-}
-$packPy = Join-Path $PSScriptRoot 'pack_beta.py'
-if (-not (Test-Path $packPy)) { Fail "python builder not found: $packPy" }
-
-# --- 1. ARM device build --------------------------------------------------
-Step "ARM device build (cmake + ninja) for $app"
-$out = Join-Path $AppDir 'out'
-Push-Location $AppDir
-try {
-    cmake -G Ninja -S "$appsDir" -B "$out" | Out-Host
-    if ($LASTEXITCODE -ne 0) { Fail "cmake configure failed (exit $LASTEXITCODE)" }
-    cmake --build "$out" | Out-Host
-    if ($LASTEXITCODE -ne 0) { Fail "cmake build failed (exit $LASTEXITCODE)" }
-} finally { Pop-Location }
-
-$bin = Join-Path $out "$app.bin"
-if (-not (Test-Path $bin)) { Fail "device build produced no $bin" }
-$binLen = (Get-Item $bin).Length
-if ($binLen -le 0) { Fail "$bin is empty -- ARM build produced no code" }
-Write-Host "    built $bin ($binLen bytes ARM code)"
-
-# --- 2. Pack the .oct with the pure-Python builder -------------------------
-# scripts/pack_beta.py --build-oct assembles the pack directly from
-# index.bin + art/packed + sound/assets + the ARM code, byte-identical to
-# what the simulator used to write (minus its wall-clock BuildDateTime stamp,
-# which the python builder pins to 0 for determinism). No simulator launch,
-# no MSVC needed.
-$oct = Join-Path $AppDir "$app.oct"
-if (Test-Path $oct) { Remove-Item $oct -Force }
-
-Step "Packing .oct (python scripts/pack_beta.py --build-oct)"
-python $packPy --build-oct --app-dir "$AppDir" --code "$bin" --out "$oct" | Out-Host
-if ($LASTEXITCODE -ne 0) { Fail "python .oct builder failed (exit $LASTEXITCODE)" }
-
-if (-not (Test-Path $oct)) {
-    Fail "python builder did not produce $oct"
+    Step "octpack-build $app -> $Out"
+    $venvState = $(if (Test-Path (Join-Path $env:UV_PROJECT_ENVIRONMENT 'pyvenv.cfg')) { 'reused' } else { 'FIRST USE: uv creates it and downloads the pinned packages' })
+    Write-Host "    octpacker environment: $($env:UV_PROJECT_ENVIRONMENT) ($venvState)"
+    & uv run --frozen --project $octpackProject octpack-build $AppDir --out $Out --engine $OctaviOS
+    if ($LASTEXITCODE -ne 0) { Fail "octpack-build failed (exit $LASTEXITCODE). Stale out\ from another SDK checkout? Delete $AppDir\out and retry." }
+} else {
+    foreach ($t in 'arm-none-eabi-g++', 'cmake', 'ninja', 'python') {
+        if (-not (Have $t)) { Fail "$t not on PATH - run scripts\check_env.ps1" }
+    }
+    $packPy = Join-Path $PSScriptRoot 'pack_beta.py'
+    Step "ARM device build (cmake + Ninja) for $app"
+    $outDir = Join-Path $AppDir 'out'
+    & cmake -G Ninja -S (Join-Path $OctaviOS 'apps') -B $outDir -DAPP_TELEMETRY=OFF | Out-Host
+    if ($LASTEXITCODE -ne 0) { Fail "cmake configure failed. Stale out\ from another SDK checkout? Delete $outDir and retry." }
+    & cmake --build $outDir --parallel 4 | Out-Host
+    if ($LASTEXITCODE -ne 0) { Fail "ARM build failed (exit $LASTEXITCODE)" }
+    Step "Packing .oct (python scripts\pack_beta.py --build-oct)"
+    if (Test-Path $Out) { Remove-Item -Force $Out }
+    & python $packPy --build-oct --app-dir $AppDir --code $bin --out $Out | Out-Host
+    if ($LASTEXITCODE -ne 0) { Fail "python .oct builder failed (exit $LASTEXITCODE)" }
 }
 
-# --- 3. Verify the ARM code is actually embedded --------------------------
-# This is the whole point: prove the cube package contains the ARM binary, not
-# just assets. The builder appends the ARM code as the LAST chunk of the pack
-# (assets -> sounds -> code, then header->Size = end), so the final
-# <binLen> bytes of the .oct must equal the .bin byte-for-byte. If they don't,
-# something upstream (e.g. a stale --code path) produced an asset-only .oct
-# and the package would silently fail on the cube -- so we refuse to ship it.
-# This check is unchanged from when the simulator wrote the .oct; it now
-# verifies our own python builder instead, which is still valuable.
-$binBytes = [System.IO.File]::ReadAllBytes($bin)
-$octBytes = [System.IO.File]::ReadAllBytes($oct)
-$embedded = $false
-if ($octBytes.Length -ge $binBytes.Length) {
+# --- 2. verify -----------------------------------------------------------------
+if (-not (Test-Path $Out)) { Fail "no .oct at $Out" }
+if ((Get-Item $Out).LastWriteTime -lt $started) { Fail "$Out was not rewritten by this build" }
+if (-not (Test-Path $bin)) { Fail "no ARM module at $bin" }
+$binBytes = [IO.File]::ReadAllBytes($bin)
+$octBytes = [IO.File]::ReadAllBytes($Out)
+if ($binBytes.Length -eq 0) { Fail "$bin is empty - the ARM build produced no code" }
+$embedded = $octBytes.Length -ge $binBytes.Length
+if ($embedded) {
     $start = $octBytes.Length - $binBytes.Length
-    $embedded = $true
-    for ($i = 0; $i -lt $binBytes.Length; $i++) {
-        if ($octBytes[$start + $i] -ne $binBytes[$i]) { $embedded = $false; break }
+    for ($i = 0; $i -lt $binBytes.Length; $i++) { if ($octBytes[$start + $i] -ne $binBytes[$i]) { $embedded = $false; break } }
+}
+if (-not $embedded) { Fail "the .oct does NOT end with out\$app.bin: no ARM code, dead on the cube" }
+Write-Host "    ARM code embedded ($($binBytes.Length) bytes)"
+
+# Header verification is MANDATORY: magic, size, CRC, the ARM tail, a non-zero build id, title/version/GUID/
+# categories/save size == the app's defines, MAP "ico", assets == index.bin (scripts\pack_beta.py --verify-oct).
+# octpack-info supplies the header when it runs (engine-answered offsets); otherwise the same checks run on a local
+# read of the header. Whatever cannot be verified fails the build.
+$version = ''
+$packPyVerify = Join-Path $PSScriptRoot 'pack_beta.py'
+if (-not (Have 'python')) { Fail "cannot verify $Out`: python is not on PATH (scripts\pack_beta.py --verify-oct reads the header) - run scripts\check_env.ps1" }
+$infoFile = $null
+if ((Test-Path (Join-Path $octpackProject 'pyproject.toml')) -and $useUv) {
+    $json = & uv run --frozen --project $octpackProject octpack-info $Out --engine $OctaviOS
+    if ($LASTEXITCODE -eq 0 -and $json) {
+        $infoFile = Join-Path ([IO.Path]::GetTempPath()) ("octpack_info_{0}.json" -f [guid]::NewGuid().ToString('N'))
+        ($json -join "`n") | Set-Content -LiteralPath $infoFile -Encoding UTF8
+    } else {
+        Write-Host "    octpack-info failed (exit $LASTEXITCODE): verifying with the local header check instead" -ForegroundColor Yellow
     }
+} else {
+    Write-Host "    uv/octpacker not available$(if ($NoUv) { ' (-NoUv)' }): verifying with the local header check (scripts\pack_beta.py)" -ForegroundColor Yellow
 }
-if (-not $embedded) {
-    Fail ("the .oct does NOT contain the ARM code (asset-only pack). It would run " +
-          "in the simulator but is dead on the cube. Check that out\$app.bin exists " +
-          "and that APP_DIR in src\app.h points back at this app folder.")
-}
-Write-Host "    verified ARM code embedded ($binLen bytes) in the .oct"
-
-# --- 4. Warn about stray timestamped .oct files in the app root ------------
-# The Linux simulator deletes root .oct files at startup, so anything like
-# <app>_20250101.oct left in the app root can silently vanish. Warning only.
-# Write-Warning keeps this off stdout, matching build_device.sh's >&2 block.
-$strayOct = Get-ChildItem $AppDir -Filter "${app}_*.oct" -File -ErrorAction SilentlyContinue
-if ($strayOct) {
-    $strayNames = ($strayOct | ForEach-Object { "    $($_.Name)" }) -join "`n"
-    Write-Warning ("stray timestamped .oct file(s) in the app root:`n$strayNames`n" +
-        "The Linux simulator deletes root .oct files at startup. Keep deliverables`n" +
-        "in a pack\ subfolder (or copy them out of the app root) so they survive.")
-}
+$verifyArgs = @($packPyVerify, '--verify-oct', $Out, '--app-dir', $AppDir, '--code', $bin)
+if ($infoFile) { $verifyArgs += @('--info-json', $infoFile) }
+$verifyOut = @(& python @verifyArgs)
+$verifyCode = $LASTEXITCODE
+if ($infoFile) { Remove-Item -LiteralPath $infoFile -Force -ErrorAction SilentlyContinue }
+foreach ($line in $verifyOut) { Write-Host $line }
+if ($verifyCode -ne 0) { Fail ".oct verification failed (exit $verifyCode): see the ERROR lines above - nothing to deliver" }
+$vm = [regex]::Match(($verifyOut -join "`n"), '(?m)^VERSION=(\S+)')
+if ($vm.Success) { $version = $vm.Groups[1].Value }
 
 Write-Host ""
-Write-Host "CUBE PACKAGE READY:" -ForegroundColor Green
-Write-Host "  $oct"
-Write-Host "  ($($octBytes.Length) bytes -- assets + sounds + $binLen bytes ARM code)"
-Write-Host "Load this .oct onto the WowCube."
-Write-Host ""
-Write-Host "NOTE: launching the simulator manually will still OVERWRITE this .oct with" -ForegroundColor Yellow
-Write-Host "an asset-only pack (no ARM code) -- but device delivery no longer depends" -ForegroundColor Yellow
-Write-Host "on the sim. Re-run this script after any sim play-testing session to" -ForegroundColor Yellow
-Write-Host "regenerate the cube-loadable .oct as the LAST step before shipping." -ForegroundColor Yellow
+Write-Host "CUBE PACKAGE READY ($Builder): $Out" -ForegroundColor Green
+Write-Host "  $($octBytes.Length) bytes = assets + sounds + $($binBytes.Length) bytes ARM code$(if ($version) { "; version $version" })"
+Write-Host "  Upload when the user asks: tools\cube_upload\run_upload.ps1 -Octavios $OctaviOS -Mac <cube MAC> -Oct $Out"
+Write-Host "  Deliver this file, never <app>\$app.oct (the Windows simulator rewrites that one on every launch)."
 exit 0

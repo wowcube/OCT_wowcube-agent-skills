@@ -1,14 +1,28 @@
-"""Multi-provider image-generation adapter (design spec 2026-08-04 §4).
-
-One interface, five providers, auto-detected from whatever key/URL the user
-has. `genimg.generate_image()` stays the single entry point for callers; this
-module supplies the provider underneath it.
+"""Image-generation providers for cube_asset-builder.
 
 Resolution chain (first hit wins) — `resolve_provider()`:
+  0. `codex` (the DEFAULT, no key): a Codex CLI logged in with the user's
+     ChatGPT account. Found as the newest
+     %LOCALAPPDATA%\\OpenAI\\Codex\\bin\\*\\codex.exe (Windows installs are often
+     not on PATH) or `codex` on PATH; `codex login status` must mention
+     ChatGPT. Skipped when WOWCUBE_NO_CODEX=1 (forces the key chain below).
   1. `OPENROUTER_API_KEY` env var (backward compat, treated as OpenRouter key)
   2. `IMAGE_API` env var — JSON object or a bare key/URL
   3. config file `~/.wowcube/image_api.json` — same JSON shape
-  4. nothing -> None (the caller decides: intake question / placeholder art)
+  4. nothing -> None (the caller decides: agent-drawn placeholder art, never final)
+
+Steps 1-3 are paid (or at least external) APIs and are OPT-IN: a key that
+merely sits in the environment (set for something else) is never used
+silently. Without WOWCUBE_ALLOW_PAID_IMAGES=1 (or `allow_paid=True`; the
+generate CLIs have `--allow-paid`), finding one raises PaidProviderNotAllowed
+with the reason, instead of falling through to it. Set the opt-in only after
+the user agreed to pay per image.
+
+Codex never runs through this module's HTTP code: drawing is delegated to
+cube_art-director's `art.py` (one code path for prompts, Codex quirks, chroma
+keying, set fitting and colour lock). `codex_generate()` draws a whole
+WowCube manifest (`art.py gen` then `art.py process`); `codex_draw()` draws
+one image through a throw-away art.json (genimg one-offs).
 
 Config JSON shape (every field optional):
     {"provider": "...", "key": "...", "base_url": "...", "model": "..."}
@@ -22,16 +36,21 @@ Detection patterns — `detect_provider()`:
 `save_provider(value)` persists a pasted key/URL (or config dict) to the
 config file so the intake question never repeats.
 
-All providers are non-streaming, use `(15, 180)` (connect, read) timeouts and
-the same 4-attempt retry-with-backoff loop the original genimg used.
-`validate()` is the cheapest possible authenticated call per provider (see
-each class); failures raise ProviderValidationError.
+The HTTP providers are non-streaming, use `(15, 180)` (connect, read)
+timeouts and the same 4-attempt retry-with-backoff loop the original genimg
+used. `validate()` is the cheapest possible authenticated call per provider
+(for codex: `codex login status`); failures raise ProviderValidationError.
 """
 from __future__ import annotations
 
 import base64
+import glob
 import json
 import os
+import shutil
+import subprocess
+import sys
+import tempfile
 import time
 
 from dataclasses import dataclass, asdict
@@ -44,6 +63,20 @@ from PIL import Image
 API_KEY_ENV = 'OPENROUTER_API_KEY'
 IMAGE_API_ENV = 'IMAGE_API'
 CONFIG_PATH = Path.home() / '.wowcube' / 'image_api.json'
+
+CODEX_PROVIDER = 'codex'
+# '1' skips Codex detection, so the key chain (OPENROUTER_API_KEY -> IMAGE_API
+# -> config file) decides even when a logged-in Codex CLI is installed.
+NO_CODEX_ENV = 'WOWCUBE_NO_CODEX'
+# '1' = the user agreed to pay per image: only then may the key chain
+# (OPENROUTER_API_KEY -> IMAGE_API -> config file) be used.
+ALLOW_PAID_ENV = 'WOWCUBE_ALLOW_PAID_IMAGES'
+# Optional override for where cube_art-director's art.py lives.
+ART_PY_ENV = 'WOWCUBE_ART_PY'
+_ART_PY_REL = Path('skills') / 'cube_art-director' / 'scripts' / 'art.py'
+# `codex login status` per CLI path, checked once per process (resolve_provider
+# runs more than once per pipeline run).
+_codex_login_cache: dict[str, tuple[bool, str]] = {}
 
 # (connect timeout, read timeout) — without this a stalled socket hangs
 # forever and the retry loop never triggers.
@@ -68,12 +101,18 @@ class ProviderValidationError(ImageGenError):
     """Raised when the cheap `validate()` call fails (bad key, endpoint down)."""
 
 
+class PaidProviderNotAllowed(ImageGenError):
+    """Codex is not available and the only provider found is a paid/external
+    API that was not opted in (WOWCUBE_ALLOW_PAID_IMAGES=1 / --allow-paid)."""
+
+
 @dataclass
 class ProviderConfig:
     provider: str
     key: str | None = None
     base_url: str | None = None
     model: str | None = None
+    cli: str | None = None          # codex: path of the Codex CLI binary
 
 
 def detect_provider(value: str) -> str:
@@ -130,20 +169,109 @@ def _parse_config_text(text: str) -> ProviderConfig:
     return _config_from_value(text)
 
 
-def resolve_provider() -> ProviderConfig | None:
-    """Walk the resolution chain (spec §4); None means nothing is configured."""
+# --------------------------------------------------------------------------
+# Codex CLI (ChatGPT subscription): detection
+# --------------------------------------------------------------------------
+
+def _run(argv, **kwargs):
+    """The one subprocess seam of this module (Codex login check, art.py).
+    Tests replace it; nothing in the test suite ever reaches a real Codex."""
+    return subprocess.run(argv, **kwargs)
+
+
+def find_codex_cli() -> str | None:
+    """Newest %LOCALAPPDATA%\\OpenAI\\Codex\\bin\\*\\codex.exe, else `codex` on
+    PATH, else None (same discovery as cube_art-director's art_codex.py)."""
+    local = os.environ.get('LOCALAPPDATA')
+    if local:
+        found = glob.glob(os.path.join(local, 'OpenAI', 'Codex', 'bin', '*', 'codex.exe'))
+        if found:
+            return max(found, key=os.path.getmtime)
+    return shutil.which('codex')
+
+
+def codex_login_status(exe: str, *, use_cache: bool = True) -> tuple[bool, str]:
+    """(logged in with ChatGPT?, first line of `codex login status`).
+
+    An API-key login does not count: the pipeline only uses Codex on the
+    user's ChatGPT subscription. Never logs in or types credentials; when this
+    is False the user runs `codex login` themselves."""
+    if use_cache and exe in _codex_login_cache:
+        return _codex_login_cache[exe]
+    try:
+        r = _run([exe, 'login', 'status'], capture_output=True, text=True,
+                 encoding='utf-8', errors='replace', timeout=60)
+        out = f'{r.stdout or ""}\n{r.stderr or ""}'.strip()
+        low = out.lower()
+        ok = r.returncode == 0 and 'chatgpt' in low and 'not logged in' not in low
+        first = next((ln.strip() for ln in out.splitlines() if ln.strip()), 'no output')
+        result = (ok, first)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        result = (False, f'`codex login status` failed: {e}')
+    _codex_login_cache[exe] = result
+    return result
+
+
+def detect_codex() -> ProviderConfig | None:
+    """The codex step of the chain: a ProviderConfig when a Codex CLI is
+    installed and logged in with ChatGPT (and WOWCUBE_NO_CODEX is not set)."""
+    if os.environ.get(NO_CODEX_ENV, '').strip().lower() not in ('', '0', 'false', 'no'):
+        return None
+    exe = find_codex_cli()
+    if not exe:
+        return None
+    ok, _ = codex_login_status(exe)
+    return ProviderConfig(provider=CODEX_PROVIDER, cli=exe) if ok else None
+
+
+def paid_allowed() -> bool:
+    """True when the user opted in to paid image APIs (WOWCUBE_ALLOW_PAID_IMAGES=1)."""
+    return os.environ.get(ALLOW_PAID_ENV, '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def paid_chain() -> tuple[ProviderConfig, str] | None:
+    """The key chain alone (steps 1-3): (config, where it came from) or None.
+    Never checks the opt-in - resolve_provider() does."""
     key = os.environ.get(API_KEY_ENV)
     if key:
-        return ProviderConfig(provider='openrouter', key=key)
+        return ProviderConfig(provider='openrouter', key=key), f'the {API_KEY_ENV} environment variable'
 
     image_api = os.environ.get(IMAGE_API_ENV)
     if image_api and image_api.strip():
-        return _parse_config_text(image_api)
+        return _parse_config_text(image_api), f'the {IMAGE_API_ENV} environment variable'
 
     if CONFIG_PATH.is_file():
-        return _parse_config_text(CONFIG_PATH.read_text(encoding='utf-8'))
+        return _parse_config_text(CONFIG_PATH.read_text(encoding='utf-8')), str(CONFIG_PATH)
 
     return None
+
+
+def resolve_provider(*, allow_paid: bool | None = None) -> ProviderConfig | None:
+    """Walk the resolution chain (module docstring); None means nothing is
+    configured. Codex comes first: a logged-in CLI needs no key.
+
+    A paid/external provider from the key chain is returned only when
+    `allow_paid` is True, or (when it is None) WOWCUBE_ALLOW_PAID_IMAGES=1;
+    otherwise PaidProviderNotAllowed explains what was found and how to
+    proceed - an inherited key is never used silently."""
+    codex = detect_codex()
+    if codex is not None:
+        return codex
+
+    found = paid_chain()
+    if found is None:
+        return None
+    config, source = found
+    if allow_paid is None:
+        allow_paid = paid_allowed()
+    if not allow_paid:
+        raise PaidProviderNotAllowed(
+            f'no Codex CLI logged in with ChatGPT (the default, free on the subscription), and the only image '
+            f'provider found is a PAID/external API ({config.provider}, from {source}). It is never used '
+            f'silently: either the user runs `codex login`, or - only after the user agreed to pay per image - '
+            f'set {ALLOW_PAID_ENV}=1 (build_pipeline.py generate / gen_sprites.py: --allow-paid). Without '
+            f'either, the asset builder falls back to agent-drawn placeholder art (never final).')
+    return config
 
 
 def save_provider(value: str | dict) -> ProviderConfig:
@@ -195,6 +323,95 @@ def png_image_to_base64(filename):
     except Exception as e:
         print(f'Error encoding image to base64: {e}')
         return None
+
+
+# --------------------------------------------------------------------------
+# Codex drawing: delegated to cube_art-director's art.py
+# --------------------------------------------------------------------------
+
+def find_art_py() -> Path:
+    """cube_art-director's art.py: $WOWCUBE_ART_PY, else
+    skills/cube_art-director/scripts/art.py next to this scripts/ folder (or
+    in any ancestor, for the packaged plugin layout)."""
+    env = os.environ.get(ART_PY_ENV)
+    if env:
+        p = Path(env)
+        if p.is_file():
+            return p
+        raise ImageGenError(f'{ART_PY_ENV}={env} does not exist')
+    here = Path(__file__).resolve().parent
+    for base in (here, *here.parents):
+        cand = base / _ART_PY_REL
+        if cand.is_file():
+            return cand
+    raise ImageGenError(f'cube_art-director art.py not found (looked for {_ART_PY_REL.as_posix()} '
+                        f'above {here}); set {ART_PY_ENV}')
+
+
+def run_art(cmd: str, spec, *, workspace=None, extra=()) -> int:
+    """Run one art.py command (`gen`, `process`, `qa`, ...) on a spec (a
+    WowCube manifest or an art.json); output streams to the console so the
+    agent sees Codex progress and the copy-pasteable retry commands."""
+    argv = [sys.executable, str(find_art_py()), cmd, str(spec)]
+    if workspace is not None:
+        argv += ['--workspace', str(workspace)]
+    argv += [str(x) for x in extra]
+    print('  $ ' + ' '.join(argv), flush=True)
+    return _run(argv).returncode
+
+
+def codex_generate(manifest_path, workspace, *, only=None, force=False, jobs=None) -> None:
+    """Draw a WowCube manifest with Codex through cube_art-director.
+
+    `art.py gen` draws every sprite without a raw image (style anchors and the
+    STYLE.md Prompt block attached, the sprite's flat chroma-key backdrop or
+    opaque canvas, subject references from <workspace>/fixes.json, dependency
+    order), then `art.py process` keys and fits them into
+    <workspace>/art/<name>.png (shared scale + centroid alignment per
+    animation set, colour lock per fixes.json). `process` also runs after a
+    partial `gen` failure: it never refits a set with a missing member, so the
+    finished sprites are ready for QA while the failed ones are retried.
+    Raises ImageGenError naming the failed step(s)."""
+    sel = ['--only', ','.join(only)] if only else []
+    gen_extra = sel + (['--force'] if force else []) + (['--jobs', str(int(jobs))] if jobs else [])
+    rc_gen = run_art('gen', manifest_path, workspace=workspace, extra=gen_extra)
+    rc_process = run_art('process', manifest_path, workspace=workspace, extra=sel)
+    failed = [step for step, rc in (('gen', rc_gen), ('process', rc_process)) if rc != 0]
+    if failed:
+        raise ImageGenError(
+            f'art.py {" + ".join(failed)} failed (exit {rc_gen}/{rc_process}); the lines above name the '
+            f'sprites and print the retry command (a rerun of `gen` only draws what is still missing)')
+
+
+def codex_draw(prompt, *, size=None, reference=None, background='opaque', key='auto') -> Image.Image:
+    """One image with Codex, through a throw-away art.json run by art.py
+    (`gen` + `process`): `background` "key" = drawn on a flat chroma-key
+    backdrop and cut out (binary alpha), "opaque" = full-canvas picture;
+    `size` (w, h) = final size (default: the 1024x1024 canvas); `reference` =
+    an image to keep as the subject. For a whole manifest use codex_generate()
+    (sets, anchors and colour lock only exist there)."""
+    w, h = (int(size[0]), int(size[1])) if size else (1024, 1024)
+    work = Path(tempfile.mkdtemp(prefix='wcx'))     # short path: long ones break Codex on Windows
+    try:
+        asset = {'name': 'image', 'size': [w, h], 'prompt': str(prompt), 'background': background,
+                 'key': key, 'alpha': 'binary'}
+        if reference:
+            asset['subject_ref'] = str(Path(reference).resolve())
+        spec = work / 'art.json'
+        spec.write_text(json.dumps({'project': 'genimg', 'workspace': 'ws', 'assets': [asset]}, indent=1),
+                        encoding='utf-8')
+        if run_art('gen', spec) != 0:
+            raise ImageGenError('codex drew no image (see the art.py output above)')
+        if run_art('process', spec) != 0:
+            raise ImageGenError('art.py process failed on the codex image')
+        out = work / 'ws' / 'final' / 'image.png'
+        if not out.is_file():
+            raise ImageGenError(f'art.py produced no {out.name}')
+        with Image.open(out) as im:
+            im.load()
+            return im.copy()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 # --------------------------------------------------------------------------
@@ -462,7 +679,28 @@ class SDA1111Provider(ImageProvider):
         self._validated_get(f'{self.base_url}/sdapi/v1/sd-models')
 
 
+class CodexProvider(ImageProvider):
+    """Codex CLI on the user's ChatGPT subscription: no key, nothing billed
+    per call, the strongest model at maximum effort (cube_art-director's
+    art_codex.py picks it). Drawing goes through art.py (codex_draw /
+    codex_generate), never through HTTP."""
+
+    def generate(self, prompt, *, reference=None):
+        return codex_draw(prompt, reference=reference)
+
+    def validate(self) -> None:
+        exe = self.config.cli or find_codex_cli()
+        if not exe:
+            raise ProviderValidationError(
+                'codex CLI not found: install the Codex CLI and run `codex login` with the ChatGPT account')
+        ok, info = codex_login_status(exe, use_cache=False)
+        if not ok:
+            raise ProviderValidationError(
+                f'codex is not logged in with ChatGPT ({info}): the user runs `codex login` themselves')
+
+
 PROVIDERS = {
+    CODEX_PROVIDER: CodexProvider,
     'openrouter': OpenRouterProvider,
     'openai': OpenAIProvider,
     'xai': XAIProvider,

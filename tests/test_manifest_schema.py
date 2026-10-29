@@ -147,10 +147,31 @@ def test_duplicate_sound_names_rejected(tmp_manifest):
 def test_sound_duration_over_cap_rejected(tmp_manifest):
     data = {
         "game": "demo", "schema_version": 1, "sprites": [],
-        "sounds": [{"name": "s", "description": "d", "duration_ms": 2001}],
+        "sounds": [{"name": "s", "description": "d", "duration_ms": 600_001}],
     }
     errors = validate(load_manifest(tmp_manifest(data)))
     assert any("duration" in e.lower() for e in errors)
+
+
+def test_long_music_loop_accepted(tmp_manifest):
+    # the engine streams sounds (no 2 s / 64 KB cap since octavios dev 2026-09)
+    data = {
+        "game": "demo", "schema_version": 1, "sprites": [],
+        "sounds": [{"name": "music_loop", "description": "d", "duration_ms": 15465,
+                    "event_type": "music"}],
+    }
+    assert validate(load_manifest(tmp_manifest(data))) == []
+
+
+def test_asset_name_longer_than_23_chars_rejected(tmp_manifest):
+    data = {
+        "game": "demo", "schema_version": 1,
+        "sprites": [{"name": "zombie_normal_attack_hurt_00", "size": [10, 10],
+                     "description": "d", "gen_prompt": "p"}],
+        "sounds": [],
+    }
+    errors = validate(load_manifest(tmp_manifest(data)))
+    assert any("23" in e for e in errors)
 
 
 # ── Animation sequence ─────────────────────────────────────────────────

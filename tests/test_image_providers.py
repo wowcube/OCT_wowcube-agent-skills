@@ -2,7 +2,9 @@
 
 No live network anywhere: every provider test monkeypatches
 `image_providers.requests` with fakes and asserts request assembly +
-response parsing against canned JSON.
+response parsing against canned JSON. Codex detection is switched off here
+(these tests cover the key chain); the codex step has its own module,
+tests/test_codex_provider.py, and no test ever runs a real Codex CLI.
 """
 from __future__ import annotations
 
@@ -40,6 +42,25 @@ class FakeResponse:
         if self.status_code >= 400:
             import requests
             raise requests.exceptions.HTTPError(f"{self.status_code} error")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_codex(monkeypatch):
+    """The codex step is skipped (WOWCUBE_NO_CODEX) and the module's
+    subprocess seam fails loudly, so a logged-in Codex on the test machine can
+    neither change the chain under test nor be launched. These tests cover
+    the key chain AS OPTED IN (WOWCUBE_ALLOW_PAID_IMAGES=1); the opt-in
+    itself is tested in tests/test_paid_opt_in.py."""
+    monkeypatch.setenv(ip.NO_CODEX_ENV, "1")
+    monkeypatch.setenv(ip.ALLOW_PAID_ENV, "1")
+
+    def _guard(argv, **kwargs):
+        raise AssertionError(f"unexpected subprocess in a key-chain test: {argv}")
+
+    monkeypatch.setattr(ip, "_run", _guard)
+    ip._codex_login_cache.clear()
+    yield
+    ip._codex_login_cache.clear()
 
 
 @pytest.fixture

@@ -1,7 +1,7 @@
 """Pivot parity with the legacy ``psd.exe`` + ``utils.exe`` chain.
 
 Reverse-engineered rule (verified against the whole OCT_get_started corpus —
-450/450 packed sprites, see ``docs/superpowers/plans/2026-08-05-part3-python-parity.md``):
+450/450 packed sprites, see ``docs/history/plans/2026-08-05-part3-python-parity.md``):
 
   * ``psd.exe`` reads the PSD's ``~pivot``/``~pivots`` layer and treats every
     4-connected blob of non-transparent pixels as one marker.  A sprite layer

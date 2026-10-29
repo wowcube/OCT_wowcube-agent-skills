@@ -1,21 +1,33 @@
-"""Deterministic WAV placeholder generator for cube_asset-builder.
+"""Placeholder sounds for cube_asset-builder (the FALLBACK, not the default).
 
-Synthesises short audio clips with numpy and writes them straight out as
-mono PCM16 WAV files. No external encoder is involved, so the same manifest
+Real games ship real recordings: CC0 sources the user approved, layered and
+mastered by `scripts/sound_kit.py build` (music loops: `sound_kit.py loop`)
+into `<workspace>/wav/assets/<name>.mp3`. This module only fills the gaps
+with synthesised beeps so that every manifest sound exists (a missing name
+makes `SND_getAssetId` fail on the cube) until the real one is built.
+
+Synthesises audio clips with numpy and writes them straight out as mono
+PCM16 WAV files. No external encoder is involved, so the same manifest
 deterministically produces byte-identical output across runs and platforms.
 
 Optionally (`encode_mp3=True` / CLI default, opt out with `--no-mp3`) each
-WAV is additionally encoded to the exact mp3 format the octavios beta engine
+WAV is additionally encoded to the exact mp3 format the octavios engine
 decodes -- 22050 Hz mono CBR 32k, no Xing header, no metadata -- into a
-sibling `assets/` dir, mirroring the octavios/CMakeLists.txt pack target.
-That step shells out to ffmpeg and is unavailable if ffmpeg isn't installed;
-the WAV-only path never touches ffmpeg.
+sibling `assets/` dir. That step shells out to ffmpeg and is unavailable if
+ffmpeg isn't installed; the WAV-only path never touches ffmpeg.
+
+A sourced sound is never overwritten: every placeholder mp3 written here is
+recorded with its md5 in `<out>/placeholders.json`, and an mp3 in
+`<out>/assets/` that is not a recorded placeholder (built by sound_kit,
+dropped in by the user) is kept and skipped. Delete it to get a placeholder
+back.
 """
 from __future__ import annotations
 
 import argparse
 import hashlib
 import io
+import json
 import shutil
 import subprocess
 import sys
@@ -266,11 +278,38 @@ def encode_beta_mp3(wav_path: Path, assets_dir: Path) -> Path:
     return out
 
 
+PLACEHOLDERS_FILE = "placeholders.json"
+
+
+def _md5_file(path: Path) -> str:
+    return hashlib.md5(Path(path).read_bytes()).hexdigest()
+
+
+def _load_placeholders(out_dir: Path) -> dict[str, str]:
+    """{asset name: md5 of the placeholder mp3 written for it}."""
+    f = out_dir / PLACEHOLDERS_FILE
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def is_sourced(out_dir: Path, asset: str, placeholders: dict[str, str] | None = None) -> bool:
+    """True when `<out_dir>/assets/<asset>.mp3` exists and is NOT a placeholder
+    this module wrote (a sound_kit build, a user's file): keep it."""
+    mp3 = Path(out_dir) / "assets" / f"{asset}.mp3"
+    if not mp3.is_file():
+        return False
+    placeholders = _load_placeholders(Path(out_dir)) if placeholders is None else placeholders
+    return placeholders.get(asset) != _md5_file(mp3)
+
+
 def generate(
     manifest: Manifest, out_dir: Path, *, group: str | None = None,
-    encode_mp3: bool = False,
+    encode_mp3: bool = False, kept: list[str] | None = None,
 ) -> list[Path]:
-    """Generate WAVs for every sound in `manifest` to `out_dir`.
+    """Generate placeholder WAVs for every sound in `manifest` to `out_dir`.
 
     If `group` is given, only sounds whose derived/explicit group matches
     are regenerated.
@@ -279,51 +318,95 @@ def generate(
     `encode_beta_mp3` into `out_dir/assets/<name>.mp3` (requires ffmpeg;
     raises RuntimeError with a clear message if it's missing). Defaults to
     False so plain WAV generation (e.g. in tests) never requires ffmpeg.
-    The returned list contains only the WAV paths, unchanged either way.
+    The returned list contains only the WAV paths written.
 
-    WAV filenames use `sound_asset_name(snd.name)`, so the WAV, the mp3 and
-    the `SND_` id the packer emits all carry one name. Manifest names are
-    already `[a-z0-9_]+`, which normalises to itself, so this is a no-op for
-    every valid manifest bar a leading-digit name. Two sounds that would
-    normalise to the same asset name raise ValueError.
+    Sounds whose mp3 in `out_dir/assets/` is sourced (not a recorded
+    placeholder, see is_sourced) are skipped: no WAV, no mp3, their asset
+    name appended to `kept` when a list is passed.
+
+    The WAV, the mp3 and the `SND_` id the packer emits all carry the
+    MANIFEST name, verbatim: the game looks a sound up by that exact name
+    (`SND_getAssetId("catch")`), so it is never renamed here. A manifest name
+    that is not a legal asset name (it must start with a letter, see
+    manifest_schema.NAME_RE) raises ValueError instead of being silently
+    rewritten (a leading digit used to become "s_<name>", which broke the
+    exact-name lookup).
     """
     out_dir = Path(out_dir)
+    bad = [(s.name, why) for s in manifest.sounds
+           if (why := sound_asset_name_problem(s.name)) is not None or s.name != s.name.lower()]
+    if bad:
+        detail = "; ".join(f"{name!r}: {why or 'upper-case letters'}" for name, why in bad)
+        raise ValueError(
+            f"manifest sound name(s) are not legal asset names ({detail}) - rename them in the manifest "
+            f"([a-z][a-z0-9_]*): the game looks sounds up by the exact manifest name, so they are never "
+            f"renamed here")
+    dupes = sorted({s.name for s in manifest.sounds
+                    if sum(1 for o in manifest.sounds if o.name == s.name) > 1})
+    if dupes:
+        raise ValueError(f"duplicate manifest sound name(s) {', '.join(dupes)} - each sound needs its own "
+                         f"name (one mp3, one SND_ id)")
     out_dir.mkdir(parents=True, exist_ok=True)
-    asset_names = resolve_sound_asset_names(s.name for s in manifest.sounds)
+    asset_names = {s.name: s.name for s in manifest.sounds}
+    placeholders = _load_placeholders(out_dir)
+    changed = False
     written: list[Path] = []
     for snd in manifest.sounds:
         grp = _derived_group(snd)
         if group is not None and grp != group:
             continue
+        asset = asset_names[snd.name]
+        if is_sourced(out_dir, asset, placeholders):
+            if kept is not None:
+                kept.append(asset)
+            if placeholders.pop(asset, None) is not None:
+                changed = True
+            continue
         wav_bytes = render_wav_bytes(
             group=grp, name=snd.name, event_type=snd.event_type,
             duration_ms=snd.duration_ms,
         )
-        target = out_dir / f"{asset_names[snd.name]}.wav"
+        target = out_dir / f"{asset}.wav"
         _write_wav(wav_bytes, target)
         written.append(target)
         if encode_mp3:
-            encode_beta_mp3(target, out_dir / "assets")
+            mp3 = encode_beta_mp3(target, out_dir / "assets")
+            if mp3 is not None and Path(mp3).is_file():
+                placeholders[asset] = _md5_file(Path(mp3))
+                changed = True
+    if changed:
+        (out_dir / PLACEHOLDERS_FILE).write_text(json.dumps(placeholders, indent=1, sort_keys=True),
+                                                  encoding="utf-8")
     return written
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="Generate placeholder WAVs from an asset manifest.")
-    p.add_argument("manifest", help="Path to <game>_assets.json")
-    p.add_argument("--out", default="assets/wav", help="Output directory (default: assets/wav)")
+    p = argparse.ArgumentParser(description="Generate placeholder WAVs (+ engine mp3s) from an asset "
+                                            "manifest; sourced mp3s already in <out>/assets are kept.")
+    p.add_argument("manifest", help="Path to plans/<game>_assets.json")
+    p.add_argument("--out", default=None,
+                   help="Output directory (default: assets_<game>/wav next to plans/)")
     p.add_argument("--group", default=None, help="Regenerate only this group")
     p.add_argument("--no-mp3", action="store_true",
                     help="Skip beta mp3 encoding (WAV only; no ffmpeg required)")
     args = p.parse_args(argv)
 
     m = load_manifest(args.manifest)
+    if args.out:
+        out = Path(args.out)
+    else:
+        mp = Path(args.manifest).resolve()
+        root = mp.parent.parent if mp.parent.name == "plans" else mp.parent
+        out = root / f"assets_{m.game}" / "wav"
+    kept: list[str] = []
     try:
-        written = generate(m, Path(args.out), group=args.group, encode_mp3=not args.no_mp3)
+        written = generate(m, out, group=args.group, encode_mp3=not args.no_mp3, kept=kept)
     except RuntimeError as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
-    suffix = "" if args.no_mp3 else f" (+ mp3 -> {Path(args.out) / 'assets'})"
-    print(f"gen_sounds: wrote {len(written)} WAV(s) to {args.out}{suffix}")
+    suffix = "" if args.no_mp3 else f" (+ mp3 -> {out / 'assets'})"
+    print(f"gen_sounds: wrote {len(written)} placeholder WAV(s) to {out}{suffix}"
+          + (f"; kept {len(kept)} sourced sound(s): {', '.join(kept)}" if kept else ""))
     return 0
 
 

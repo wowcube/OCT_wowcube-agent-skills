@@ -250,6 +250,70 @@ def test_detect_pipeline_shape_multiple_manifests_rejected(tmp_path):
         detect_pack_command(app)
 
 
+# ── per-game workspace next to the app (current asset stage) ───────────────
+
+def make_root_workspace_app(root: Path, game: str = "demo") -> Path:
+    """<root>/plans/<game>_assets.json + <root>/assets_<game>/art/*.png + <root>/app_<game>/."""
+    app = make_app(root, f"app_{game}", icon=True, psd=True)
+    (root / "plans").mkdir()
+    (root / "plans" / f"{game}_assets.json").write_text(json.dumps(
+        {"game": game, "schema_version": 1, "sprites": [PAL_SPRITE], "sounds": []}), encoding="utf-8")
+    (root / f"assets_{game}" / "art").mkdir(parents=True)
+    (root / f"assets_{game}" / "art" / "coin.png").write_bytes(b"\x89PNG-fake")
+    return app
+
+
+def test_detect_assets_game_workspace_reruns_root_pack(tmp_path):
+    """cube_asset-builder packs from <root> with --workspace assets_<game>: repack must do the same."""
+    app = make_root_workspace_app(tmp_path)
+    cmd, cwd = detect_pack_command(app)
+    assert cwd == tmp_path.resolve()
+    assert cmd[1].endswith("build_pipeline.py") and cmd[2] == "pack"
+    assert cmd[cmd.index("--game") + 1] == "demo"
+    assert cmd[cmd.index("--workspace") + 1] == str(tmp_path.resolve() / "assets_demo")
+    assert cmd[cmd.index("--src-dir") + 1] == str(app.resolve() / "src")
+    assert cmd[cmd.index("--app-dir") + 1] == str(app.resolve())
+    assert cmd[cmd.index("--manifest") + 1] == str(tmp_path.resolve() / "plans" / "demo_assets.json")
+    assert cmd[cmd.index("--icon") + 1] == str(app.resolve() / "art" / "icon.png")
+
+
+def test_detect_root_plans_manifest_without_workspace(tmp_path):
+    """No PNG workspace: the scaffold pack.py call still finds <root>/plans/<game>_assets.json."""
+    app = make_root_workspace_app(tmp_path)
+    for p in (tmp_path / "assets_demo" / "art").glob("*.png"):
+        p.unlink()
+    cmd, cwd = detect_pack_command(app)
+    assert cmd[1].endswith("pack.py") and cwd == app.resolve()
+    assert cmd[cmd.index("--manifest") + 1] == str(tmp_path.resolve() / "plans" / "demo_assets.json")
+
+
+def test_build_device_command_forwards_out_and_builder(tmp_path):
+    out = tmp_path / "dist" / "app_demo.oct"
+    cmd = repack_app.build_device_command(tmp_path / "app_demo", "C:/sdk/octavios", out, "python")
+    assert any("build_device" in c for c in cmd)
+    flag_out, flag_builder = ("-Out", "-Builder") if sys.platform == "win32" else ("--out", "--builder")
+    assert cmd[cmd.index(flag_out) + 1] == str(out)
+    assert cmd[cmd.index(flag_builder) + 1] == "python"
+    assert flag_builder not in repack_app.build_device_command(tmp_path / "app_demo")
+
+
+def test_ensure_art_fonts_stages_bmfonts_for_pack_py(tmp_path):
+    """pack.py exports glyphs only from art/fonts/: a scaffold keeps fonts in art/ (template report 4c)."""
+    app = make_app(tmp_path)
+    (app / "art" / "font_1.fnt").write_bytes(b"BMF\x03fake")
+    (app / "art" / "font_1_0.png").write_bytes(b"\x89PNG-fake")
+    (app / "art" / "icon.png").write_bytes(b"\x89PNG-icon")
+    assert repack_app.ensure_art_fonts(app) == 2
+    assert sorted(p.name for p in (app / "art" / "fonts").iterdir()) == ["font_1.fnt", "font_1_0.png"]
+    assert repack_app.ensure_art_fonts(app) == 0          # idempotent
+    assert repack_app.ensure_art_fonts(make_app(tmp_path, "app_nofonts")) == 0
+
+
+def test_default_oct_path_is_workspace_dist(tmp_path):
+    app = make_app(tmp_path)
+    assert repack_app.default_oct_path(app) == tmp_path.resolve() / "dist" / "app_demo.oct"
+
+
 # ── CLI stage order (mocked subprocess) ─────────────────────────────────────
 
 @pytest.fixture
@@ -277,6 +341,29 @@ def test_cli_full_cycle_order(tmp_path, run_recorder):
     # version bumped between pack and device build
     assert "#define APP_VERSION 101" in (app / "src" / "app.h").read_text(
         encoding="utf-8")
+
+
+def test_cli_device_build_targets_workspace_dist(tmp_path, run_recorder, capsys):
+    """The deliverable goes to <workspace>/dist/, never <app>/<app>.oct (a sim rewrites that one)."""
+    app = make_app(tmp_path, sprites=[FULL_SPRITE], icon=True)
+    assert _cli(["--app-dir", str(app)]) == 0
+    dev_cmd, _ = run_recorder[1]
+    expected = str(tmp_path.resolve() / "dist" / "app_demo.oct")
+    assert expected in dev_cmd
+    assert expected in capsys.readouterr().out
+
+
+def test_cli_semver_metadata_bump(tmp_path, run_recorder, capsys):
+    """octavios dev layout: the patch field in app_metadata.h is bumped, reported as major.minor.patch."""
+    app = make_app(tmp_path, sprites=[FULL_SPRITE])
+    (app / "src" / "app_metadata.h").write_text(
+        "#define APP_VERSION_MAJOR 1\n#define APP_VERSION_MINOR 2\n#define APP_VERSION_PATCH 3\n"
+        "#define APP_VERSION OCT_APP_SEMVER(APP_VERSION_MAJOR, APP_VERSION_MINOR, APP_VERSION_PATCH)\n",
+        encoding="utf-8")
+    (app / "src" / "app.h").write_text('#include "app_metadata.h"\n', encoding="utf-8")
+    assert _cli(["--app-dir", str(app), "--skip-device"]) == 0
+    assert "#define APP_VERSION_PATCH 4" in (app / "src" / "app_metadata.h").read_text(encoding="utf-8")
+    assert "1.2.4" in capsys.readouterr().out
 
 
 def test_cli_skip_device(tmp_path, run_recorder):

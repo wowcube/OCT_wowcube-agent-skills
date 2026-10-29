@@ -1,17 +1,63 @@
 """Tests for build_pipeline.py.
 
 Sprite generation is stubbed offline via the `stub_ai` fixture (no real
-OpenRouter call). Heavy integration (pack stage) runs only when pytoshop AND
-psd-tools are importable; otherwise those tests skip.
+OpenRouter call); the Codex path is faked at `image_providers.codex_generate`
+and Codex detection is switched off for every test here, so a logged-in Codex
+on the test machine is never launched. Heavy integration (pack stage) runs
+only when pytoshop AND psd-tools are importable; otherwise those tests skip.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
 
+import image_providers
 from build_pipeline import find_script, _cli
+
+
+@pytest.fixture(autouse=True)
+def _no_real_codex(monkeypatch):
+    monkeypatch.setenv(image_providers.NO_CODEX_ENV, "1")
+
+    def _guard(argv, **kwargs):
+        raise AssertionError(f"unexpected subprocess (Codex/art.py) in a pipeline test: {argv}")
+
+    monkeypatch.setattr(image_providers, "_run", _guard)
+    image_providers._codex_login_cache.clear()
+
+
+@pytest.fixture
+def codex_provider(monkeypatch):
+    """Resolve the codex provider and fake the art.py delegation: the fake
+    writes one final PNG per selected sprite into <workspace>/art and records
+    every call. genimg must never be reached on this path."""
+    import genimg
+    from PIL import Image
+
+    from manifest_schema import load_manifest
+
+    monkeypatch.setattr(image_providers, "resolve_provider",
+                        lambda: image_providers.ProviderConfig(provider="codex", cli="codex"))
+    calls: list[dict] = []
+
+    def _fake_generate(manifest_path, workspace, *, only=None, force=False, jobs=None):
+        calls.append({"manifest": Path(manifest_path), "workspace": Path(workspace),
+                      "only": only, "force": force, "jobs": jobs})
+        art = Path(workspace) / "art"
+        art.mkdir(parents=True, exist_ok=True)
+        for s in load_manifest(manifest_path).sprites:
+            if only is None or s.name in only:
+                Image.new("RGBA", tuple(s.size), (0, 0, 0, 0)).save(art / f"{s.name}.png")
+
+    def _no_genimg(*a, **k):
+        raise AssertionError("the codex path must not call genimg per sprite")
+
+    monkeypatch.setattr(image_providers, "codex_generate", _fake_generate)
+    monkeypatch.setattr(genimg, "generate_image", _no_genimg)
+    return calls
 
 
 def _deps_available() -> bool:
@@ -270,6 +316,19 @@ def test_acceptance_criteria_e2e(tmp_path, tmp_manifest, stub_ai, stub_ffmpeg):
     assert wav_hashes_1 == wav_hashes_2
 
 
+def _writes_pal(workspace: Path, inner=None):
+    """A fake `_run` for the pack stage: like the real pack.py, the pack.py
+    call (re)creates <ws>/packed/pal.png - the stage clears <ws>/packed
+    before it runs, so a pre-seeded one does not survive."""
+    def fake(cmd, cwd=None):
+        cmd = [str(c) for c in cmd]
+        if any(c.endswith("pack.py") for c in cmd):
+            (workspace / "packed").mkdir(parents=True, exist_ok=True)
+            (workspace / "packed" / "pal.png").write_bytes(b"x")
+        return inner(cmd, cwd) if inner else 0
+    return fake
+
+
 def test_pack_copies_beta_mp3s_to_app_dir(tmp_path, monkeypatch):
     """With --app-dir, the pack stage carries <workspace>/wav/assets/*.mp3 to
     <app_dir>/sound/assets/ BEFORE invoking pack.py, so emit_beta_layout's
@@ -300,7 +359,7 @@ def test_pack_copies_beta_mp3s_to_app_dir(tmp_path, monkeypatch):
                 (app_dir / "sound" / "assets" / "blip.mp3").is_file())
         return 0
 
-    monkeypatch.setattr(build_pipeline, "_run", fake_run)
+    monkeypatch.setattr(build_pipeline, "_run", _writes_pal(workspace, fake_run))
 
     rc = build_pipeline._cli([
         "pack", "--game", "tiny",
@@ -313,6 +372,49 @@ def test_pack_copies_beta_mp3s_to_app_dir(tmp_path, monkeypatch):
     assert copied.read_bytes() == b"fake-beta-mp3:blip"
     # the copy happened before pack.py was invoked, not after
     assert mp3_present_at_pack == [True]
+
+
+def test_pack_moves_mp3s_not_in_the_manifest_out_of_sound_assets(tmp_path, monkeypatch, capsys):
+    """The scaffold leaves the template's demo mp3s in sound/assets and every packer ships whatever lies there:
+    with a manifest the pack stage moves the extras to sound/unused/ (read by no packer) before pack.py runs."""
+    import json
+    import build_pipeline
+    from PIL import Image
+
+    workspace = tmp_path / "assets"
+    (workspace / "art").mkdir(parents=True)
+    Image.new("RGBA", (8, 8), (1, 2, 3, 255)).save(workspace / "art" / "coin.png")
+    (workspace / "wav" / "assets").mkdir(parents=True)
+    (workspace / "wav" / "assets" / "sfx_coin.mp3").write_bytes(b"game")
+    (workspace / "app_tiny_ids.h").write_text("enum BMP { BMP_none = 0, BMP_last};")
+    app_dir = tmp_path / "app_tiny"
+    (app_dir / "src").mkdir(parents=True)
+    (app_dir / "src" / "app_tiny_ids.h").write_text("enum BMP { BMP_none = 0, BMP_last};")
+    (app_dir / "sound" / "assets").mkdir(parents=True)
+    for n in ("digit_merge0", "digit_merge1"):
+        (app_dir / "sound" / "assets" / f"{n}.mp3").write_bytes(b"template")
+    manifest = tmp_path / "tiny_assets.json"
+    manifest.write_text(json.dumps({
+        "game": "tiny", "schema_version": 1,
+        "sprites": [{"name": "coin", "size": [8, 8], "description": "coin", "gen_prompt": "a coin",
+                     "background": "key"}],
+        "sounds": [{"name": "sfx_coin", "description": "beep", "duration_ms": 200, "event_type": "pickup"}],
+    }), encoding="utf-8")
+    at_pack: list[list[str]] = []
+
+    def fake_run(cmd, cwd=None):
+        if "--beta-app-dir" in cmd:
+            at_pack.append(sorted(p.name for p in (app_dir / "sound" / "assets").glob("*.mp3")))
+        return 0
+
+    monkeypatch.setattr(build_pipeline, "_run", _writes_pal(workspace, fake_run))
+    rc = build_pipeline._cli(["pack", "--game", "tiny", "--workspace", str(workspace),
+                              "--src-dir", str(tmp_path / "src"), "--app-dir", str(app_dir),
+                              "--manifest", str(manifest)])
+    assert rc == 0
+    assert at_pack == [["sfx_coin.mp3"]]
+    assert sorted(p.name for p in (app_dir / "sound" / "unused").iterdir()) == ["digit_merge0.mp3", "digit_merge1.mp3"]
+    assert "not in the manifest" in capsys.readouterr().err
 
 
 def test_pack_without_mp3s_still_passes_beta_args(tmp_path, monkeypatch):
@@ -333,8 +435,8 @@ def test_pack_without_mp3s_still_passes_beta_args(tmp_path, monkeypatch):
         "enum BMP { BMP_none = 0, BMP_last};")
 
     calls: list[list[str]] = []
-    monkeypatch.setattr(build_pipeline, "_run",
-                        lambda cmd, cwd=None: (calls.append([str(c) for c in cmd]), 0)[1])
+    monkeypatch.setattr(build_pipeline, "_run", _writes_pal(
+        workspace, lambda cmd, cwd=None: (calls.append([str(c) for c in cmd]), 0)[1]))
 
     rc = build_pipeline._cli([
         "pack", "--game", "tiny",
@@ -367,8 +469,8 @@ def test_pack_forwards_icon_to_pack_py(tmp_path, monkeypatch):
     Image.new("RGB", (8, 8), (9, 9, 9)).save(icon)
 
     calls: list[list[str]] = []
-    monkeypatch.setattr(build_pipeline, "_run",
-                        lambda cmd, cwd=None: (calls.append([str(c) for c in cmd]), 0)[1])
+    monkeypatch.setattr(build_pipeline, "_run", _writes_pal(
+        workspace, lambda cmd, cwd=None: (calls.append([str(c) for c in cmd]), 0)[1]))
 
     rc = build_pipeline._cli([
         "pack", "--game", "tiny",
@@ -404,7 +506,7 @@ def test_pack_app_dir_keeps_beta_ids_header(tmp_path, monkeypatch):
                  "enum SND { SND_none = 0, SND_blip = 40, SND_last};\n")
     (app_dir / "src" / "app_tiny_ids.h").write_text(beta_text)
 
-    monkeypatch.setattr(build_pipeline, "_run", lambda cmd, cwd=None: 0)
+    monkeypatch.setattr(build_pipeline, "_run", _writes_pal(workspace))
 
     src_dir = tmp_path / "other_src"
     rc = build_pipeline._cli([
@@ -426,3 +528,109 @@ def test_pack_app_dir_keeps_beta_ids_header(tmp_path, monkeypatch):
     ])
     assert rc == 0
     assert (app_dir / "src" / "app_tiny_ids.h").read_text() == beta_text
+
+
+# ── Codex provider: generate delegates to cube_art-director's art.py ─────────
+
+def _plans_manifest(tmp_path: Path, data: dict) -> Path:
+    p = tmp_path / "plans" / f"{data['game']}_assets.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(data), encoding="utf-8")
+    return p
+
+
+def test_generate_codex_delegates_to_art_director(tmp_path, minimal_manifest, codex_provider,
+                                                  stub_ffmpeg, capsys):
+    manifest = _plans_manifest(tmp_path, minimal_manifest)
+    ws = tmp_path / "assets_demo"
+    rc = _cli(["generate", "--manifest", str(manifest), "--workspace", str(ws)])
+    assert rc == 0
+    assert codex_provider == [{"manifest": manifest, "workspace": ws, "only": None,
+                               "force": False, "jobs": 3}]
+    assert (ws / "art" / "coin.png").exists()
+    # sounds still get placeholders on the codex path
+    assert (ws / "wav" / "sfx_coin.wav").exists()
+    assert (ws / "wav" / "assets" / "sfx_coin.mp3").exists()
+    out = capsys.readouterr().out
+    assert "codex via art.py" in out and "art.py qa" in out
+
+
+def test_generate_codex_default_workspace_is_assets_game(tmp_path, minimal_manifest,
+                                                         codex_provider, no_ffmpeg):
+    """No --workspace: the per-game folder next to plans/ that art.py also uses
+    (never a shared assets/ folder)."""
+    manifest = _plans_manifest(tmp_path, minimal_manifest)
+    assert _cli(["generate", "--manifest", str(manifest)]) == 0
+    assert codex_provider[0]["workspace"] == (tmp_path / "assets_demo").resolve()
+    assert (tmp_path / "assets_demo" / "wav" / "sfx_coin.wav").exists()
+    assert not (tmp_path / "assets").exists()
+
+
+def test_generate_codex_group_force_jobs_and_seeded_refs(tmp_path, animation_manifest,
+                                                         codex_provider, no_ffmpeg):
+    data = dict(animation_manifest)
+    data["sprites"] = animation_manifest["sprites"] + [
+        {"name": "coin", "size": [16, 16], "description": "coin", "gen_prompt": "a coin",
+         "group": "pickup"}]
+    manifest = _plans_manifest(tmp_path, data)
+    ws = tmp_path / "assets_demo"
+    rc = _cli(["generate", "--manifest", str(manifest), "--workspace", str(ws),
+               "--group", "hero", "--force", "--jobs", "5"])
+    assert rc == 0
+    call = codex_provider[0]
+    assert call["only"] == ["hero_idle_00", "hero_idle_01", "hero_idle_02"]
+    assert call["force"] is True and call["jobs"] == 5
+    fixes = json.loads((ws / "fixes.json").read_text(encoding="utf-8"))
+    assert fixes == {"hero_idle_01": {"text": "", "ref": "hero_idle_00"},
+                     "hero_idle_02": {"text": "", "ref": "hero_idle_00"}}
+
+
+def test_generate_codex_failure_is_exit_6(tmp_path, minimal_manifest, codex_provider,
+                                          monkeypatch, capsys):
+    def _fail(*a, **k):
+        raise image_providers.ImageGenError("art.py gen failed (exit 1/0)")
+
+    monkeypatch.setattr(image_providers, "codex_generate", _fail)
+    manifest = _plans_manifest(tmp_path, minimal_manifest)
+    rc = _cli(["generate", "--manifest", str(manifest), "--workspace", str(tmp_path / "ws")])
+    assert rc == 6
+    assert "art.py gen failed" in capsys.readouterr().err
+
+
+def test_generate_keeps_a_sourced_sound(tmp_path, minimal_manifest, codex_provider,
+                                        stub_ffmpeg, capsys):
+    """A real recording built by sound_kit (or dropped in by the user) in
+    <ws>/wav/assets is never replaced by a synthesised placeholder."""
+    manifest = _plans_manifest(tmp_path, minimal_manifest)
+    ws = tmp_path / "assets_demo"
+    real = ws / "wav" / "assets" / "sfx_coin.mp3"
+    real.parent.mkdir(parents=True)
+    real.write_bytes(b"real CC0 recording")
+    assert _cli(["generate", "--manifest", str(manifest), "--workspace", str(ws)]) == 0
+    assert real.read_bytes() == b"real CC0 recording"
+    assert not (ws / "wav" / "sfx_coin.wav").exists()
+    assert "1 sourced sound(s) kept" in capsys.readouterr().out
+
+
+def test_generate_api_path_prefixes_the_manifest_style(tmp_path, minimal_manifest,
+                                                       monkeypatch, no_ffmpeg):
+    """Paid-API fallback: the per-game `_style` goes in front of every
+    gen_prompt (art.py does that from STYLE.md on the Codex path)."""
+    import genimg
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv(image_providers.ALLOW_PAID_ENV, "1")    # the paid fallback is opt-in
+    prompts: list[str] = []
+
+    def _fake(prompt, out_path, *, size=None, reference=None, cutout=False):
+        from PIL import Image
+        prompts.append(prompt)
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        Image.new("RGBA", tuple(size)).save(out_path)
+        return Path(out_path)
+
+    monkeypatch.setattr(genimg, "generate_image", _fake)
+    data = dict(minimal_manifest, _style="Style: flat vector, thick outlines.")
+    manifest = _plans_manifest(tmp_path, data)
+    assert _cli(["generate", "--manifest", str(manifest), "--workspace", str(tmp_path / "ws")]) == 0
+    assert prompts and prompts[0].startswith("Style: flat vector, thick outlines.")

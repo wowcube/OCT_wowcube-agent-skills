@@ -352,3 +352,40 @@ def test_cli_error_is_clean_failure(app):
                          "--out", str(app / "pack" / "cli.oct"),
                          "--title", "T", "--guid", "0x1", "--version", "1"])
     assert rc != 0
+
+
+# ── save area (octavios dev: octPackHeader_t.SaveSize at offset 184) ─────────
+
+def test_save_size_defaults_to_zero(app):
+    blob = built(app)
+    assert struct.unpack_from("<I", blob, 184)[0] == 0
+
+
+def test_save_size_read_from_app_save_static_assert(app):
+    src = app / "src"
+    src.mkdir(exist_ok=True)
+    (src / "app.h").write_text('#pragma once\n#include "app_metadata.h"\n#include "app_tiny.h"\n'
+                               '#define APP_DIR "../../app_tiny"\n', encoding="utf-8")
+    (src / "app_metadata.h").write_text(
+        '#pragma once\n#include "oct_app_version.h"\n#define APP_VERSION_MAJOR 0\n#define APP_VERSION_MINOR 1\n'
+        '#define APP_VERSION_PATCH 0\n#define APP_VERSION OCT_APP_SEMVER(APP_VERSION_MAJOR, APP_VERSION_MINOR, '
+        'APP_VERSION_PATCH)\n#define APP_GUID1 0x1122334455667788ULL\n#define APP_TITLE "Tiny"\n'
+        '#define APP_CATEGORIES (APP_CATEGORY_GAME)\n#define APP_COLORS 0\n#include "app_save.h"\n', encoding="utf-8")
+    (src / "app_save.h").write_text(
+        '#pragma once\ntypedef struct { unsigned magic; unsigned short version, size; unsigned best; } saveRecord_t;\n'
+        'static_assert(sizeof(saveRecord_t) == 12, "wire size");\n#define APP_SAVE_SIZE sizeof(saveRecord_t)\n',
+        encoding="utf-8")
+    out = build_oct(app, app / "out" / "app_tiny.bin", app / "pack" / "x.oct")
+    blob = out.read_bytes()
+    assert struct.unpack_from("<I", blob, 184)[0] == 12
+    assert struct.unpack_from("<I", blob, 32)[0] == (1 << 24) | (1 << 8)
+
+
+def test_save_size_needs_the_metadata_include(tmp_path):
+    # a save header included only by the game logic does not declare a save area (dev semantics)
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "app.h").write_text('#include "app_metadata.h"\n#include "game.h"\n', encoding="utf-8")
+    (src / "app_metadata.h").write_text('#define APP_GUID1 1\n#define APP_VERSION 1\n', encoding="utf-8")
+    (src / "game.h").write_text('#define APP_SAVE_SIZE 64\n', encoding="utf-8")
+    assert "save_size" not in read_app_defines(src / "app.h")

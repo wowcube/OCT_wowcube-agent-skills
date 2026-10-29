@@ -8,6 +8,7 @@ the 48-byte header.
 """
 from __future__ import annotations
 
+import json
 import struct
 import sys
 from pathlib import Path
@@ -879,24 +880,34 @@ def test_pack_py_sprite_error_exits_nonzero(tmp_path, monkeypatch):
 
 # ── build_pipeline wiring ────────────────────────────────────────────────────
 
+def _fake_pack_run(workspace, calls):
+    """Fake `_run`: records the command; the pack.py call writes the
+    <ws>/packed/pal.png the real one writes (the stage clears <ws>/packed
+    before running it, so a pre-seeded file would not survive)."""
+    def fake_run(cmd, cwd=None):
+        cmd = [str(c) for c in cmd]
+        calls.append(cmd)
+        if any(c.endswith("pack.py") for c in cmd):
+            (workspace / "packed").mkdir(parents=True, exist_ok=True)
+            (workspace / "packed" / "pal.png").write_bytes(b"x")
+        return 0
+    return fake_run
+
+
 def test_build_pipeline_passes_beta_args(tmp_path, monkeypatch):
     import build_pipeline
 
     calls: list[list[str]] = []
-
-    def fake_run(cmd, cwd=None):
-        calls.append([str(c) for c in cmd])
-        return 0
-
-    monkeypatch.setattr(build_pipeline, "_run", fake_run)
-
     workspace = tmp_path / "assets"
+    monkeypatch.setattr(build_pipeline, "_run", _fake_pack_run(workspace, calls))
+
     (workspace / "art").mkdir(parents=True)
     Image.new("RGB", (4, 4), (1, 2, 3)).save(workspace / "art" / "x.png")
-    packed = workspace / "packed"
-    packed.mkdir()
-    (packed / "pal.png").write_bytes(b"x")
     (workspace / "app_tiny_ids.h").write_text("enum BMP { BMP_none = 0, BMP_last};")
+    # the pack refuses a manifest path that does not exist (pack.py would crash on it), so write one
+    (tmp_path / "tiny_assets.json").write_text(json.dumps({
+        "game": "tiny", "schema_version": 1,
+        "sprites": [{"name": "x", "size": [4, 4], "description": "d"}], "sounds": []}), encoding="utf-8")
     # _run is faked, so pre-create the kind-aware header pack.py would emit
     (tmp_path / "app_tiny" / "src").mkdir(parents=True)
     (tmp_path / "app_tiny" / "src" / "app_tiny_ids.h").write_text(
@@ -921,19 +932,11 @@ def test_build_pipeline_omits_beta_args_without_app_dir(tmp_path, monkeypatch):
     import build_pipeline
 
     calls: list[list[str]] = []
-
-    def fake_run(cmd, cwd=None):
-        calls.append([str(c) for c in cmd])
-        return 0
-
-    monkeypatch.setattr(build_pipeline, "_run", fake_run)
-
     workspace = tmp_path / "assets"
+    monkeypatch.setattr(build_pipeline, "_run", _fake_pack_run(workspace, calls))
+
     (workspace / "art").mkdir(parents=True)
     Image.new("RGB", (4, 4), (1, 2, 3)).save(workspace / "art" / "x.png")
-    packed = workspace / "packed"
-    packed.mkdir()
-    (packed / "pal.png").write_bytes(b"x")
     (workspace / "app_tiny_ids.h").write_text("enum BMP { BMP_none = 0, BMP_last};")
 
     rc = build_pipeline._cli([

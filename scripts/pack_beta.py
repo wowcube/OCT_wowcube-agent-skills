@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import json
 import re
 import struct
 import sys
@@ -35,7 +36,13 @@ OCT_PLACE_BMP_OFFSET = 16       # octPlace_t.BmpIdx (int16), within one place
 # icon: static "ico" and the hover animation "ahover" (engine oct_shell.h).
 RESERVED_LAUNCHER_MAPS = ("ico", "ahover")
 ASSET_NAME_MAXLEN = 24          # incl. NUL, oct_consts.h OCT_ASSET_NAME_MAXLEN
-ASSETS_CAP = 2048               # oct_pack.h OCT_ASSETS_CAP
+# OCT_ASSETS_CAP, engine/oct_pack_format.h (octavios dev): every index.bin
+# record counts - sprites incl. font glyphs, palettes, maps, sounds and the
+# reserved "zero". Older firmware/SDKs (engine/oct_pack.h before the dev
+# format header) had 2048; a pack between 2049 and 5120 assets needs the dev
+# firmware on the cube.
+ASSETS_CAP = 5120
+ASSETS_CAP_OLD_FIRMWARE = 2048
 EXT_MAX_DESCS = 512             # launcher sees only the first 512 descriptors
 INDEX_RECORD = struct.Struct("<i24s")
 BMP_SIZE = 48
@@ -54,11 +61,12 @@ SOFTWARE_NAME_MAXLEN = 80       # oct_consts.h OCT_SOFTWARE_NAME_MAXLEN
 _CATEGORY_MACROS = {
     "OCT_CAT_LAUNCHER": 1 << 0, "OCT_CAT_CHARGER": 1 << 1,
     "OCT_CAT_SCREENSAVER": 1 << 2, "OCT_CAT_SYSTEM": 1 << 3,
-    "OCT_CAT_GETSTARTED": 1 << 4, "OCT_CAT_SLEEP": 1 << 5,
+    "OCT_CAT_GETSTARTED": 1 << 4, "OCT_CAT_SLEEP": 1 << 5, "OCT_CAT_TEST": 1 << 6,
     "APP_CATEGORY_GAME": 0,
     "APP_CATEGORY_LAUNCHER": 1 << 0, "APP_CATEGORY_CHARGER": 1 << 1,
     "APP_CATEGORY_SCREENSAVER": 1 << 2, "APP_CATEGORY_SYSTEM": 1 << 3,
     "APP_CATEGORY_GETSTARTED": 1 << 4, "APP_CATEGORY_SLEEP": 1 << 5,
+    "APP_CATEGORY_TEST": 1 << 6,
 }
 
 OCT_FLAG_ALPHA = 1 << 0
@@ -416,13 +424,23 @@ def rle_decode(payload, width, height):
 
 
 def build_raw565_sprite(texels: bytes, w: int, h: int, *, flags, seq=0, rate=1) -> bytes:
-    """48-byte octBmp_t + RGB565 payload; keeps RLE only when it shrinks."""
+    """48-byte octBmp_t + RGB565 payload; keeps RLE only when it shrinks.
+
+    Pivot: utils.exe stores pivots in ON-SCREEN pixels. A fullsize sprite
+    (drawn 1:1) is centred at (w-1)/2; a regular sprite is drawn x2, so its
+    centre is w-0.5 on screen. The generic (w-1)/2 default put every
+    non-fullsize full-color sprite half its size off centre (seen on a real
+    game as 2xGAP black bars across all 24 screens)."""
     flags |= OCT_FLAG_RAW565
+    if flags & OCT_FLAG_FULLSIZE:
+        pivot = ((w - 1) / 2.0, (h - 1) / 2.0)
+    else:
+        pivot = (w - 0.5, h - 0.5)
     body = rle_encode(texels, w, h)
     if len(body) >= len(texels):
-        return build_bmp_header(w=w, h=h, flags=flags, seq=seq, rate=rate,
+        return build_bmp_header(w=w, h=h, flags=flags, seq=seq, rate=rate, pivot=pivot,
                                 compression=RAW565_PLAIN) + texels
-    return build_bmp_header(w=w, h=h, flags=flags, seq=seq, rate=rate,
+    return build_bmp_header(w=w, h=h, flags=flags, seq=seq, rate=rate, pivot=pivot,
                             compression=RAW565_RLE) + body
 
 
@@ -1002,6 +1020,9 @@ def emit_beta_layout(
         raise ValueError(
             f"asset name collision in art/packed/: {', '.join(sorted(dupes))}")
     build_index_bin(records)   # validates count <= ASSETS_CAP and name lengths early
+    if len(records) > ASSETS_CAP_OLD_FIRMWARE:
+        print(f"  NOTE: {len(records)} assets - over the {ASSETS_CAP_OLD_FIRMWARE} older firmware "
+              f"accepted (OCT_ASSETS_CAP is {ASSETS_CAP} on octavios dev): the cube needs dev firmware")
 
     seq = _seq_chain(sprite_ids)
 
@@ -1313,6 +1334,27 @@ def read_app_defines(app_h: str | Path) -> dict:
     text = _app_header_text(Path(app_h))
     out: dict = {}
     func_macros = _collect_func_macros(text)
+    # octavios dev (>= 2026-08-25) versions apps through engine/oct_app_version.h:
+    # APP_VERSION OCT_APP_SEMVER(APP_VERSION_MAJOR, APP_VERSION_MINOR, APP_VERSION_PATCH),
+    # scheme byte 1 on top. The engine header is not ours to read, so mirror it here.
+    func_macros.setdefault("OCT_APP_SEMVER", (["major", "minor", "patch"],
+        "((1 << 24) | (((major) & 0xFF) << 16) | (((minor) & 0xFF) << 8) | ((patch) & 0xFF))"))
+    objects = {m.group(1): m.group(2).split("//", 1)[0].strip()
+               for m in re.finditer(r"^[ \t]*#[ \t]*define[ \t]+([A-Za-z_]\w*)[ \t]+([^\r\n(][^\r\n]*)$", text, re.M)}
+
+    def expand_objects(v: str, skip: str) -> str:
+        # APP_VERSION_MAJOR & co. are plain object-like defines in app_metadata.h
+        for _ in range(5):
+            new = re.sub(r"\b([A-Za-z_]\w*)\b",
+                         lambda m: (f"({objects[m.group(1)]})"
+                                    if m.group(1) in objects and m.group(1) != skip
+                                    and m.group(1) not in func_macros
+                                    and not m.group(1).startswith(("APP_CATEGORY_", "OCT_CAT_"))
+                                    else m.group(1)), v)
+            if new == v:
+                break
+            v = new
+        return v
 
     def value_of(name: str) -> str | None:
         m = re.search(rf"^\s*#\s*define\s+{name}\s+(.+)$", text, re.M)
@@ -1331,7 +1373,26 @@ def read_app_defines(app_h: str | Path) -> dict:
                         ("APP_CATEGORIES", "categories"), ("APP_COLORS", "colors")):
         raw = value_of(define)
         if raw is not None:
-            out[key] = _parse_int_expr(raw, define, func_macros)
+            out[key] = _parse_int_expr(expand_objects(raw, define), define, func_macros)
+
+    # Save area (octavios dev): declared ONLY through app_metadata.h's own
+    # includes (the dev packer compiles that header alone), as
+    # APP_SAVE_SIZE sizeof(<record>) with a static_assert of the wire size
+    # in app_save.h, or as a plain number. Without it the app has no save area.
+    meta = Path(app_h).parent / "app_metadata.h"
+    meta_text = _app_header_text(meta) if meta.is_file() else text
+    m = re.search(r"^\s*#\s*define\s+APP_SAVE_SIZE\s+(.+)$", meta_text, re.M)
+    if m:
+        raw = m.group(1).split("//", 1)[0].strip()
+        so = re.fullmatch(r"\(?\s*sizeof\s*\(\s*(\w+)\s*\)\s*\)?", raw)
+        if so:
+            sa = re.search(rf"static_assert\s*\(\s*sizeof\s*\(\s*{so.group(1)}\s*\)\s*==\s*(\d+)", meta_text)
+            if not sa:
+                raise ValueError(f"APP_SAVE_SIZE is sizeof({so.group(1)}) but there is no "
+                                 f"static_assert(sizeof({so.group(1)}) == N, ...) to read N from")
+            out["save_size"] = int(sa.group(1))
+        else:
+            out["save_size"] = _parse_int_expr(raw, "APP_SAVE_SIZE", func_macros)
     return out
 
 
@@ -1382,7 +1443,7 @@ def _asset_payload_path(app_dir: Path, kind: int, name: str) -> Path:
 def build_oct(app_dir: str | Path, code_bin: str | Path, out_path: str | Path,
               *, title: str | None = None, guid1: int | None = None,
               app_version: int | None = None, categories: int | None = None,
-              colors: int | None = None) -> Path:
+              colors: int | None = None, save_size: int | None = None) -> Path:
     """Assemble the cube-loadable .oct pack, byte-identical to the beta
     simulator's SIM_build_pack except BuildDateTime (the sim stamps wall-clock
     time; this builder pins 0 so the same inputs always produce the same
@@ -1414,7 +1475,7 @@ def build_oct(app_dir: str | Path, code_bin: str | Path, out_path: str | Path,
         raise ValueError(f"{index_path} claims {len(records)} assets, "
                          f"over OCT_ASSETS_CAP ({ASSETS_CAP})")
 
-    if None in (title, guid1, app_version, categories, colors):
+    if None in (title, guid1, app_version, categories, colors, save_size):
         app_h = app_dir / "src" / "app.h"
         defines = read_app_defines(app_h) if app_h.is_file() else {}
         if title is None:
@@ -1433,6 +1494,8 @@ def build_oct(app_dir: str | Path, code_bin: str | Path, out_path: str | Path,
             categories = defines.get("categories", 0)
         if colors is None:
             colors = defines.get("colors", 0)
+        if save_size is None:
+            save_size = defines.get("save_size", 0)
 
     if not code_bin.is_file():
         raise ValueError(f"ARM module not found: {code_bin} - build it first "
@@ -1488,6 +1551,9 @@ def build_oct(app_dir: str | Path, code_bin: str | Path, out_path: str | Path,
     # SoundDescs mirrors AssetDescs, SoundCount 0: one unified table, sounds
     # are found by Kind (see SIM_build_pack)
     struct.pack_into("<II", header, 156, OCT_HEADER_SIZE, 0)
+    # SaveSize (offset 184, after the 20-byte BuildId): the installer sizes the
+    # app's save area on the card from it; 0 = no save area
+    struct.pack_into("<I", header, 184, int(save_size or 0))
 
     elf_path = code_bin.with_suffix(".elf")
     if elf_path.is_file():
@@ -1508,17 +1574,247 @@ def build_oct(app_dir: str | Path, code_bin: str | Path, out_path: str | Path,
     return out_path
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# .oct verification (scripts/build_device.*): mandatory after every device
+# build. The header is read here with the offsets build_oct writes (the same
+# octPackHeader_t the official octpack-build writes); when octpack-info ran,
+# its JSON (header + assets, offsets answered by the engine) is used instead
+# and the byte-level checks still run on the file itself.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_KIND_NAMES = {KIND_SPRITE: "SPRITE", KIND_SOUND: "SOUND", KIND_PAL: "PAL", KIND_MAP: "MAP"}
+
+
+def read_oct_header(blob: bytes) -> dict:
+    """octPackHeader_t fields, named like `octpack-info`'s JSON header."""
+    if len(blob) < OCT_HEADER_SIZE:
+        raise ValueError(f"{len(blob)} bytes is shorter than the {OCT_HEADER_SIZE}-byte pack header")
+    u32 = lambda off: struct.unpack_from("<I", blob, off)[0]   # noqa: E731
+    return {
+        "magic": blob[0:4].hex(), "crc": u32(4), "format_version": u32(8),
+        "guid1": struct.unpack_from("<Q", blob, 16)[0], "guid2": struct.unpack_from("<Q", blob, 24)[0],
+        "app_version": u32(32), "engine_version": u32(36), "features": u32(40), "categories": u32(44),
+        "build_datetime": u32(48), "size": u32(52),
+        "title": blob[56:56 + SOFTWARE_NAME_MAXLEN].split(b"\0", 1)[0].decode("utf-8", "replace"),
+        "colors": u32(136), "code_offset": u32(140), "code_size": u32(144),
+        "asset_descs": u32(148), "asset_count": u32(152), "sound_descs": u32(156), "sound_count": u32(160),
+        "build_id": blob[164:184].hex(), "save_size": u32(184),
+    }
+
+
+def read_oct_assets(blob: bytes, header: dict) -> list[dict]:
+    """The descriptor table: [{id, name, kind ('SPRITE'|'SOUND'|'PAL'|'MAP'), offset, size}]."""
+    out = []
+    base = header["asset_descs"]
+    if base + header["asset_count"] * OCT_DESC_SIZE > len(blob):
+        raise ValueError(f"descriptor table ({header['asset_count']} x {OCT_DESC_SIZE} B at {base}) runs past "
+                         f"the end of the file")
+    for i in range(header["asset_count"]):
+        d = base + i * OCT_DESC_SIZE
+        name = blob[d:d + ASSET_NAME_MAXLEN].split(b"\0", 1)[0].decode("ascii", "replace")
+        offset, size = struct.unpack_from("<II", blob, d + 24)
+        kind = blob[d + 32]
+        out.append({"id": i, "name": name, "kind": _KIND_NAMES.get(kind, kind), "offset": offset, "size": size})
+    return out
+
+
+def semver_str(app_version: int) -> str:
+    """'major.minor.patch' for an OCT_APP_SEMVER value (scheme byte 1), '' for a legacy counter."""
+    if (app_version >> 24) & 0xFF != 1:
+        return ""
+    return f"{(app_version >> 16) & 0xFF}.{(app_version >> 8) & 0xFF}.{app_version & 0xFF}"
+
+
+def _title_forms(title: str) -> set[str]:
+    """What a header can carry for an APP_TITLE literal: raw text (the python
+    builder copies it as written) or C-unescaped (octpack-build compiles it),
+    each truncated like the writers do (79 bytes of UTF-8)."""
+    forms = {title}
+    if "\\" in title:
+        forms.add(re.sub(r'\\(["\'\\?])', r"\1", title).replace("\\n", "\n").replace("\\t", "\t"))
+    cut = SOFTWARE_NAME_MAXLEN - 1
+    return {f.encode("utf-8")[:cut].decode("utf-8", "ignore") for f in forms}
+
+
+def app_name_of(app_dir: str | Path) -> str:
+    """App name from the single *.target marker (folder name without one)."""
+    app_dir = Path(app_dir)
+    targets = sorted(app_dir.glob("*.target"))
+    return targets[0].stem if targets else app_dir.name
+
+
+def verify_oct(oct_path: str | Path, app_dir: str | Path, *, code_bin: str | Path | None = None,
+               info: dict | None = None) -> tuple[list[str], list[str], dict]:
+    """Check a built .oct against the app it was built from.
+
+    Returns (errors, warnings, header). Errors (any one fails the build):
+    unreadable file or header, wrong magic, Size != file length, CRC32 over
+    bytes 8..Size wrong, code_size/code_offset not describing the file's tail,
+    the tail != out/<app>.bin, an all-zero build id, title / version / GUID /
+    categories / save size != the app's defines (read_app_defines of
+    src/app.h, which follows app_metadata.h and app_save.h), no MAP "ico", or
+    a descriptor table that differs from the app's index.bin. Anything that
+    cannot be checked (no src/app.h, an unparsable define, no .bin) is an
+    error too: verification never passes by skipping. `info` = the parsed
+    `octpack-info` JSON when it ran (header + assets with engine-answered
+    offsets)."""
+    errors: list[str] = []
+    warnings: list[str] = []
+    oct_path, app_dir = Path(oct_path), Path(app_dir)
+    try:
+        blob = oct_path.read_bytes()
+    except OSError as exc:
+        return [f"cannot read {oct_path}: {exc}"], warnings, {}
+    try:
+        if info is not None:
+            header, assets = dict(info["header"]), list(info["assets"])
+        else:
+            header = read_oct_header(blob)
+            assets = read_oct_assets(blob, header)
+    except (KeyError, TypeError, ValueError, struct.error) as exc:
+        return [f"cannot read the pack header of {oct_path}: {exc}"], warnings, {}
+
+    # ── container bytes ───────────────────────────────────────────────────
+    if str(header.get("magic", "")).lower() != OCT_PACK_MAGIC.hex():
+        errors.append(f"magic {header.get('magic')} is not {OCT_PACK_MAGIC.hex()} - not an .oct pack")
+    size = header.get("size")
+    if size != len(blob):
+        errors.append(f"header Size {size} != file length {len(blob)} (truncated or padded pack)")
+    elif header.get("crc") != (zlib.crc32(blob[8:size]) & 0xFFFFFFFF):
+        errors.append(f"CRC32 over bytes 8..{size} does not match the header (0x{header.get('crc', 0):08X}): "
+                      f"the cube refuses the pack")
+
+    # ── ARM code: the last code_size bytes, identical to out/<app>.bin ─────
+    app = app_name_of(app_dir)
+    code_bin = Path(code_bin) if code_bin else app_dir / "out" / f"{app}.bin"
+    try:
+        code = code_bin.read_bytes()
+    except OSError:
+        code = None
+        errors.append(f"cannot verify the ARM code: {code_bin} not readable")
+    if code is not None:
+        if not code:
+            errors.append(f"{code_bin} is empty - the ARM build produced no code")
+        if header.get("code_size") != len(code):
+            errors.append(f"header code_size {header.get('code_size')} != {len(code)} bytes of {code_bin.name}")
+        if (header.get("code_offset", 0) + header.get("code_size", 0)) != len(blob):
+            errors.append(f"code chunk ({header.get('code_offset')} + {header.get('code_size')}) does not end at "
+                          f"the end of the file ({len(blob)})")
+        if code and blob[-len(code):] != code:
+            errors.append(f"the .oct does NOT end with {code_bin.name}: no/stale ARM code, dead on the cube")
+
+    bid = str(header.get("build_id", ""))
+    if not bid or set(bid) <= {"0"}:
+        errors.append("build id is all zeros: out/<app>.elf (GNU build-id) was not stamped - telemetry cannot "
+                      "decode this pack; rebuild the ARM module (cmake keeps -Wl,--build-id)")
+
+    # ── metadata == the app's defines ─────────────────────────────────────
+    app_h = app_dir / "src" / "app.h"
+    defines = None
+    if not app_h.is_file():
+        errors.append(f"cannot verify title/version/GUID/categories/save size: {app_h} not found")
+    else:
+        try:
+            defines = read_app_defines(app_h)
+        except (OSError, ValueError) as exc:
+            errors.append(f"cannot verify the metadata: {app_h}: {exc}")
+    if defines is not None:
+        exp_guid, exp_ver = defines.get("guid1"), defines.get("app_version")
+        if exp_guid is None:
+            errors.append(f"cannot verify the GUID: no APP_GUID1 reachable from {app_h}")
+        elif header.get("guid1") != exp_guid & 0xFFFFFFFFFFFFFFFF:
+            errors.append(f"GUID 0x{header.get('guid1', 0):016X} != APP_GUID1 0x{exp_guid & ((1 << 64) - 1):016X}")
+        if exp_ver is None:
+            errors.append(f"cannot verify the version: no APP_VERSION reachable from {app_h}")
+        elif header.get("app_version") != exp_ver & 0xFFFFFFFF:
+            got = header.get("app_version", 0)
+            errors.append(f"version {semver_str(got) or got} != APP_VERSION {semver_str(exp_ver) or exp_ver} "
+                          f"(stale .oct, or built from another checkout)")
+        exp_cat = defines.get("categories", 0) & 0xFFFFFFFF
+        if header.get("categories") != exp_cat:
+            errors.append(f"categories 0x{header.get('categories', 0):X} != APP_CATEGORIES 0x{exp_cat:X}")
+        exp_save = defines.get("save_size", 0)
+        if header.get("save_size") != exp_save:
+            errors.append(f"save size {header.get('save_size')} != APP_SAVE_SIZE {exp_save} (from app_metadata.h "
+                          f"-> app_save.h): the cube would give the app {'no' if not header.get('save_size') else 'a wrong'} "
+                          f"save area")
+        if header.get("title") not in _title_forms(defines.get("title", "")):
+            errors.append(f"title {header.get('title')!r} != APP_TITLE {defines.get('title', '')!r}")
+        if exp_guid == 0:
+            warnings.append("APP_GUID1 is 0 - installs and saves are keyed by it; give the app a random one")
+
+    # ── assets: launcher map + the app's index.bin ────────────────────────
+    if not any(a.get("kind") == "MAP" and a.get("name") == "ico" for a in assets):
+        errors.append("no MAP 'ico' in the pack: the launcher would show an empty slot (pack the icon: --icon / "
+                      "art/ico.psd)")
+    index = app_dir / "index.bin"
+    if index.is_file():
+        try:
+            records = read_index_bin(index)
+        except (OSError, ValueError, struct.error) as exc:
+            errors.append(f"cannot read {index}: {exc}")
+        else:
+            packed = [(a.get("kind"), a.get("name")) for a in assets]
+            wanted = [(_KIND_NAMES.get(k, k), n) for k, n in records]
+            if packed != wanted:
+                diff = next((i for i, (p, w) in enumerate(zip(packed, wanted)) if p != w),
+                            min(len(packed), len(wanted)))
+                errors.append(f"the pack's {len(packed)} assets differ from index.bin's {len(wanted)} (first at id "
+                              f"{diff}): the .oct is stale against art/packed - rebuild it")
+    else:
+        errors.append(f"cannot compare the assets: {index} not found")
+    return errors, warnings, header
+
+
+def _verify_main(args) -> int:
+    info = None
+    if args.info_json:
+        try:
+            text = Path(args.info_json).read_text(encoding="utf-8-sig")
+            info = json.loads(text[text.index("{"):]) if "{" in text else None
+        except (OSError, ValueError) as exc:
+            print(f"NOTE: octpack-info output unreadable ({exc}); reading the header locally")
+            info = None
+    errors, warnings, header = verify_oct(args.verify_oct, args.app_dir, code_bin=args.code, info=info)
+    source = "octpack-info" if info is not None else "local header check (scripts/pack_beta.py)"
+    if header:
+        version = semver_str(header.get("app_version", 0)) or f"{header.get('app_version')} (legacy counter)"
+        print(f"    header ({source}): title {header.get('title')!r}, version {version}, "
+              f"guid 0x{header.get('guid1', 0):016X}, categories 0x{header.get('categories', 0):X}, "
+              f"save {header.get('save_size')} B, build id {header.get('build_id')}, "
+              f"{header.get('asset_count')} assets")
+    for w in warnings:
+        print(f"    WARNING: {w}")
+    for e in errors:
+        print(f"ERROR: {e}")
+    if errors:
+        print(f"VERIFY FAILED: {len(errors)} problem(s) in {args.verify_oct}")
+        return 1
+    print(f"VERIFY OK: {args.verify_oct} (magic, size, crc, ARM tail, build id, metadata == app defines, "
+          f"MAP ico, assets == index.bin)")
+    if header and semver_str(header.get("app_version", 0)):
+        print(f"VERSION={semver_str(header['app_version'])}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="beta asset-container tools (see module docstring)")
-    parser.add_argument("--build-oct", action="store_true", required=True,
-                        help="assemble the cube-loadable .oct from a packed app dir")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--build-oct", action="store_true",
+                      help="assemble the cube-loadable .oct from a packed app dir (needs --code and --out)")
+    mode.add_argument("--verify-oct", type=Path, metavar="OCT",
+                      help="verify a built .oct against --app-dir (header, CRC, ARM tail, build id, metadata "
+                           "== the app's defines, MAP ico, assets == index.bin); exit 0 ok, 1 failed")
     parser.add_argument("--app-dir", required=True, type=Path,
                         help="app folder holding index.bin, art/packed, sound/assets")
-    parser.add_argument("--code", required=True, type=Path,
-                        help="ARM module binary, out/<app>.bin")
-    parser.add_argument("--out", required=True, type=Path,
-                        help="destination .oct path")
+    parser.add_argument("--code", type=Path,
+                        help="ARM module binary, out/<app>.bin (--verify-oct default: <app-dir>/out/<app>.bin)")
+    parser.add_argument("--out", type=Path,
+                        help="destination .oct path (--build-oct)")
+    parser.add_argument("--info-json", type=Path,
+                        help="--verify-oct: a file holding `octpack-info <oct>` JSON output; its header/assets "
+                             "replace the local header read")
     parser.add_argument("--title", help="pack title (default: APP_TITLE from src/app.h)")
     parser.add_argument("--guid", help="pack Guid1 (default: APP_GUID1 from src/app.h)")
     parser.add_argument("--version", type=int,
@@ -1528,6 +1824,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--colors", type=lambda s: int(s, 0),
                         help="Colors field (default: APP_COLORS from src/app.h)")
     args = parser.parse_args(argv)
+
+    if args.verify_oct is not None:
+        return _verify_main(args)
+    if args.code is None or args.out is None:
+        parser.error("--build-oct needs --code and --out")
 
     try:
         path = build_oct(args.app_dir, args.code, args.out,
