@@ -6,7 +6,7 @@
 // Frames go straight into ffmpeg (image2pipe), nothing is written to disk but the mp4.
 //
 // Usage:
-//   node record_html.mjs <page.html> <out.mp4> [--seconds 45] [--fps 30] [--query "cinema&autoplay"]
+//   node record_html.mjs <page.html> <out.mp4> [--seconds 45] [--fps 30] [--query "cinema&autoplay&video"]
 //                        [--width 1280] [--height 720] [--scale 1.5] [--warmup 800] [--crf 18]
 //                        [--stopWhen "window.__demoDone"] [--tail 1.5]
 //
@@ -26,7 +26,7 @@ const { chromium } = createRequire(import.meta.url)('playwright');
 const DEFAULTS = Object.freeze({
   seconds: 45,
   fps: 30,
-  query: 'cinema&autoplay',
+  query: 'cinema&autoplay&video',   // video = no sound: a recording never plays audio
   width: 1280,
   height: 720,
   scale: 1.5,

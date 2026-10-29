@@ -2,11 +2,13 @@
 name: cube_asset-builder
 description: >-
   Stage 3 component of the WowCube pipeline, invoked by cube_orchestrator — not a
-  standalone user entry point. Use only when the orchestrator routes to asset
-  generation because the manifest exists but the packed assets
-  (app_<game>/index.bin + src/app_<game>_ids.h) do not. Locks the art style with
+  standalone user entry point. Use only when the orchestrator's stage detection
+  routes to Stage 3: the GDD, prompts, manifest and infra gate are done, but the
+  context's style_lock is not approved/waived/user_art, or `build_pipeline.py
+  pack-status` does not exit 0 (never packed by Stage 3, or an input changed; the
+  infra gate's template pack does not count). Locks the art style with
   the user (style frame), draws every sprite with Codex through cube_art-director
-  (ChatGPT subscription, no key; paid-API providers as fallback), runs the strict
+  (ChatGPT subscription, no key; without Codex placeholders, a paid API only on the user's explicit opt-in), runs the strict
   QA loop and the review page, sources user-approved CC0 sounds and builds them
   with sound_kit, makes the launcher icon, then packs the beta container into
   app_<game>/.
@@ -14,13 +16,13 @@ description: >-
 
 # WowCube Asset Builder
 
-> **This skill is Stage 3 of the `cube_orchestrator` pipeline.** The orchestrator invokes it (via the Skill tool) when the asset manifest exists but `app_<game>/index.bin` / `app_<game>/src/app_<game>_ids.h` do not. It is not a user-facing entry point — the user enters through `cube_orchestrator`, which routes here.
+> **This skill is Stage 3 of the `cube_orchestrator` pipeline.** The orchestrator invokes it (via the Skill tool) when its stage detection (`cube_orchestrator/SKILL.md`, "Stage detection and routing") stops at a Stage 3 row: the style lock is not `approved` / `waived` / `user_art`, or `build_pipeline.py pack-status` does not exit 0. The infra gate's template pack already writes `index.bin` and `_ids.h`, so their existence never means Stage 3 is done. It is not a user-facing entry point — the user enters through `cube_orchestrator`, which routes here.
 
 Turn `plans/<game>_assets.json` into the packed art and sound the coder agents reference: `app_<game>/index.bin`, `art/packed/*.raw` + `*.pal`, `sound/assets/*.mp3`, `src/app_<game>_ids.h`, the launcher icon `app_<game>/art/icon.png` and the licence log `app_<game>/sound/CREDITS.md`. This skill never writes game code and never invents asset names: every name in a prompt exists as a file after it runs, or the manifest goes back to `technical_prompter`.
 
 ## Ground rules
 
-- **Codex on the user's ChatGPT subscription draws the art** (no key, nothing billed per image), through `skills/cube_art-director` (`scripts/art.py`). Never ask for an API key while Codex works. Paid-API keys are a fallback; agent-drawn placeholders are the last resort and never accepted as final art (`references/ART.md`).
+- **Codex on the user's ChatGPT subscription draws the art** (no key, nothing billed per image), through `skills/cube_art-director` (`scripts/art.py`). Never ask for an API key while Codex works. Without Codex the art is agent-drawn placeholders, never accepted as final art. A paid image API is used only when the user, in this run, explicitly asked for it and agreed to pay (`--allow-paid`), in every mode including autonomous and `YOLO`; a configured key is not consent (`cube_orchestrator/references/RUN_MODES.md`, `references/ART.md`).
 - **Style lock first**: no mass generation before the user approved a style frame shown at cube resolution.
 - **Strict reviewer**: an asset that breaks a rule in `cube_art-director/references/QA_RULES.md` is a FAIL. Iterate until every rule passes — there is no "N cycles, then accept"; escalate only when a rule truly cannot be met, saying what was tried. The one exception is a spent art budget set by the user (`cube_orchestrator/references/STAGE3_ASSETS.md`, Step 3): then the remaining style/set failures are waived in `fixes.json` and reported, never silently accepted.
 - **Reproducible**: every correction lives in `assets_<game>/fixes.json` (never only in the chat); regeneration replays it.
@@ -54,7 +56,7 @@ Commands below run from `<root>` (the folder holding `plans/`; the orchestrator'
 | What | How to check / get it |
 |---|---|
 | Valid manifest with a `gen_prompt` on every sprite | `python <skills>/scripts/build_pipeline.py validate --manifest M`: provider-free (schema, names, tiers, `background`, `launcher_icon`, the Codex prompt rules; never generates, never touches the network). Exit 0 = valid, 2 = back to `technical_prompter` with every printed error. Never use `generate` as a check: it draws (and without Codex may reach a paid provider) |
-| Python 3.10+ with Pillow, numpy, requests, pytoshop, psd-tools | `pip install -r <skills>/scripts/requirements.txt` |
+| Python 3.11+ with Pillow, numpy, requests, pytoshop, psd-tools | `pip install -r <skills>/scripts/requirements.txt` |
 | Codex CLI logged in with ChatGPT | `ART doctor M` (CLI found, ChatGPT login, model and effort, spec valid). Not logged in: the user runs `codex login` themselves |
 | `ffmpeg` on PATH (mp3 encoding, sound_kit) | part of the one-time environment approval (`cube_orchestrator/references/AGENT_SAFETY.md`): Windows `check_env.ps1 -Install` (quiet winget, `Gyan.FFmpeg`); Linux: the distro package |
 | Scaffolded `app_<game>/` (pack step only) | `app_<game>/app_<game>.target` exists. Missing: hand back to the orchestrator to scaffold first (`wowcube-boilerplate`). Never let the pack create a bare `app_<game>/`: the scaffolder refuses an existing folder, and fonts and metadata come from the scaffold |
@@ -68,7 +70,7 @@ Commands below run from `<root>` (the folder holding `plans/`; the orchestrator'
 
 ### Step 1: Manifest and setup check
 1. Manifest at `plans/<game>_assets.json`; missing → return to `cube_orchestrator` (Stage 2).
-2. `ART doctor M`. Codex unavailable → `references/ART.md` "Provider chain" (paid key, else placeholders) and tell the user once that `codex login` brings real art. With a paid provider, `ART candidates` and `ART gen` (they call Codex) are out; the provider draws through `build_pipeline.py generate` and art.py's other tools work on its images: `references/ART.md` "No Codex".
+2. `ART doctor M`. Codex unavailable → placeholders, and tell the user once that `codex login` brings real art (a paid provider only on their explicit opt-in, `references/ART.md` "Provider chain"). With an opted-in paid provider, `ART candidates` and `ART gen` (they call Codex) are out; the provider draws through `build_pipeline.py generate` and art.py's other tools work on its images: `references/ART.md` "No Codex".
 
 ### Step 2: Style lock (the one creative checkpoint)
 1. Copy `cube_art-director/references/STYLE_TEMPLATE.md` to `assets_<game>/style/STYLE.md` and fill it from GDD §1 Art Style; its `## Prompt block` starts as the manifest's `_style` (art.py seeds it and warns when they differ; keep them equal, 60-120 words). Rules a reviewer adds go into STYLE.md's rule sections and `fixes.json`; they reach the Prompt block (and `_style`) only when they change how every prompt should read, and the block stays within 120 words (`validate` warns above).

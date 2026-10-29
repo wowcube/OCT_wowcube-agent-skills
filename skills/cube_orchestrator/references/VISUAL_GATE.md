@@ -211,7 +211,8 @@ overrides the tilt, so the agent's own taps, twists and tilts would prove nothin
    the score does not cover the prompt; when the game starts a round at boot, give the
    playtest build a title or a paused start (a test hook) so the agent connects before
    anything is decided.
-5. Stop the instance by its PID (`Stop-Process -Id <pid>`) as soon as the agent
+5. Stop the instance with `tools\sim_headless\stop.ps1 -RunInfo <out dir>\run_info.json` (it stops only that
+   process: same PID, exe and start time, never a reused PID) as soon as the agent
    returns, also on failure.
 
 ## Evidence

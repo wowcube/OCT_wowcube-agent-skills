@@ -1,6 +1,6 @@
 ---
 name: "wowcube-html-prototype"
-description: "Browser prototypes of WowCube games on the cube.js demo engine: a 3D cube and a 2D net of 24 screens, twists, pat, tilt, autopilot and a cinema layout for video recording. Use for requests like \"make an html prototype\", \"web prototype\", \"html demo of the game\", \"concept in the browser\", \"show the mechanic in html\", \"let's test the mechanic before coding on the cube\"."
+description: "Building a browser prototype of a WowCube game on the cube.js demo engine: a 3D cube and a 2D net of 24 screens, twists, pat, tilt, autopilot and the ?cinema / ?autoplay hooks a video recording needs. Use for requests to BUILD the page, like \"make an html prototype\", \"web prototype\", \"concept in the browser\", \"show the mechanic in html\", \"let's test the mechanic before coding on the cube\". Not for recording or rendering videos (also of a prototype): that is wowcube-demo-video."
 ---
 
 # WowCube game HTML prototype
@@ -8,16 +8,23 @@ description: "Browser prototypes of WowCube games on the cube.js demo engine: a 
 A prototype is a playable page where the mechanic is tested before any cube code, and from which a
 video is recorded later. The cube game's logic then follows the prototype. The demo engine is in the
 skill: `assets/cube.js`, `assets/cube.css`; a full prototype example with autopilot and `?cinema` is
-`references/example-maze_box.html`.
+`references/example-maze_box.html` (it links `common/cube.*` like a real page: to open it in place, put
+it next to a `common/` copy of `assets/`).
 
 ## Where to put it
 
-- **The game has a repository** `app_<game>`: `docs/<game>_prototype.html` plus a copy of the demo
-  engine `docs/common/cube.js`, `docs/common/cube.css` (from this skill's `assets/`). Links use
-  `common/cube.js`. Everything in `docs/` is in English and committed.
+The page always sits next to a `common/` folder holding copies of this skill's `assets/cube.js` and
+`assets/cube.css`; the page links `common/cube.js` and `common/cube.css` (as the example does).
+
+- **A game in the WowCube pipeline** (`cube_orchestrator` / `cube_game-designer` Step 5, before any
+  cube code): `plans/<game>_prototype.html` + `plans/common/`, next to the GDD.
+- **An existing game repository** `app_<game>` (no pipeline run): `docs/<game>_prototype.html` +
+  `docs/common/`. Everything in `docs/` is in English and committed.
 - **An idea without a repository**: ask where to put it; same structure (`<game>_prototype.html` +
   `common/`).
 - A prototype from the game designer in Russian goes to `docs_ru/`.
+- **Autonomous (YOLO) pipeline runs**: build a prototype only when the brief asks for one, at the
+  pipeline location above; never stop to offer it.
 
 ## Page structure
 
@@ -103,10 +110,13 @@ printed, exit code 2. Requires `playwright` (Chromium) and `ffmpeg`, both availa
 environment.
 
 ```bash
-node scripts/record_html.mjs docs/<game>_prototype.html docs/demo/<game>_demo.mp4 \
+node scripts/record_html.mjs <dir>/<game>_prototype.html docs/demo/<game>_demo.mp4 \
      --seconds 120 --stopWhen "window.__demoDone"
 ```
 
-`?cinema&autoplay` at 1280 x 720 with scale 1.5 gives 1920 x 1080. The video goes to the game's
+This is the only copy of the recorder: `wowcube-demo-video` (method A) runs it from here and owns the
+video format and where videos go.
+
+`?cinema&autoplay&video` (the recorder default; `video` = silent) at 1280 x 720 with scale 1.5 gives 1920 x 1080. The video goes to the game's
 `docs/demo/` (`docs/demo/` and `*.mp4` are in `.gitignore`); stills for documents:
 `ffmpeg -ss <sec> -i <mp4> -frames:v 1 -vf scale=1280:-1 -q:v 3 docs/img/<game>_<scene>.jpg`.

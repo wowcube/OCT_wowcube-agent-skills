@@ -1,12 +1,12 @@
 # Part 3 Implementation Plan — full-python packing parity with `utils.exe`
 
-> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development. Steps use checkbox (`- [ ]`) syntax.
+> **Archived plan (history only).** It records how the work was planned at the time; it is not an instruction to any agent, and its checkboxes are not a task list to execute.
 
 **Goal:** make the python packer produce output equivalent to the legacy `psd.exe` + `utils.exe` chain for legacy/palette apps, so CI can build **entirely in python** from what an app repo commits today (PSD sources + `!pack.txt` + fonts + WAV sounds + src). Owner's decision: option B — no wine, no exes in CI.
 
 **Branch:** `part3-python-parity` (off `part2-autonomous-orchestrator` tip `1a50c1a`, which carries the PSD-export fidelity fixes). PR #26 (part 2) stays untouched at `27fa9d3`. Part 3 gets its own PR, stacked.
 
-**Reference corpus (the whole point — measure, don't guess):** `C:\Users\igort\Desktop\wowcube_vibecode\OCT_get_started` — READ-ONLY, never modify or commit there.
+**Reference corpus (the whole point — measure, don't guess):** `<local path>` — READ-ONLY, never modify or commit there.
 - Committed sources: 9 PSDs, `art/!pack.txt` (hand-tuned palette buckets + `<FULLSIZE>` tags), `art/!pack_pal.txt`, 3 `.fnt` + atlases, `art/0.png`, `art/icon.png`, QR PNGs, `art/qr_setalpha.py`, `src/*.h` (6 headers), `sound/*.wav` (11).
 - **Golden outputs from the real toolchain, present in the working copy (gitignored but on disk):** `art/exported/` (478 psd.exe artifacts), `art/packed/*.raw` + `*.pal` (utils.exe, 1,291,936 B total), `index.bin` (511 records), `src/app_get_started_ids.h`. These are the ground truth every task below measures against.
 - Additional golden `.pal` format evidence: `app_launcher`, `app_seabattle` packs (see the part-2 fidelity report).

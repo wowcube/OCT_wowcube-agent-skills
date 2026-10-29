@@ -24,8 +24,11 @@ Playtest Agent **drives** the hidden simulator and scores what it sees. Each ret
 | **Playtest Agent** | the running hidden simulator | visual_correctness 40, interaction 35, stability 25 | when the hidden instance's control socket answers |
 
 Pass: Requirements ≥ 90, Template ≥ 90, Screen Review without critical or major findings,
-Playtest ≥ 90 when deployed, and **no unresolved critical issue in any check**: a critical
-issue fails its agent whatever the total. The Screen Review exists because code-only
+Playtest ≥ 90 when deployed, **no unresolved critical issue in any check** (a critical
+issue fails its agent whatever the total), and **no open major from any agent**: a 93 with
+a major (music that never stops, art at ±120) is a fix round, not a pass. A major stays open
+only with a reason the orchestrator records in the context (`accepted_majors`) and names in
+the report (`cube_orchestrator/SKILL.md`, Stage 4 step 5). The Screen Review exists because code-only
 checks once passed a prompt that drew a black cross across all 24 screens.
 
 **Core principle:** verifiers never modify code, assets or the simulator. They read,
@@ -517,7 +520,7 @@ it through its control socket and score what you see.
 1. Read <skills>/skills/cube_orchestrator/SIM_MCP.md FIRST (observation
    script, aiming, camera vs cube, limits)
 2. Use the bridge tools on playtest_port, or the wire protocol:
-   powershell -NoProfile -File <skills>/tools/sim_headless/mcp.ps1 -Port <playtest_port> "<command>"
+   powershell -NoProfile -ExecutionPolicy Bypass -File <skills>/tools/sim_headless/mcp.ps1 -Port <playtest_port> "<command>"
 3. `info` must name app_<game> before anything is scored
 4. Capture every observation with `screens faces <absolute png in frames_dir>`
    (bridge: screens). Do not judge from `shot`/`screenshot`

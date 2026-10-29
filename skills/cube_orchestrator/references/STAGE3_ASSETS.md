@@ -109,7 +109,8 @@ the user's own art (§8), or PSDs from an artist (§9).
 6. **Lock it.** Put the approved images into `assets_<game>/style/anchors/` (generated
    assets: `art.py anchor <manifest> --only <names>`), run `art.py style <manifest>`
    (profile + palette swatch), record in the context:
-   `"style_lock": {"status": "approved", "anchors": [...], "date": "..."}`.
+   `"style_lock": {"status": "approved", "anchors": [...], "date": "..."}` (shape:
+   `AGENT_BRIEFS.md`, "Context file").
    One profile covers the whole set, so anchor one leader of **every** family together.
    Anchoring a single family (the stone pad) made every other family fail the measured
    palette score when STYLE.md gives each family its own colour role (gold basket, cyan
@@ -168,15 +169,17 @@ Through `cube_asset-builder`:
    entries), redraw, re-review until all OK. Autonomous: link the page in the final
    report.
 
-**Fallbacks**, in this order and only when Codex cannot draw:
-- a paid image API the user configured: `build_pipeline.py generate` draws every sprite
+**Fallbacks**, only when Codex cannot draw:
+- by default, agent-drawn placeholders: they keep the build going and are never presented as final;
+  the final report says the art is temporary and how to redo it;
+- a paid image API only when the user, in this run, explicitly asked for it and agreed to pay
+  (`--allow-paid`; a configured key is not consent; autonomous and `YOLO` never imply it,
+  `RUN_MODES.md`): `build_pipeline.py generate` draws every sprite
   with it (`scripts/image_providers.py`). `art.py candidates` and `art.py gen` call Codex
   directly and are not available; what still works on the provider's images (copied into
   `assets_<game>/raw/`): `art.py process`, `anchor`, `style`, `qa` and `review`, so the
   style lock is made from the provider's leaders and the same QA rules and loop apply.
-  Steps: `cube_asset-builder/references/ART.md` "No Codex";
-- agent-drawn placeholders: they keep the build going and are never presented as final;
-  the final report says the art is temporary and how to redo it.
+  Steps: `cube_asset-builder/references/ART.md` "No Codex".
 
 ## 4. Sound
 
@@ -204,7 +207,9 @@ by the game every N ticks and loops stay short (10–20 s).
 3. **Music loop**:
    `python <skills>/scripts/sound_kit.py loop <track> --out assets_<game>/wav/assets --name music_loop --min 10 --max 20`
    cuts the most self-similar loop and prints its retrigger period in ticks; store it as
-   `"sound": {"music_loop_ticks": N}` in the context for the music prompt.
+   `sound.music_loop_ticks` in the context (`"sound": {"source": ..., "music_loop_ticks": N,
+   "credits": ...}`, `AGENT_BRIEFS.md`); the music prompt's brief gets it as
+   `asset_facts.music_loop_ticks`.
 4. **Judge by numbers, never by ear**:
    `python <skills>/scripts/sound_kit.py inspect assets_<game>/wav/assets/*.mp3`
    (duration, peak and mean dB, band energy, envelope). Fix the recipe for clipping,

@@ -292,7 +292,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File <skills>\tools\sim_headless\
   `run_info.json` in its out folder
   carries `pid` and `mcp_port`; drive it with
   `tools/sim_headless/mcp.ps1 -Port <port> "screens faces <abs.png>" "twist 3"` or the
-  octavios bridge (`cube_orchestrator/SIM_MCP.md`); stop it with `Stop-Process -Id <pid>`.
+  octavios bridge (`cube_orchestrator/SIM_MCP.md`); stop it with `tools\sim_headless\stop.ps1 -RunInfo <out dir>\run_info.json` (never a bare `Stop-Process -Id`).
   Procedure: `cube_orchestrator/references/VISUAL_GATE.md` "Playtest Agent".
 - Capture with `screens faces` / `record` (byte-exact framebuffers); `shot` reads the
   window's back buffer.

@@ -1,14 +1,16 @@
 ---
 name: "wowcube-demo-video"
-description: "WowCube game demo videos in the standard format: 1920 x 1080, the 3D cube on the left, the same 24 screens as a 2D net plus the controls legend on the right, captions per scene, the game played by a bot or autopilot on the real rules. Three methods: recording an HTML prototype, capturing sprites from the game, rendering screens with the engine. Use for requests like \"make a video\", \"record a demo\", \"gameplay video\", \"record a clip\", \"demo for the game designer\"."
+description: "Making WowCube game demo videos in the standard format: 1920 x 1080, the 3D cube on the left, the same 24 screens as a 2D net plus the controls legend on the right, captions per scene, the game played by a bot or autopilot on the real rules. Three methods: recording an existing HTML prototype, capturing sprites from the game, rendering screens with the engine. Use for every video request, including a video of a prototype: \"make a video\", \"record a demo\", \"gameplay video\", \"record a clip\", \"demo for the game designer\". Building the prototype page itself is wowcube-html-prototype."
 ---
 
 # WowCube game demo video
 
-Everything needed is in this skill: scripts, templates and examples.
+Everything needed is in this skill (scripts, templates and examples), except the HTML recorder of
+method A, whose one copy lives in the sibling skill `wowcube-html-prototype`.
 
 ```
-scripts/record_html.mjs      records an HTML prototype on a fake clock (method A)
+../wowcube-html-prototype/scripts/record_html.mjs
+                             records an HTML prototype on a fake clock (method A)
 scripts/render_demo.py       video from a game capture: 3D cube, net, legend, twist rotations (B, C)
 templates/capture.h          capture harness: frames.jsonl, frame by frame (B, C)
 templates/shot.h             renders all 24 screens with the real engine into a PNG net (C)
@@ -63,9 +65,12 @@ that runs the page's real rules, shows scene captions and sets `window.__demoDon
 Recording in the cloud environment (Chromium and ffmpeg are available there):
 
 ```bash
-node scripts/record_html.mjs docs/<game>_prototype.html docs/demo/<game>_demo.mp4 \
+node <skills>/wowcube-html-prototype/scripts/record_html.mjs <dir>/<game>_prototype.html docs/demo/<game>_demo.mp4 \
      --seconds 120 --stopWhen "window.__demoDone"
 ```
+
+`<dir>` is where the prototype lives: `plans/` for a pipeline game, `docs/` in a game repository (see
+`wowcube-html-prototype`, "Where to put it").
 
 Frame = exactly 1/30 s on Playwright's fake clock: the video is smooth and identical on every run.
 Page errors are printed, exit code 2.
@@ -83,7 +88,7 @@ developer's machine (g++, uv, ffmpeg and the engine are there).
    - includes: `oct_test_shim.h`, `oct.h`, **`capture.h` before `app.h`**, `app.h`, (`shot.h` after `app.h`);
    - `tick()` = bot input → `on_tick()` → `capFrame()`;
    - `capShot(caption, sub, legendRow, yaw, pitch, yawSpeed)` before each scene;
-   - twist: `on_pretwisted` → `OCT_twist_sprites` → `on_twisted` → `capTwist(t)`;
+   - twist: `on_pretwisted(plane)` (the plane, `(t % OCT_TWIST_HALF) / 2`, not the twist id) → `OCT_twist_sprites(t)` → `on_twisted(t, 0)` → `capTwist(t)`;
    - the bot (`bot.h`), as in the Breakout example, moves gravity `Gf` and pats through `vars`,
      never touching the rules; if needed, reuse the same bot as in the host tests.
 3. Capture: `scripts/capture_demo.sh` (B) or `CAPTURE_NET=1 scripts/capture_demo.sh` (C).

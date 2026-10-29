@@ -856,7 +856,7 @@ are all alpha 255. `art/qr_setalpha.py` stays (§5.4).
 
 ### 12.4 Measured — `OCT_ladybug`, built from committed sources
 
-Ours is `C:\Users\igort\p3v\lb5`, a clean `git archive` of ladybug HEAD built
+Ours is `<local path>`, a clean `git archive` of ladybug HEAD built
 by `oct-builder/ci_build.py`. Golden is
 `octava soft/Beta builds/app_ladybug.oct`, APP_VERSION 260, legacy toolchain.
 
@@ -1016,7 +1016,7 @@ the whole map draws in one plane, in PSD order. The eleven ladybug markers
 
 ### 13.5 Measured — `OCT_ladybug`, rebuilt from committed sources
 
-`C:\Users\igort\p3v\lb6`, a clean `git archive` of ladybug HEAD built by
+`<local path>`, a clean `git archive` of ladybug HEAD built by
 `oct-builder/ci_build.py`. Golden is `octava soft/Beta builds/app_ladybug.oct`,
 APP_VERSION 260.
 

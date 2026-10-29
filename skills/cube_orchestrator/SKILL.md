@@ -47,8 +47,9 @@ Commands run from `<ws>`.
 **Context lives in files, not in the chat.** `plans/`, `assets_<game>/`, the app
 folder and `context/<game>_context.json` hold everything needed to resume; a new
 session continues at the first unfinished item. Create the context file at the intake
-(`game`, `run_mode`, `sdk`, `art_source`, `style_lock: "pending"`); every stage adds its
-fields (`infra`, `style_lock`, `music_loop_ticks`, `test_hooks`, prompt results). When the user corrects how the agent
+(`game`, `run_mode`, `sdk`, `art_source`, `style_lock: {"status": "pending"}`); every stage adds its
+fields (`infra`, `style_lock.status`, `sound.music_loop_ticks`, `test_hooks`, prompt results). The
+fields and their shapes are defined once, in `references/AGENT_BRIEFS.md` ("Context file"). When the user corrects how the agent
 works ("не трогай мои палитры", "test builds always muted"), append one line with the
 reason to `context/rules.md` and pass the relevant lines into every brief
 (`standing_rules`). Art corrections go to the style bible and `fixes.json` instead.
@@ -80,7 +81,7 @@ Nothing points to an existing project → Build mode. Delivery-only requests ("�
 |---|---|---|
 | **Autonomous (default)** | any entry | At most two intake questions, then the whole pipeline to the verified device `.oct`. Stops only at the **style lock** (style frame + in-game mock + the sound list: the one creative checkpoint) and for real blockers (environment, Codex login). |
 | **Stepwise** | "по шагам", "с чекпоинтами", "stepwise", "review mode", or "стоп" / "stop" mid-run | Every stage boundary, asset batch, prompt and mod change waits for the user's approval. |
-| **`YOLO` token** | the literal token in the current prompt | Compat alias of autonomous: no intake questions, the style lock is waived (an independent reviewer approves instead). |
+| **`YOLO` token** | the literal token in the current prompt, then one short risk confirmation (`references/RUN_MODES.md`) | Compat alias of autonomous: no intake questions, the style lock is waived (an independent reviewer approves instead). The confirmation approves neither paid APIs nor downloads: without Codex the art is placeholders, the sounds synthesized. |
 
 Read `references/RUN_MODES.md` before the intake of every new run: intake questions,
 start line, what each mode keeps, safe parallelism, the failure policy ("degrade,
@@ -157,7 +158,7 @@ infer from `plans/` and `context/`), then route to the FIRST row that is not don
 | `plans/<game>_gdd.md` exists | Stage 1 |
 | `plans/<game>_prompts.md` and `plans/<game>_assets.json` exist | Stage 2 |
 | `app_<game>/` has one `.target` marker and `src/app_metadata.h`, and the context says `infra: "ok"` | Infra gate |
-| the context's `style_lock` is `approved` or `waived` (the lock is in `assets_<game>/style/anchors/`) or `user_art` | Stage 3 (style lock) |
+| the context's `style_lock.status` is `approved` or `waived` (the lock is in `assets_<game>/style/anchors/`) or `user_art` | Stage 3 (style lock) |
 | `pack-status` (below) exits 0: `app_<game>/.pack_inputs.json` matches the manifest, every input PNG and mp3, the fonts and the icon (the infra gate's template pack writes no such record) | Stage 3 |
 | the context's `last_completed_prompt` equals `total_prompts` | Stage 4 |
 | `dist/app_<game>.oct` passed Stage 5 verification, `pack-status` still exits 0, and the `.oct` is newer than every file in `app_<game>/src`, `art/packed`, `sound/assets`, `index.bin` and `.pack_inputs.json` | Stage 5 |
@@ -264,8 +265,10 @@ Read `references/STAGE3_ASSETS.md`, then run its steps in order:
    intermediates from scratch, syncs changed fonts and records its inputs in
    `app_<game>/.pack_inputs.json` (what `pack-status` compares).
 
-Paid image APIs (`scripts/image_providers.py`) are a fallback when Codex cannot draw;
-agent-drawn placeholders are the last resort and never count as final art. The
+When Codex cannot draw, the art is agent-drawn placeholders (never final art). A paid
+image API (`scripts/image_providers.py`) is used only after the user's explicit opt-in in
+this run (asked for it, agreed to pay per image; `--allow-paid`), in every mode: a
+configured key is not consent (`references/RUN_MODES.md`). The
 user's own art and PSD-authored art (octpacker) are covered in the same reference.
 
 ## Stage 4 — Implementation
@@ -467,7 +470,7 @@ built with the fallback builder; moving it to the dev layout is a T4 change (ask
 | Playtest Agent | when the hidden instance's socket answers | ports from 8177 (`playtest_port`); 8077 stays the user's |
 | Run mode | autonomous | stepwise on request; `YOLO` is the compat alias (`references/RUN_MODES.md`) |
 | Failure policy (autonomous) | degrade, never abort | degrade = rescope the prompt; the rescoped version must pass every gate; every cut in the final report |
-| Art source | Codex on the ChatGPT subscription | then a paid image API if the user configured one, then temporary placeholders |
+| Art source | Codex on the ChatGPT subscription | else temporary placeholders; a paid image API only on the user's explicit opt-in (a configured key is not consent) |
 | Sound source | CC0 recordings (approved list) + `sound_kit.py` | synthesis as the fallback |
 | Deliverable | `dist/app_<game>.oct` | `scripts/build_device.*`: `octpack-build`, fallback the pure-Python builder |
 | Start from | 1 | the first prompt to run (resume) |

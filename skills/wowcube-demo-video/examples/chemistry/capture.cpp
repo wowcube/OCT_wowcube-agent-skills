@@ -44,10 +44,12 @@ static void ticks(int n)
     }
 }
 
-// A twist as the engine delivers it, marked for the renderer's turn.
+// A twist as the engine delivers it, marked for the renderer's turn. on_pretwisted gets the PLANE being
+// turned (0..5, the engine's OCT_TWIST_PRE + plane), not the twist id: ids run TOP_CCW, TOP_CW, FRONT_CCW..
+// two per plane, half twists repeating them from OCT_TWIST_HALF.
 static void twist(int t)
 {
-    on_pretwisted(t);
+    on_pretwisted((t % OCT_TWIST_HALF) / 2);
     OCT_twist_sprites((octTwistId_t)t);
     on_twisted(t, 0);
     capTwist(t);

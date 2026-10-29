@@ -215,7 +215,7 @@ Signatures as the app calls them (`oct_api.h`; module builds route through `OCT_
 
 | Call | St | What / gotcha | Demo |
 |---|---|---|---|
-| `int OCT_tap_source(void* out, uint32_t size)` -> `octTapSource_t` | **NEW** fw-0.100.0 (`Quad` fw-0.100.1), guarded (0) | in `on_tap`: `Quad` = scene quad 0..23 of the struck screen (-1 unbound), `Module`, `Screen`, `Amplitude`, `Agreeing`, `Axis`. Same on all 8. Keep a per-face fallback | 20, `appTapQuad` |
+| `int OCT_tap_source(void* out, uint32_t size)` -> `octTapSource_t` | **NEW** fw-0.100.0 (`Quad` fw-0.100.1), guarded (0) | in `on_tap`: `Quad` = scene quad 0..23 of the struck screen (-1 unbound), `Module`, `Screen`, `Amplitude`, `Agreeing`, `Axis`. Same on all 8. Keep a per-face fallback: fw-0.100.0 reads 0 for `Quad`, so `appTapQuad` returns -1 for a quad-0 TOP tap until a non-zero `Quad` or `OCT_cube_pose` proves the field is real | 20, `appTapQuad` |
 | `int OCT_cube_pose(out, size)` / `OCT_module_pose(m, out, size)` | **NEW** fw-0.100.5, guarded (0) | synced pose: `flags & OCT_POSE_VALID`, quaternion `q[4]`, `gravity_cube[3]`, `rate_cube[3]` deg/s; yaw drifts | 11 |
 | `int OCT_cube_pose_visual(out, size)` | **NEW**, guarded | this module's low-latency pose, drawing only | |
 | `int OCT_gesture_probe(out, size)`, `int OCT_imu_record(ms)` | **NEW**, guarded | per-module diagnostics; IMU samples to telemetry (<= 10 s) | |
@@ -367,7 +367,7 @@ named), checked against the source on 2026-10-29.
 | Installed apps | <= 100 catalog entries; app region on SD 16..128 MB (112 MB) in 512 KB cells | `oct_consts.h:1311`, `oct_disk.h:34-36` |
 | External maps | ids 2..31, <= 512 descriptors scanned, <= 100 places | `oct_pack.h:15-17` |
 | Input latency | a command applies 65-114 ms after the leader authors it; taps wait <= 50 ms for fusion | `docs/knowledge/lockstep_app_determinism.md:11`, `oct_gesture_core.h:736` |
-| Taps | series 60-536 ms apart, count <= 7; >= 4 modules must share the push (`OCT_TAP_MIN_SHARING`); a tap on another face < 500 ms after an impact and pushes through the down-facing face are vetoed; none < 100 ms after a twist closes or within 1 s after a state change | `oct_gesture_core.h:110-121, 729-751`, `oct_consts.h:1156` |
+| Taps | series 60-536 ms apart, count <= 7; >= 4 modules must share the push (`OCT_TAP_MIN_SHARING`); a tap on another face < 500 ms after an impact and pushes through the down-facing face are vetoed; none < 100 ms after a twist closes or within 1 s after a state change | `oct_gesture_core.h:109-121, 729-751`, `oct_consts.h:1156` |
 | Shake | not available to apps: always exits | `oct_app.h:35-36` |
 | Idle | game paused after 60 s without motion or input; cube sleeps 5 min later | `oct_batsave.h:31-35` |
 | App / pack size | no practical limit beyond the SD app region | `oct_disk.h:34-36` |

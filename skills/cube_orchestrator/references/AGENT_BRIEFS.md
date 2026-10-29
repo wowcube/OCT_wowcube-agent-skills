@@ -240,7 +240,8 @@ Playtest Agent when deployed.
 ## Context file (`context/<game>_context.json`)
 
 Saved after every passed prompt and at every stage change; the resume point of the
-run.
+run. **This block is the one definition of the context's fields**; every other file
+(the orchestrator's SKILL.md, `STAGE3_ASSETS.md`, the briefs) uses these names and shapes.
 
 ```json
 {
@@ -248,7 +249,7 @@ run.
   "run_mode": "autonomous|stepwise",
   "sdk": {"octavios": "<ws>/octavios", "dev_609d5ae_or_later": true, "telemetry": true},
   "infra": "ok",
-  "style_lock": {"status": "approved|waived|user_art", "anchors": ["assets_<game>/style/anchors/hero_idle_00.png"], "date": "2026-10-28"},
+  "style_lock": {"status": "pending|approved|waived|user_art", "anchors": ["assets_<game>/style/anchors/hero_idle_00.png"], "date": "2026-10-28"},
   "art_source": "codex|api|placeholder",
   "sound": {"source": "cc0|synth", "music_loop_ticks": 309, "credits": "app_<game>/sound/CREDITS.md"},
   "test_hooks": {"autoplay": "TD_DEBUG_AUTOPLAY", "mute": "TD_MUTE", "plane_pin": "TD_DEBUG_ROOM_PLANE"},
@@ -265,6 +266,7 @@ run.
      "fix_rounds": 1, "notes": "black backdrop on all faces"}
   ],
   "cuts": [],
+  "accepted_majors": [{"prompt": 3, "finding": "...", "reason": "..."}],
   "not_checked_visually": [],
   "cube": {"name": "<bluetooth name>", "mac": "<mac>"},
   "delivery": {"oct": "dist/app_<game>.oct", "builder": "octpack-build|python", "version": "1.0.3",
@@ -272,3 +274,10 @@ run.
   "balance_passes": []
 }
 ```
+
+- `style_lock` is always an object: the intake writes `{"status": "pending"}`; Stage 3 sets
+  `status` to `approved` (with `anchors` and `date`), `waived` or `user_art`. Stage
+  detection reads `style_lock.status`.
+- `sound.music_loop_ticks` is the music retrigger period printed by `sound_kit.py loop`
+  (Stage 3); there is no top-level `music_loop_ticks`. A coding brief copies it into its
+  `asset_facts.music_loop_ticks`.

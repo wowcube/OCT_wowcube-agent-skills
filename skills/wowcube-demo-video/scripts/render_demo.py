@@ -32,6 +32,7 @@ import math
 import multiprocessing as mp
 import re
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -613,6 +614,22 @@ def plan(cfg, frames, frames_dir, every, twist_frames):
     return jobs
 
 
+def check_sprite_inputs(cfg, frames):
+    """A sprite-mode capture draws nothing without the ids header and the art dump: stop instead of a blank video."""
+    if not any("s" in f for f in frames):
+        return                                                  # net mode: the frames are PNGs
+    ids = cfg.get("ids") or ""
+    problems = []
+    if "<" in ids or not Path(ids).is_file():
+        problems.append(f'"ids": {ids!r} is not a file (the pack header, e.g. src/app_<name>_ids.h with the real name)')
+    elif not re.search(r"^\s*BMP_\w+\s*=\s*\d+,", Path(ids).read_text(), re.M):
+        problems.append(f'"ids": {ids!r} has no BMP_<name> = <n>, lines')
+    if not Path(cfg["sprites"]).is_dir() or not any(Path(cfg["sprites"]).glob("*.png")):
+        problems.append(f'"sprites": {cfg["sprites"]!r} has no PNGs (run gen_art.py --dump {cfg["sprites"]})')
+    if problems:
+        sys.exit("render_demo: sprite mode would render empty screens:\n  " + "\n  ".join(problems))
+
+
 def main():
     ap = argparse.ArgumentParser(description="Render a WowCube demo video from a capture")
     ap.add_argument("config", help="demo.json: title, tagline, legend, font, paths")
@@ -629,6 +646,7 @@ def main():
     frames_dir = frames_path.parent
     frames = [json.loads(line) for line in frames_path.read_text().splitlines() if line.strip()]
     mark_level(frames)
+    check_sprite_inputs(cfg, frames)
 
     if a.still is not None:
         _init(cfg, frames, frames_dir)

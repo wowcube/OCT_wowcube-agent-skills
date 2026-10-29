@@ -45,7 +45,7 @@ a verified `.oct`, uploaded to your cube over Bluetooth when you ask.
 | Device build | ARM GNU toolchain, CMake, Ninja; `uv` and clang++ (or g++) for `octpack-build` |
 | Art | Codex CLI, logged in with ChatGPT (`codex login`) |
 | Sound, video | ffmpeg |
-| Python | 3.10+ with `scripts/requirements.txt`; Pillow and NumPy for the art director |
+| Python | 3.11+ (the pinned NumPy 2.4 needs it) with `scripts/requirements.txt`; Pillow and NumPy for the art director |
 
 `scripts/check_env.ps1` / `check_env.sh` check the toolchain; on Windows
 `check_env.ps1 -Install` adds what is missing with quiet winget installs, only after you

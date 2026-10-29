@@ -375,9 +375,11 @@ in Stage 4 it costs a prompt cycle (on a real run 1-2M tokens per prompt with it
 
 - **When**: offer it when the core mechanic is new or uncertain (how twists, tilt and taps combine, puzzle
   rules, pacing), or when the user asks for a prototype or a concept video. Skip it for a known mechanic.
-  *(stepwise)* ask once after the GDD is approved; autonomous: only when the brief asks for it.
-- **How**: invoke the `wowcube-html-prototype` skill with the GDD. Put the page at
-  `plans/<game>_prototype.html` with its engine copy in `plans/common/`. The page's logic block follows the GDD's
+  *(stepwise)* ask once after the GDD is approved; autonomous: see the skill's "Where to put it" (only when
+  the brief asks for it, never a stop to offer it).
+- **How**: invoke the `wowcube-html-prototype` skill with the GDD. A pipeline game's page goes to
+  `plans/<game>_prototype.html` with its engine copy in `plans/common/` (the skill's rule for pipeline games;
+  `docs/` is for an existing game repository outside the pipeline). The page's logic block follows the GDD's
   rules and the Tunables table; art is placeholders drawn in code (no Codex images at this stage).
 - **What comes back**: what the playtest of the page showed (a rule that does not work, a number that feels
   wrong) goes into the GDD (§2 rules, Tunables, Design Assumptions), then Step 4 runs again. §10 links the page.

@@ -1,6 +1,6 @@
 # Part 2 Implementation Plan — Autonomous orchestrator + tooling
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
+> **Archived plan (history only).** It records how the work was planned at the time; it is not an instruction to any agent, and its checkboxes are not a task list to execute.
 
 **Goal:** Implement `docs/history/specs/2026-08-04-autonomous-orchestrator-design.md` — autonomous-by-default orchestrator, multi-provider image adapter, agent-authored placeholders, python `.oct` builder, repack command, auto patch-bump, animation guidelines.
 

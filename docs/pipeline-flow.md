@@ -40,7 +40,7 @@ flowchart TD
     DET -->|"prompts left"| CODER
     CODER --> CHECKS["In parallel: Requirements + Template agents on the code;<br/>visual gate: hidden muted simulator, 24-screen frames, the agent looks"]
     CHECKS --> PLAY["Playtest Agent over the control socket<br/>on the hidden instance"]
-    PLAY --> PASS{"90 and 90, no critical issue anywhere,<br/>no major visual finding, playtest 90?"}
+    PLAY --> PASS{"90 and 90, no critical issue anywhere,<br/>no major visual finding, playtest 90,<br/>no open major from any agent?"}
     PASS -->|"no, under 5 rounds"| FIX["Fixer: all issues + the frames that show them"]
     FIX --> CHECKS
     PASS -->|"no, 5 rounds used"| DEG["Autonomous: rescope the prompt, record the cut.<br/>Stepwise: ask rescope, retry or stop"]

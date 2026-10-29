@@ -132,7 +132,8 @@ static void capSprites(void) {
                 (int)s->Layer, (int)s->FrameFrom, (int)s->FrameTo, (int)s->FrameRate, (int)s->Loop, gCap.born[i],
                 (int)s->Transp, (unsigned)s->Data0);
         if (s->Label) {
-            const CapLabel& l = gCapLabels[i];
+            static const CapLabel kNoLabel{ "", 0, 0, 0 };      // an id past the hook's table: no text known
+            const CapLabel& l = (i < CAPTURE_LABELS_MAX) ? gCapLabels[i] : kNoLabel;
             fprintf(gCap.out, ",%d,%d,%d,", l.font, l.color, l.align);
             capJsonText(l.text.c_str());
         }

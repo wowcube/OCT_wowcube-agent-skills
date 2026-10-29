@@ -75,7 +75,9 @@ static bool shotLoadPack(const std::string& appDir)
     header->AppVersion = APP_VERSION;
     header->Guid1 = APP_GUID1;
     header->Categories = APP_CATEGORIES;
+#ifdef APP_SAVE_SIZE                                    // only an app with app_save.h declares one
     header->SaveSize = APP_SAVE_SIZE;                   // as sim.h stamps it: the save area's size
+#endif
     uint32_t offset = (uint32_t)((sizeof(octPackHeader_t) + sizeof(octAssetDesc_t) * (size_t)count + 3) & ~(size_t)3);
     header->AssetDescs = header->SoundDescs = (uint32_t)sizeof(octPackHeader_t);
     for (int i = 0; i < count; i++) {

@@ -4,7 +4,7 @@
   "head3d": "3D · TILT ROLLS THE PADDLE · PAT · TWIST",
   "font": "art/fonts/ttf/Oswald.ttf",
   "labelFonts": {"1": [18, "SemiBold"], "2": [24, "SemiBold"], "3": [44, "Bold"]},
-  "ids": "src/app_<game>_ids.h",
+  "ids": "src/app_breakout_ids.h",
   "sprites": "docs/demo/sprites",
   "frames": "docs/demo/frames.jsonl",
   "out": "docs/demo/breakout_demo.mp4",
